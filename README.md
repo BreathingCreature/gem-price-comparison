@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # GeM Price Comparison — PRJ 252
 
 End-to-end pipeline for Review 2: Data Collection (GeM + Flipkart) → Storage (SQLite) → Matching (regex + fuzzy).
