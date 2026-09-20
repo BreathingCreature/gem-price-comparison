@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+*.db-journal
+data/raw/*.html
+data/raw/gem_debug/*.html
+.env
+.playwright/
