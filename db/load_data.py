@@ -41,11 +41,25 @@ def parse_price(value):
         return None
 
 
+def resolve_gem_id(cur, gem_link: str) -> int | None:
+    """Find current GeM product id from its stable link (ids renumber on DB rebuild)."""
+    if not gem_link:
+        return None
+    gem_link = gem_link.strip()
+    cur.execute("SELECT id FROM raw_products WHERE source='gem' AND link=? LIMIT 1", (gem_link,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def load_csvs(con: sqlite3.Connection) -> int:
     csvs = sorted(RAW_DIR.glob("*.csv"))
     if not csvs:
         print(f"No CSVs found in {RAW_DIR}")
         return 0
+    # GeM rows MUST exist before resolving per-product flipkart links
+    # (searched_for_gem_link -> id). CSV filenames sort alphabetically
+    # (flipkart_* before gem_*), so force gems first.
+    csvs = sorted(csvs, key=lambda p: (0 if p.name.startswith("gem_") else 1, p.name))
     cur = con.cursor()
     inserted = 0
     for path in csvs:
@@ -57,17 +71,19 @@ def load_csvs(con: sqlite3.Connection) -> int:
                 link = (row.get("link") or "").strip()
                 if not name or not source:
                     continue
-                # skip exact duplicates
+                gem_id = resolve_gem_id(cur, row.get("searched_for_gem_link") or "")
+                # skip exact duplicates (same gem lookup context too)
                 cur.execute(
-                    "SELECT 1 FROM raw_products WHERE source=? AND name=? AND link=? LIMIT 1",
-                    (source, name, link),
+                    "SELECT 1 FROM raw_products WHERE source=? AND name=? AND link=? "
+                    "AND IFNULL(searched_for_gem_id,0)=? LIMIT 1",
+                    (source, name, link, gem_id or 0),
                 )
                 if cur.fetchone():
                     continue
                 cur.execute(
                     """INSERT INTO raw_products
-                       (source, name, price, price_type, seller, link, scraped_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       (source, name, price, price_type, seller, link, scraped_at, searched_for_gem_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         source,
                         name,
@@ -76,6 +92,7 @@ def load_csvs(con: sqlite3.Connection) -> int:
                         (row.get("seller") or None),
                         link or None,
                         (row.get("scraped_at") or None),
+                        gem_id,
                     ),
                 )
                 inserted += 1

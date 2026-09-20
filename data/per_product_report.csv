@@ -1,0 +1,25 @@
+gem_id,gem_name,gem_slug,gem_price,query_primary,query_fallback,fk_name,fk_price,similarity,matched
+2,LAPCARE Wired Computer Mouse,lapcare-l70-plus,250.0,lapcare l70 plus,,"LAPCARE L-70 Plus / 1200 DPI Wired Ambidextrous Optical... USB 2.0, Black 3.9 (38)",199.0,48.7,NO
+2,LAPCARE Wired Computer Mouse,lapcare-l70-plus,250.0,lapcare l70 plus,,LAPCARE BIS Certified Compatible Laptop Battery for HP ... 3.3 (9),1409.0,41.6,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,FINGERS SoundReflex W5 Wired 3.9 (112),325.0,53.2,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,FINGERS SoundBoss Wired 3.6 (132),325.0,51.4,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,FINGERS SoundBoomerang Wired 3.8 (203),345.0,48.1,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,SPARENTERPRISES A30462 Wired,1498.0,42.3,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,Currently unavailable,236.0,28.1,NO
+4,LAPCARE Wireless Computer Mouse,lapcare-safari-iii-lwm-003,250.0,lapcare safari iii lwm 003,lapcare safari iii,LAPCARE LSOBTSI2313 6 Cell Laptop Battery,3169.0,44.4,NO
+4,LAPCARE Wireless Computer Mouse,lapcare-safari-iii-lwm-003,250.0,lapcare safari iii lwm 003,lapcare safari iii,"LAPCARE LWC-012 WEBCAM HD 720M P, HD Webcam 720p, with ... Black 3.6 (54)",849.0,44.1,NO
+4,LAPCARE Wireless Computer Mouse,lapcare-safari-iii-lwm-003,250.0,lapcare safari iii lwm 003,lapcare safari iii,LAPCARE ZWJL7R4 6 Cell Laptop Battery 3.2 (6),1350.0,43.6,NO
+5,hp Wired Computer Mouse,hp-115-wired-mouse-india,250.0,hp 115 wired mouse,hp 115 wired,HP 115 USB SET OF 4 Wired Ambidextrous Optical Mouse,1349.0,55.7,NO
+5,hp Wired Computer Mouse,hp-115-wired-mouse-india,250.0,hp 115 wired mouse,hp 115 wired,"HP 115 / 1600 DPI Optical Tracking, Ambidextrous Wired ... 4.4 (81)",448.0,43.4,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,"PRODOT Curvy USB Wired Mouse 1000 DPI Wired Ergonomic L... USB 2.0, USB 3.0, Black",248.0,56.9,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,"PRODOT 253 PS2 Wired Ambidextrous Optical Mouse PS/2, Black 4 (15)",246.0,51.7,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,"PRODOT DIC-MU-253s-MAP-02 Wired Right Handed Optical Mo... USB 2.0, Black 3.6 (88)",199.0,45.0,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,PRODOT USB HUB PLAY PLUS DIC-USB_HUB-4_1P USB Hub Black 3.8 (67),224.0,40.0,NO
+8,hp Wireless Computer Mouse,hp-115-wireless-mouse-india,256.0,hp 115 wireless mouse,hp 115 wireless,"HP M290 Wireless Ambidextrous Optical Mouse Mode Switch... 4.1 (1,868)",498.0,55.5,NO
+10,LAPCARE USB Type A Wired Keyboard + Wired …,lapcare-magma-lmk-105,600.0,lapcare magma lmk 105,lapcare magma lmk,LAPCARE Desktop 3 Pin Power Cable Combo Set Black,199.0,40.7,NO
+10,LAPCARE USB Type A Wired Keyboard + Wired …,lapcare-magma-lmk-105,600.0,lapcare magma lmk 105,lapcare magma lmk,"LAPCARE DCX-A101 2 Fan Ergonomic Cooling Pad with Adjus... Black 4.2 (19,016)",679.0,34.9,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT ProSeries Dot Matrix Ribbon Cartridge Compatible...,299.0,40.4,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT ProSeries Dot Matrix Ribbon Cartridge Compatible... 4.9 (8),649.0,38.2,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,"PRODOT New Universal Powder 12A 88A, 337, 912, 925, 35A... 4.7 (10)",707.0,35.0,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT 2612A/12A Laser Toner Cartridge for HP Q2612A & ... 3.8 (46),779.0,26.9,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT H-2612A Laser Toner Cartridge for HP Q2612A & Ca... 3.9 (24),554.0,26.7,NO

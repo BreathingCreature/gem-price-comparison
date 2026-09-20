@@ -134,7 +134,8 @@ def parse_cards_from_html(html: str) -> list[dict]:
     return uniq
 
 
-def scrape_flipkart(query: str, max_results: int = 30) -> list[dict]:
+def scrape_flipkart(query: str, max_results: int = 30,
+                    searched_for_gem_id: int | None = None) -> list[dict]:
     driver = build_driver()
     results: list[dict] = []
     seen: set[tuple] = set()
@@ -172,6 +173,7 @@ def scrape_flipkart(query: str, max_results: int = 30) -> list[dict]:
                     "seller": None,
                     "link": c["link"],
                     "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "searched_for_gem_id": searched_for_gem_id,
                 })
                 if len(results) >= max_results:
                     break
@@ -188,7 +190,7 @@ def save_csv(query: str, rows: list[dict]) -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = RAW_DIR / f"flipkart_{safe}_{ts}.csv"
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["source", "name", "price", "seller", "link", "scraped_at"])
+        w = csv.DictWriter(f, fieldnames=["source", "name", "price", "seller", "link", "scraped_at", "searched_for_gem_id"])
         w.writeheader()
         w.writerows(rows)
     return path

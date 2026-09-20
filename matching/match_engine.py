@@ -29,7 +29,7 @@ KNOWN_BRANDS = {
     "zebronics", "logitech", "sony", "philips", "havells", "bajaj",
 }
 
-UNIT_RE = re.compile(r"(\d+(?:\.\d+)?\s?(?:gb|tb|mb|mm|cm|inch|inches|\"|kg|g|w|v|ah|mah|hz|ghz|mp|ltr|litre|liter))", re.I)
+UNIT_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s?(gb|tb|mb|mm|cm|inch|inches|kg|g|w|v|ah|mah|hz|ghz|mp|ltr|litre|liter)\b", re.I)
 MODEL_RE = re.compile(r"\b([A-Z]{1,4}[-/]?\d{2,}[A-Z0-9-]*)\b")
 BRAND_RE = re.compile(r"^([A-Z][a-zA-Z]+)")
 

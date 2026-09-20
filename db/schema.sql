@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS raw_products (
     price_type TEXT,                -- only relevant for gem rows
     seller TEXT,
     link TEXT,
-    scraped_at TEXT
+    scraped_at TEXT,
+    searched_for_gem_id INTEGER     -- flipkart rows: which GeM product triggered this search
 );
 
 CREATE TABLE IF NOT EXISTS matched_products (
