@@ -1,68 +1,120 @@
-# GeM Price Comparison — PRJ 252
+# GeM Price Comparison
 
-End-to-end pipeline for Review 2: Data Collection (GeM + Flipkart) → Storage (SQLite) → Matching (regex + fuzzy).
+Price comparison pipeline for Government e-Marketplace (GeM) products against Flipkart.
 
-## Structure
+## Architecture
 
 ```
-code/
-  scrapers/
-    flipkart_scraper.py   # Phase 1 — Flipkart search scraper
-    gem_scraper.py        # Phase 2 — GeM (gem.gov.in) catalog scraper
-  db/
-    schema.sql            # Phase 3 — SQLite schema
-    load_data.py          # Phase 3 — CSV → SQLite loader
-  matching/
-    match_engine.py       # Phase 4 — regex hard-filter + rapidfuzz matching
-  data/
-    raw/                  # scraper CSV output + debug HTML
-    processed/            # future: cleaned / matched exports
+┌─────────────┐     ┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
+│  GeM Scraper│────▶│  Raw Data   │────▶│  Per-Product     │────▶│  Matching   │
+│  (requests) │     │  (CSV/SQL)  │     │  Lookup (Selenium)   │  Engine     │
+└─────────────┘     └─────────────┘     └──────────────────┘     └─────────────┘
+                                                                        │
+                    ┌─────────────┐     ┌─────────────┐              │
+                    │   Flipkart  │────▶│  Raw Data   │──────────────┘
+                    │   Scraper   │     │  (CSV/SQL)  │
+                    │  (Selenium) │     └─────────────┘
+                    └─────────────┘
 ```
 
-Database: **SQLite** (`db/gem_project.db`) — zero server setup. MySQL migration is a later swap.
+## Features
 
-## Setup (Phase 0)
+- **Category-aware matching**: Automatically detects product category (IT peripherals, stationery, furniture, electrical) and applies appropriate matching strategy
+- **Soft gates**: Brand, model tokens, pack size, and form factor as weighted signals (not hard filters)
+- **LLM attribute extraction**: Uses NVIDIA NIM free tier to extract brand/model/specs for ANY product
+- **Real-time API**: `GET /match?gem_url=<URL>` for on-demand price comparison
+- **Caching**: LLM results cached in SQLite, keyed by GeM product link
 
-```powershell
-cd code
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-playwright install
+## Quick Start
+
+### Installation
+
+```bash
+# Install dependencies
+pip install -e ".[dev]"
+
+# Or install production only
+pip install -e .
+
+# Install Playwright browsers (for Flipkart scraping)
+playwright install chromium
 ```
 
-## Usage
+### Configuration
 
-```powershell
-# 1. Scrape Flipkart (tested: "office chair", "laptop", "printer")
-python -m scrapers.flipkart_scraper --query "office chair" --max-results 30
+Copy `.env.example` to `.env` and fill in your NVIDIA API key:
 
-# 2. Scrape GeM (public catalog only, never bidplus.gem.gov.in)
-python -m scrapers.gem_scraper --query "office chair" --max-results 20
-
-# 3. Load CSVs into SQLite
-python -m db.load_data
-
-# 4. Run matching engine
-python -m matching.match_engine --threshold 75
+```bash
+cp .env.example .env
+# Edit .env and add your NVIDIA_API_KEY
 ```
 
-Each scraper saves `data/raw/<source>_<query>_<timestamp>.csv` with columns:
-`source,name,price,seller,link,scraped_at` (+ `price_type` for GeM).
+Get a free API key at https://build.nvidia.com (no credit card required).
 
-## Guardrails
+### Usage
 
-- Flipkart: 1–2s delay between requests. On block/CAPTCHA: stop and report, do not bypass.
-- GeM: 2–3s delay between actions. On CAPTCHA/login wall: stop and report.
-- GeM price types observed: `fixed` / `range` / `L1_rate` / `unknown` (reverse-auction pricing means a single fixed price may not exist).
+```bash
+# Scrape GeM products
+python -m gem_price scrape-gem --query "office chair" --max-results 20
 
-## Review mapping
+# Scrape Flipkart products  
+python -m gem_price scrape-flipkart --query "office chair" --max-results 30
 
-- Review 2 (Sep 26): Phases 1–3 working with real data ← this repo
-- Review 3 (Oct 24): Backend API + Frontend (deferred, 80% completion target)
+# Per-product Flipkart lookup (for specific GeM products)
+python -m gem_price per-product-lookup --gem-ids 1,2,3
 
----
+# Load scraped data into database
+python -m gem_price load-data
 
-# gem-price-comparison
+# Run matching engine
+python -m gem_price match-engine --gem-id 42
 
-(Root README created at remote repo initialisation — merged in on first push.)
+# Start API server
+python -m gem_price api
+# Then: curl "http://localhost:8000/match?gem_url=https://mkp.gem.gov.in/..."
+```
+
+## Project Structure
+
+```
+src/gem_price/
+├── core/           # Configuration, logging
+├── matching/       # Matching engine, LLM attributes
+├── scrapers/       # GeM, Flipkart, query builder, per-product lookup
+├── api/            # FastAPI endpoint
+├── db/             # Schema, data loading
+├── utils/          # Text processing utilities
+└── cli.py          # Main CLI entry point
+```
+
+## Matching Pipeline
+
+1. **Category Detection**: Heuristic keywords → IT peripherals, stationery, furniture, electrical
+2. **Query Building**: Category-specific Flipkart search queries from GeM slug + LLM attributes
+3. **Embedding**: all-MiniLM-L6-v2 cosine similarity (0-1)
+4. **Soft Gates**: Model tokens, pack size, form factor (weighted per category)
+5. **Composite Score**: Weighted sum of cosine + gates
+6. **Threshold**: Configurable per-category threshold
+
+## Configuration
+
+All settings via environment variables (see `.env.example`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GEM_MAX_RESULTS` | 20 | Max products per GeM query |
+| `FLIPKART_MAX_RESULTS` | 30 | Max products per Flipkart query |
+| `COSINE_THRESHOLD` | 0.55 | Minimum cosine for match |
+| `COMPOSITE_THRESHOLD` | 0.6 | Minimum composite score |
+| `NVIDIA_MODEL` | openai/gpt-oss-20b | LLM model for attribute extraction |
+| `API_PORT` | 8000 | API server port |
+
+## Testing
+
+```bash
+pytest tests/ -v
+```
+
+## License
+
+MIT
