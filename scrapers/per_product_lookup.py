@@ -24,6 +24,7 @@ from pathlib import Path
 
 from scrapers import flipkart_scraper as fk
 from scrapers.query_builder import build_queries
+from matching.llm_attributes import get_product_attributes
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "db" / "gem_project.db"
@@ -55,13 +56,15 @@ def search_candidates(query: str, gem_id: int) -> list[dict]:
     return rows
 
 
-def try_queries(gem_id: int, name: str, link: str, max_tries: int = 3) -> list[dict]:
-    """Try primary query; on empty result, retry fallback queries."""
-    queries = build_queries(name, link)
+def try_queries(gem_id: int, queries: list, max_tries: int = 3) -> list[dict]:
+    """Try primary query; on empty result, retry the remaining queries.
+
+    `queries` is a pre-built ordered list (LLM-derived search_query first,
+    followed by the regex-generated query_builder fallbacks, deduped)."""
     if not queries:
-        print(f"    no query generated (slug missing) for {name[:40]}")
+        print(f"    no query generated for product #{gem_id}")
         return []
-    print(f"  [{gem_id}] {name[:48]:50} queries={queries}")
+    print(f"  [{gem_id}] queries={queries}")
     last = []
     for q in queries[:max_tries]:
         rows = search_candidates(q, gem_id)
@@ -82,13 +85,21 @@ def main() -> int:
     gem_ids = [int(x) for x in args.gem_ids.split(",") if x.strip()] if args.gem_ids else None
     gems = load_gem_products(con, gem_ids)
     print(f"loaded {len(gems)} GeM products to look up\n")
-    con.close()
 
     all_rows: list[dict] = []
     summary = []
     for gid, name, link, price, seller in gems:
         try:
-            rows = try_queries(gid, name, link)
+            attrs = get_product_attributes(name, link, con)
+            llm_query = attrs.get("search_query")
+            queries = []
+            if llm_query and llm_query.strip():
+                queries.append(llm_query.strip())
+            for q in build_queries(name, link):
+                if q not in queries:
+                    queries.append(q)
+            print(f"  [{gid}] attrs from {attrs['source']}: brand={attrs.get('brand')}")
+            rows = try_queries(gid, queries)
         except Exception as e:
             print(f"ERROR on {name[:30]}: {type(e).__name__}: {e}")
             rows = []
@@ -107,6 +118,7 @@ def main() -> int:
 
     real = [r for r in all_rows if r.get("name") and r.get("price")]
     print(f"total stored-capable rows: {len(real)}")
+    con.close()
 
     if args.dont_save:
         return 0

@@ -6,3 +6,4 @@ pandas
 rapidfuzz
 lxml
 sentence-transformers
+openai

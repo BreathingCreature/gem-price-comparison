@@ -23,6 +23,7 @@ from scrapers.query_builder import build_queries, raw_slug
 from matching.match_engine import (normalize, extract_attributes,
                                    extract_slug as slug_words, passes_filter,
                                    gates_pass)
+from matching.llm_attributes import get_product_attributes
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "db" / "gem_project.db"
@@ -57,13 +58,28 @@ def load_linked(con, gem_ids=None):
     return gems, fk
 
 
-def score_product(gem_name, gem_link, candidates):
+def _hard_filter_attrs(gem_name, gem_link, con):
+    """Regex-extracted attributes, with the cached/LLM brand preferred over
+    the hardcoded list brand when one is available. Falls back silently."""
+    from matching.match_engine import extract_attributes, extract_slug as sw
+    enriched = f"{gem_name or ''} {sw(gem_link or '')}".strip()
+    g_attrs = extract_attributes(enriched)
+    try:
+        cached = get_product_attributes(gem_name, gem_link, con)
+        if cached.get("brand"):
+            g_attrs["brand"] = cached["brand"].lower()
+    except Exception as e:
+        print(f"    cached-brand lookup failed ({e}) — using regex brand.")
+    return g_attrs
+
+
+def score_product(gem_name, gem_link, candidates, con):
     """Fuzzy score one GeM product against its own candidates. Returns list of
     (score, name, price, fkid, link) sorted desc."""
     slug = slug_words(gem_link or "")
     enriched = f"{gem_name or ''} {slug}".strip()
     gen_norm = normalize(enriched)
-    g_attrs = extract_attributes(enriched)
+    g_attrs = _hard_filter_attrs(gem_name, gem_link, con)
     out = []
     for fid, mname, mprice, mlink in candidates:
         if not passes_filter(g_attrs, mname or ""):
@@ -74,14 +90,14 @@ def score_product(gem_name, gem_link, candidates):
     return out
 
 
-def score_product_embed(gem_name, gem_link, candidates):
+def score_product_embed(gem_name, gem_link, candidates, con):
     """Embedding cosine score (0-1) of one GeM product vs ITS candidates.
     Hard regex filter still runs first; the similarity step is now embeddings."""
     from matching.match_engine import embed, cos_score
     slug = slug_words(gem_link or "")
     enriched = f"{gem_name or ''} {slug}".strip()
     gen_text = normalize(enriched)
-    g_attrs = extract_attributes(enriched)
+    g_attrs = _hard_filter_attrs(gem_name, gem_link, con)
     passed = [c for c in candidates if passes_filter(g_attrs, c[1] or "")]
     if not passed:
         return []
@@ -132,7 +148,7 @@ def main() -> int:
     for gid in sorted(gems):
         name, link, _ = gems[gid]
         cands = linked.get(gid, [])
-        scored = scorer(name, link, cands)
+        scored = scorer(name, link, cands, con)
         slug = raw_slug(link or "")
         enriched = f"{name or ''} {slug}".strip()
         queries = build_queries(name, link)
