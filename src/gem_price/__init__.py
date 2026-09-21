@@ -1,2 +1,22 @@
-"""GeM Price Comparison - Main package."""
-__version__ = "2.0.0"
+"""Universal Price Comparison - Core package."""
+from gem_price.core.config import settings
+from gem_price.core.models import (
+    ProductIdentity,
+    MarketplaceResult,
+    VerificationResult,
+    MarketplaceMatch,
+    SearchResult,
+    ProductCategory,
+    MatchStatus
+)
+
+__all__ = [
+    "settings",
+    "ProductIdentity",
+    "MarketplaceResult",
+    "VerificationResult",
+    "MarketplaceMatch",
+    "SearchResult",
+    "ProductCategory",
+    "MatchStatus",
+]

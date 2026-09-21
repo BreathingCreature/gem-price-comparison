@@ -78,3 +78,59 @@
 2026-09-21 23:00:36,344 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
 2026-09-21 23:00:40,622 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 15
 2026-09-21 23:00:40,622 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 15
+2026-09-21 23:07:43,993 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: hp Entry Level Desktop Computer with …
+2026-09-21 23:07:43,993 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: hp Entry Level Desktop Computer with …
+2026-09-21 23:07:43,994 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 23:07:43,994 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 23:07:43,995 | INFO     | gem_price.api.main | match_gem_url:149 | Built 3 search queries: ['HP 280 G9', 'HP Intel i3-12100 Windows 11 Pro', 'hp 280 g9 sff i3 12100 win11p 32113']
+2026-09-21 23:07:43,995 | INFO     | gem_price.api.main | match_gem_url:149 | Built 3 search queries: ['HP 280 G9', 'HP Intel i3-12100 Windows 11 Pro', 'hp 280 g9 sff i3 12100 win11p 32113']
+2026-09-21 23:07:43,995 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'HP 280 G9'
+2026-09-21 23:07:43,995 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'HP 280 G9'
+2026-09-21 23:08:11,373 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 24 cards, +5 new (total 5)
+2026-09-21 23:08:11,373 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 24 cards, +5 new (total 5)
+2026-09-21 23:08:19,079 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'HP Intel i3-12100 Windows 11 Pro'
+2026-09-21 23:08:19,079 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'HP Intel i3-12100 Windows 11 Pro'
+2026-09-21 23:08:48,013 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 24 cards, +5 new (total 5)
+2026-09-21 23:08:48,013 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 24 cards, +5 new (total 5)
+2026-09-21 23:08:52,030 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'hp 280 g9 sff i3 12100 win11p 32113'
+2026-09-21 23:08:52,030 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'hp 280 g9 sff i3 12100 win11p 32113'
+2026-09-21 23:09:18,147 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 24 cards, +5 new (total 5)
+2026-09-21 23:09:18,147 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 24 cards, +5 new (total 5)
+2026-09-21 23:09:21,519 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 15
+2026-09-21 23:09:21,519 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 15
+2026-09-21 23:23:43,663 | INFO     | gem_price.api.main | match_gem_url:125 | Scraping GeM product: https://mkp.gem.gov.in/computer-monitor-v2/samsung-ultrawide-monitor/p-5116877-19154912158-cat.html
+2026-09-21 23:23:43,663 | INFO     | gem_price.api.main | match_gem_url:125 | Scraping GeM product: https://mkp.gem.gov.in/computer-monitor-v2/samsung-ultrawide-monitor/p-5116877-19154912158-cat.html
+2026-09-21 23:23:45,061 | INFO     | gem_price.api.main | match_gem_url:138 | Scraped new GeM product: SAMSUNG In Plane Switching (IPS) Computer Monitor 
+2026-09-21 23:23:45,061 | INFO     | gem_price.api.main | match_gem_url:138 | Scraped new GeM product: SAMSUNG In Plane Switching (IPS) Computer Monitor 
+2026-09-21 23:23:45,067 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 23:23:45,067 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 23:23:45,067 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['Samsung', 'samsung ultrawide monitor']
+2026-09-21 23:23:45,067 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['Samsung', 'samsung ultrawide monitor']
+2026-09-21 23:23:45,067 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'Samsung'
+2026-09-21 23:23:45,067 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'Samsung'
+2026-09-21 23:24:11,039 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 22 cards, +5 new (total 5)
+2026-09-21 23:24:11,039 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 22 cards, +5 new (total 5)
+2026-09-21 23:24:14,630 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'samsung ultrawide monitor'
+2026-09-21 23:24:14,630 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'samsung ultrawide monitor'
+2026-09-21 23:24:24,523 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:24:24,523 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:24:28,191 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 10
+2026-09-21 23:24:28,191 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 10
+2026-09-22 02:20:36,903 | INFO     | gem_price.cli | test_gem_command:158 | Testing GeM scrape: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:20:36,903 | INFO     | gem_price.cli | test_gem_command:158 | Testing GeM scrape: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:20:36,917 | INFO     | gem_price.scrapers.gem | scrape_product:71 | Scraping GeM product: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:20:36,917 | INFO     | gem_price.scrapers.gem | scrape_product:71 | Scraping GeM product: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:21:14,483 | ERROR    | gem_price.scrapers.gem | scrape_product:96 | Error scraping GeM product: name 'BeautifulSoup' is not defined
+2026-09-22 02:21:14,483 | ERROR    | gem_price.scrapers.gem | scrape_product:96 | Error scraping GeM product: name 'BeautifulSoup' is not defined
+2026-09-22 02:23:50,968 | INFO     | gem_price.cli | test_gem_command:158 | Testing GeM scrape: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:23:50,968 | INFO     | gem_price.cli | test_gem_command:158 | Testing GeM scrape: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:23:50,969 | INFO     | gem_price.scrapers.gem | scrape_product:71 | Scraping GeM product: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:23:50,969 | INFO     | gem_price.scrapers.gem | scrape_product:71 | Scraping GeM product: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:24:20,322 | ERROR    | gem_price.scrapers.gem | scrape_product:96 | Error scraping GeM product: name 'BeautifulSoup' is not defined
+2026-09-22 02:24:20,322 | ERROR    | gem_price.scrapers.gem | scrape_product:96 | Error scraping GeM product: name 'BeautifulSoup' is not defined
+2026-09-22 02:26:24,020 | INFO     | gem_price.cli | test_gem_command:158 | Testing GeM scrape: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:26:24,020 | INFO     | gem_price.cli | test_gem_command:158 | Testing GeM scrape: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:26:24,020 | INFO     | gem_price.scrapers.gem | scrape_product:71 | Scraping GeM product: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:26:24,020 | INFO     | gem_price.scrapers.gem | scrape_product:71 | Scraping GeM product: https://mkp.gem.gov.in/computer-mouse/lapcare-l70-plus/p-5116877-18283206337-cat.html
+2026-09-22 02:26:52,847 | ERROR    | gem_price.scrapers.gem | scrape_product:96 | Error scraping GeM product: 'NoneType' object is not iterable
+2026-09-22 02:26:52,847 | ERROR    | gem_price.scrapers.gem | scrape_product:96 | Error scraping GeM product: 'NoneType' object is not iterable

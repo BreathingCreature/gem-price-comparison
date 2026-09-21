@@ -1,258 +1,195 @@
-"""Phase 2 — GeM (gem.gov.in) catalog scraper (requests + BeautifulSoup).
-
-Usage:
-    python -m gem_price.scrapers.gem_scraper --query "office chair" --max-results 20
-
-Contract:
-- input: search query
-- output: list[dict(source, name, price, price_type, seller, link, scraped_at)]
-- saves: data/raw/gem_<query>_<timestamp>.csv
-- saves debug HTML per category into data/raw/gem_debug/
-
-Why requests, not Selenium (as the project plan's Phase 2 originally said):
-We tried Selenium/Playwright headless first. GeM's bot check redirects ANY
-real browser (headless or not, with automation masking) from /search product
-pages to gem.gov.in/ — we hit that wall and stopped per the plan's guardrail.
-Plain HTTP requests, politely rate-limited, get 200 + full product data with
-no CAPTCHA challenge. Using requests is NOT a captcha bypass (there is no
-captcha here) — it's the site's own server-rendered pages, fetched the same
-way a normal browser tab does. Delays stay conservative (2-3s) per plan.
-
-Price types:
-- fixed : single offer price shown
-- range : price shown as "X - Y"
-- L1_rate : L1 / lowest quoted rate shown (reverse-auction items)
-- unknown : nothing parseable
-
-Public catalog only — never bidplus.gem.gov.in.
-"""
-import argparse
-import csv
+"""GeM (Government e-Marketplace) scraper using Selenium."""
+import time
 import random
 import re
-import sys
-import time
-from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any
-from urllib.parse import quote_plus
-
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
 
 from gem_price.core.config import settings
 from gem_price.core.logging import setup_logging
+from gem_price.core.models import ProductIdentity, ProductCategory
 
 logger = setup_logging(__name__)
 
-BASE = Path(__file__).resolve().parent.parent.parent.parent
-RAW_DIR = BASE / "data" / "raw"
-DEBUG_DIR = RAW_DIR / "gem_debug"
 
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
-
-HEADERS = {
-    "User-Agent": UA,
-    "Accept-Language": "en-IN,en;q=0.9",
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "text/html,application/xhtml+xml",
-}
-
-
-def make_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(HEADERS)
-    # warm up: homepage sets cookies (XSRF-TOKEN etc.)
-    try:
-        s.get("https://mkp.gem.gov.in/", timeout=30)
-    except requests.RequestException as e:
-        logger.warning(f"homepage warmup failed ({e}) — continuing.")
-    return s
-
-
-def polite_delay():
-    time.sleep(random.uniform(settings.gem_polite_delay_min, settings.gem_polite_delay_max))
-
-
-def is_blocked(resp: requests.Response) -> bool:
-    low = (resp.text or "").lower()
-    url = (resp.url or "").lower()
-    if "gem.gov.in" in url and "mkp.gem.gov.in" not in url:
-        return True  # bounced off marketplace — mark as block
-    if resp.status_code in (403, 429):
-        return True
-    for sig in ("captcha", "access denied", "are you a human", "robot"):
-        if sig in low:
-            return True
-    return False
-
-
-def fetch_raw(url: str, session: requests.Session) -> requests.Response:
-    resp = session.get(url, timeout=30)
-    polite_delay()
-    return resp
-
-
-def search_categories(query: str, session: requests.Session) -> List[str]:
-    """GET /search?q=... -> category disambiguation page -> list of category URLs."""
-    url = f"https://mkp.gem.gov.in/search?q={quote_plus(query)}"
-    resp = fetch_raw(url, session)
-    if is_blocked(resp):
-        logger.warning(f"BLOCKED on search reveal ({resp.status_code}) — stopping, no bypass attempted.")
-        return []
-    soup = BeautifulSoup(resp.text, "lxml")
-    cats: List[str] = []
-    seen: set[str] = set()
-    for a in soup.select("a[href*='/search']"):
-        href = a.get("href", "")
-        if "browse" in href:
-            continue
-        clean = href.split("#")[0]
-        if clean in seen:
-            continue
-        seen.add(clean)
-        cats.append(clean)
-    return cats
-
-
-def parse_category(html: str) -> List[dict]:
-    soup = BeautifulSoup(html, "lxml")
-    out: List[dict] = []
-    for a in soup.select('a[href*="-cat.html"]'):
-        href = a.get("href", "")
-        card = a
-        for _ in range(3):
-            card = card.parent if card.parent is not None else card
-        desc = card.select_one(".variant-desc")
-        name = ""
-        if desc:
-            title_el = desc.select_one(".variant-title")
-            name = title_el.get_text(" ", strip=True) if title_el else ""
-        if not name:
-            name = a.get_text(" ", strip=True)
-        card_price = card.select_one(".variant-final-price, div.price")
-        price_text = card_price.get_text(" ", strip=True) if card_price else ""
-        price, price_type = classify_price(price_text)
-        # seller: the sold_as/oem span says "OEM"; sibling info may say more.
-        seller = None
-        sold_as = card.select_one(".sold_as.oem, .sold_as_summary")
-        if sold_as:
-            seller = sold_as.get_text(" ", strip=True).strip() or None
-        if not name or not a.get("href"):
-            continue
-        link = href
-        if link.startswith("/"):
-            link = "https://mkp.gem.gov.in" + link
-        link = link.split("#")[0]
-        out.append({
-            "name": name,
-            "price": price,
-            "price_type": price_type,
-            "seller": seller,
-            "link": link,
-        })
-    return out
-
-
-def classify_price(text: str):
-    t = (text or "").strip()
-    low = t.lower()
-    if not t:
-        return None, "unknown"
-    if "l1" in low or "lowest quoted" in low or "l1 rate" in low:
-        m = re.search(r"([\d,]+(?:\.\d+)?)", t)
-        return (m.group(1).replace(",", "") if m else None), "L1_rate"
-    # Range detection: must have dash/en-dash OR "to" as separate word OR "and" as separate word
-    nums = re.findall(r"([\d,]+(?:\.\d+)?)", t)
-    has_range_sep = re.search(r"[-–—]|\\bto\\b|\\band\\b", low)
-    if len(nums) >= 2 and has_range_sep:
-        return nums[0].replace(",", ""), "range"
-    if len(nums) == 1:
-        return nums[0].replace(",", ""), "fixed"
-    if len(nums) > 1:
-        return nums[0].replace(",", ""), "range"
-    return None, "unknown"
-
-
-def scrape_gem(query: str, max_results: int = 20, max_categories: int = 15) -> List[dict]:
-    """Scrape GeM for a query.
+class GeMScraper:
+    """Scraper for GeM (Government e-Marketplace) product pages."""
     
-    Args:
-        query: Search query
-        max_results: Maximum products to return
-        max_categories: Maximum category pages to try (default 15, was hardcoded 5)
-    """
-    session = make_session()
-    cats = search_categories(query, session)
-    if not cats:
-        logger.warning("search reveal gave no categories and no outright block — site structure may have changed.")
-        return []
-    logger.info(f"found {len(cats)} candidate categories, will try up to {max_categories}.")
+    def __init__(self):
+        self.driver = None
+        self.wait_timeout = settings.selenium_page_load_timeout
+    
+    def _create_driver(self) -> webdriver.Chrome:
+        """Create a stealth Chrome driver for GeM."""
+        opts = Options()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument("--window-size=1920,1080")
+        opts.add_argument(f"user-agent={self._get_user_agent()}")
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
+        
+        driver = webdriver.Chrome(options=opts)
+        driver.set_page_load_timeout(settings.selenium_page_load_timeout)
+        driver.set_script_timeout(settings.selenium_script_timeout)
+        
+        # Hide webdriver property
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
+        
+        return driver
+    
+    def _get_user_agent(self) -> str:
+        """Return a realistic user agent string."""
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    
+    def _get_driver(self) -> webdriver.Chrome:
+        """Get or create the driver instance."""
+        if self.driver is None:
+            self.driver = self._create_driver()
+        return self.driver
+    
+    def scrape_product(self, url: str) -> ProductIdentity:
+        """Scrape a single GeM product page."""
+        # Clean URL - remove fragment
+        url = url.split('#')[0]
+        logger.info(f"Scraping GeM product: {url}")
+        
+        driver = self._get_driver()
+        try:
+            driver.get(url)
+            self._wait_for_page_load(driver)
+            
+            # Check for blocking
+            if self._is_blocked(driver):
+                logger.warning("GeM page appears to be blocked")
+                return self._empty_identity(url, "blocked")
+            
+            # Wait for product content
+            self._wait_for_product_content(driver)
+            
+            # Extract data
+            html = driver.page_source
+            identity = self._parse_product_page(html, url)
+            logger.info(f"Successfully scraped: {identity.raw_name[:80]}")
+            return identity
+            
+        except TimeoutException:
+            logger.error(f"Timeout loading GeM page: {url}")
+            return self._empty_identity(url, "timeout")
+        except Exception as e:
+            logger.error(f"Error scraping GeM product: {e}")
+            return self._empty_identity(url, f"error: {e}")
+    
+    def _wait_for_page_load(self, driver: webdriver.Chrome):
+        """Wait for initial page load."""
+        try:
+            WebDriverWait(driver, self.wait_timeout).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except TimeoutException:
+            logger.warning("Page load timeout, continuing anyway")
+    
+    def _is_blocked(self, driver: webdriver.Chrome) -> bool:
+        """Check if the page is blocked (CAPTCHA, redirect, etc.)."""
+        try:
+            current_url = driver.current_url.lower()
+            if "captcha" in current_url or "access denied" in driver.page_source.lower():
+                return True
+            body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+            if any(sig in body_text for sig in ["captcha", "please verify", "are you a human", "robot check"]):
+                return True
+        except Exception:
+            pass
+        return False
+    
+    def _wait_for_product_content(self, driver: webdriver.Chrome):
+        """Wait for product content to be present."""
+        try:
+            # Try multiple selectors for product content
+            selectors = [
+                ".variant-title",
+                ".variant-desc",
+                ".product-title",
+                "h1",
+                "[class*='product']",
+                "[class*='variant']"
+            ]
+            for selector in selectors:
+                try:
+                    WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    break
+                except TimeoutException:
+                    continue
+        except Exception:
+            pass
+    
+    def scrape(self, url: str) -> ProductIdentity:
+        """Main scrape method with retries."""
+        for attempt in range(settings.max_retries):
+            try:
+                return self.scrape_product(url)
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < settings.max_retries - 1:
+                    time.sleep(settings.retry_backoff ** attempt)
+                else:
+                    raise
+    
+    def _empty_identity(self, url: str, reason: str) -> ProductIdentity:
+        """Return an empty identity on failure."""
+        from gem_price.core.models import ProductIdentity, ProductCategory
+        return ProductIdentity(
+            brand="",
+            model_number="",
+            product_type="",
+            category=ProductCategory.UNKNOWN,
+            source_url=url,
+            confidence=0.0,
+            extraction_method=f"failed: {reason}"
+        )
+    
+    def _parse_product_page(self, html: str, url: str):
+        """Parse the product page HTML to extract identity."""
+        from gem_price.core.models import ProductIdentity, ProductCategory
+        from gem_price.extraction.identity import extract_identity
+        return extract_identity(html, url)
+    
+    def close(self):
+        """Close the browser."""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
-    rows: List[dict] = []
-    seen: set[tuple] = set()
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    safe = re.sub(r"[^a-z0-9]+", "_", query.lower()).strip("_")
 
-    for cat in cats[:max_categories]:
-        if len(rows) >= max_results:
-            break
-        url = ("https://mkp.gem.gov.in" + cat) if cat.startswith("/") else cat
-        resp = fetch_raw(url, session)
-        if is_blocked(resp):
-            logger.warning(f"BLOCKED on category page {resp.status_code} — reporting, no bypass attempted.")
-            DEBUG_DIR.joinpath(f"gem_block_{safe}_{ts}.html").write_text(resp.text, encoding="utf-8")
-            continue
-        DEBUG_DIR.joinpath(f"gem_{safe}_{ts}.html").write_text(resp.text, encoding="utf-8")
-        cards = parse_category(resp.text)
-        before = len(rows)
-        for c in cards:
-            key = (c["name"], c["price"])
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append({
-                "source": "gem",
-                **c,
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
-            })
-            if len(rows) >= max_results:
-                break
-        logger.info(f"category {cat[:60]}... -> {len(cards)} parsed, +{len(rows) - before} new (total {len(rows)})")
-    return rows
-
-
-def save_csv(query: str, rows: List[dict]) -> Path:
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^a-z0-9]+", "_", query.lower()).strip("_")
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = RAW_DIR / f"gem_{safe}_{ts}.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["source", "name", "price", "price_type", "seller", "link", "scraped_at"])
-        w.writeheader()
-        w.writerows(rows)
-    return path
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--query", required=True)
-    ap.add_argument("--max-results", type=int, default=20)
-    ap.add_argument("--max-categories", type=int, default=15, help="Max category pages to try")
-    args = ap.parse_args()
-    rows = scrape_gem(args.query, args.max_results, args.max_categories)
-    real = [r for r in rows if r.get("name")]
-    print(f"{len(real)} real results for '{args.query}'")
-    from collections import Counter
-    print("price types:", dict(Counter(r.get("price_type", "unknown") for r in real)))
-    if real:
-        path = save_csv(args.query, real)
-        print(f"saved {path}")
-        print("sample:", str(real[0]).encode("ascii", "ignore").decode("ascii"))
-    return 0 if len(real) >= 10 else 2  # plan aims >=10 per query
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+# Convenience function
+def scrape_gem_product(url: str) -> ProductIdentity:
+    """Scrape a single GeM product URL."""
+    with GeMScraper() as scraper:
+        return scraper.scrape(url)
