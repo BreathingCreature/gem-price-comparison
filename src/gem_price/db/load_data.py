@@ -29,6 +29,7 @@ def init_db() -> sqlite3.Connection:
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
     migrate_matched_products(con)
+    migrate_raw_products(con)
     return con
 
 
@@ -38,6 +39,14 @@ def migrate_matched_products(con: sqlite3.Connection) -> None:
     for col in ("cosine_score", "model_token_match", "pack_match", "form_match", "category"):
         if col not in cols:
             con.execute(f"ALTER TABLE matched_products ADD COLUMN {col}")
+    con.commit()
+
+
+def migrate_raw_products(con: sqlite3.Connection) -> None:
+    """Add missing columns to raw_products table if it predates them."""
+    cols = {r[1] for r in con.execute("PRAGMA table_info(raw_products)")}
+    if "searched_for_gem_link" not in cols:
+        con.execute("ALTER TABLE raw_products ADD COLUMN searched_for_gem_link TEXT")
     con.commit()
 
 
