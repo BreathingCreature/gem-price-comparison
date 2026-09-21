@@ -9,12 +9,12 @@ from typing import Optional
 class Settings:
     """Application settings loaded from environment variables with defaults."""
     
-    # Project paths
-    project_root: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent)
-    data_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "data")
-    db_path: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "db" / "gem_project.db")
-    raw_data_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "data" / "raw")
-    debug_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "gem_debug")
+    # Project paths - db and data are in the code/ directory (project root)
+    project_root: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent.parent)
+    data_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent.parent / "data")
+    db_path: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent.parent / "db" / "gem_project.db")
+    raw_data_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent.parent / "data" / "raw")
+    debug_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent.parent / "data" / "raw" / "gem_debug")
     
     # Scraping settings
     gem_max_results: int = 20

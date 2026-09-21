@@ -1,0 +1,80 @@
+2026-09-21 22:55:52,241 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: LAPCARE Wired Computer Mouse
+2026-09-21 22:55:52,241 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: LAPCARE Wired Computer Mouse
+2026-09-21 22:55:52,242 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 22:55:52,242 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 22:55:52,243 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['LAPCARE L70 Plus', 'LAPCARE Wired Computer Mouse']
+2026-09-21 22:55:52,243 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['LAPCARE L70 Plus', 'LAPCARE Wired Computer Mouse']
+2026-09-21 22:55:52,250 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE L70 Plus'
+2026-09-21 22:55:52,250 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE L70 Plus'
+2026-09-21 22:56:09,522 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:56:09,522 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:56:13,457 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE Wired Computer Mouse'
+2026-09-21 22:56:13,457 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE Wired Computer Mouse'
+2026-09-21 22:56:25,348 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:56:25,348 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:56:29,094 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 9
+2026-09-21 22:56:29,094 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 9
+2026-09-21 22:58:31,141 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: LAPCARE Wired Computer Mouse
+2026-09-21 22:58:31,141 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: LAPCARE Wired Computer Mouse
+2026-09-21 22:58:31,142 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 22:58:31,142 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: it_peripherals (confidence: 0.8)
+2026-09-21 22:58:31,143 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['LAPCARE L70 Plus', 'LAPCARE Wired Computer Mouse']
+2026-09-21 22:58:31,143 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['LAPCARE L70 Plus', 'LAPCARE Wired Computer Mouse']
+2026-09-21 22:58:31,143 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE L70 Plus'
+2026-09-21 22:58:31,143 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE L70 Plus'
+2026-09-21 22:58:41,580 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:58:41,580 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:58:45,167 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE Wired Computer Mouse'
+2026-09-21 22:58:45,167 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'LAPCARE Wired Computer Mouse'
+2026-09-21 22:58:56,064 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:58:56,064 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:58:59,562 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 9
+2026-09-21 22:58:59,562 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 9
+2026-09-21 22:59:09,934 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: SUN ENERGY INDIA ENTERPRISES 18 Watt, LED …
+2026-09-21 22:59:09,934 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: SUN ENERGY INDIA ENTERPRISES 18 Watt, LED …
+2026-09-21 22:59:09,935 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: electrical (confidence: 0.8)
+2026-09-21 22:59:09,935 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: electrical (confidence: 0.8)
+2026-09-21 22:59:09,936 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['SUN ENERGY INDIA ENTERPRISES 18W LED Road Street Light', 'road street light 18watt']
+2026-09-21 22:59:09,936 | INFO     | gem_price.api.main | match_gem_url:149 | Built 2 search queries: ['SUN ENERGY INDIA ENTERPRISES 18W LED Road Street Light', 'road street light 18watt']
+2026-09-21 22:59:09,936 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'SUN ENERGY INDIA ENTERPRISES 18W LED Road Street Light'
+2026-09-21 22:59:09,936 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'SUN ENERGY INDIA ENTERPRISES 18W LED Road Street Light'
+2026-09-21 22:59:21,391 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:59:21,391 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:59:24,944 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'road street light 18watt'
+2026-09-21 22:59:24,944 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'road street light 18watt'
+2026-09-21 22:59:35,722 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:59:35,722 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:59:39,242 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 9
+2026-09-21 22:59:39,242 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 9
+2026-09-21 22:59:39,388 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: L C PRINTS LANDMARK COMPUTER PRINTS 1.18 …
+2026-09-21 22:59:39,388 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: L C PRINTS LANDMARK COMPUTER PRINTS 1.18 …
+2026-09-21 22:59:39,389 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: stationery (confidence: 0.85)
+2026-09-21 22:59:39,389 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: stationery (confidence: 0.85)
+2026-09-21 22:59:39,389 | INFO     | gem_price.api.main | match_gem_url:149 | Built 1 search queries: ['a5 75 gsm lc prints brand']
+2026-09-21 22:59:39,389 | INFO     | gem_price.api.main | match_gem_url:149 | Built 1 search queries: ['a5 75 gsm lc prints brand']
+2026-09-21 22:59:39,390 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'a5 75 gsm lc prints brand'
+2026-09-21 22:59:39,390 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'a5 75 gsm lc prints brand'
+2026-09-21 22:59:50,697 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:59:50,697 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 22:59:54,034 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 5
+2026-09-21 22:59:54,034 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 5
+2026-09-21 22:59:54,136 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: SP ENTERPRISES M/S S. P. ENTERPRISES Wall …
+2026-09-21 22:59:54,136 | INFO     | gem_price.api.main | match_gem_url:123 | Cache hit for GeM product: SP ENTERPRISES M/S S. P. ENTERPRISES Wall …
+2026-09-21 22:59:54,138 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: furniture (confidence: 0.8)
+2026-09-21 22:59:54,138 | INFO     | gem_price.api.main | match_gem_url:145 | Detected category: furniture (confidence: 0.8)
+2026-09-21 22:59:54,138 | INFO     | gem_price.api.main | match_gem_url:149 | Built 3 search queries: ['Door FLINT', 'FLINT Wall Mounted Metal Storage Cabinet', 'metal storage cabinet']
+2026-09-21 22:59:54,138 | INFO     | gem_price.api.main | match_gem_url:149 | Built 3 search queries: ['Door FLINT', 'FLINT Wall Mounted Metal Storage Cabinet', 'metal storage cabinet']
+2026-09-21 22:59:54,139 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'Door FLINT'
+2026-09-21 22:59:54,139 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'Door FLINT'
+2026-09-21 23:00:05,468 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:00:05,468 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:00:09,731 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'FLINT Wall Mounted Metal Storage Cabinet'
+2026-09-21 23:00:09,731 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'FLINT Wall Mounted Metal Storage Cabinet'
+2026-09-21 23:00:21,244 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:00:21,244 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:00:25,030 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'metal storage cabinet'
+2026-09-21 23:00:25,030 | INFO     | gem_price.api.main | match_gem_url:156 | Searching Flipkart: 'metal storage cabinet'
+2026-09-21 23:00:36,344 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:00:36,344 | INFO     | gem_price.scrapers.flipkart | scrape_flipkart:213 | page 1: parsed 10 cards, +5 new (total 5)
+2026-09-21 23:00:40,622 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 15
+2026-09-21 23:00:40,622 | INFO     | gem_price.api.main | match_gem_url:167 | Total unique Flipkart results: 15
