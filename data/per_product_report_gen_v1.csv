@@ -1,0 +1,1 @@
+gem_id,gem_name,gem_slug,gem_price,query_primary,query_fallback,fk_name,fk_price,similarity,scorer,matched,cosine_ok,model_token_match,pack_match,form_match,gem_form,fk_form,gem_tokens,fk_tokens,gem_pack,fk_pack,decision,reason
