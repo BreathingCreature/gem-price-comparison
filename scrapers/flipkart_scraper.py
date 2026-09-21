@@ -46,6 +46,8 @@ def build_driver():
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     driver = webdriver.Chrome(options=opts)
+    driver.set_page_load_timeout(45)
+    driver.set_script_timeout(30)
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     })
@@ -73,7 +75,11 @@ def load_search_page(driver, query: str, page: int = 1):
     from selenium.webdriver.common.by import By
 
     url = f"https://www.flipkart.com/search?q={quote_plus(query)}&page={page}"
-    driver.get(url)
+    try:
+        driver.get(url)
+    except Exception as e:
+        print(f"navigation error on '{query}' p{page}: {type(e).__name__}: {e}")
+        return None
     time.sleep(random.uniform(2.0, 3.0))  # initial render
     if detect_block(driver):
         return None
@@ -81,14 +87,15 @@ def load_search_page(driver, query: str, page: int = 1):
     for _ in range(8):
         try:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-        except Exception:
+            time.sleep(random.uniform(1.0, 2.0))  # planner guardrail delay 1-2s
+            if len(driver.find_elements(By.XPATH, "//a[contains(@href, '/p/')]")) > 50:
+                break
+            # bounce back up briefly to encourage the next lazy chunk on some layouts
+            driver.execute_script("window.scrollBy(0, -600)")
+            time.sleep(random.uniform(0.5, 1.0))
+        except Exception as e:
+            print(f"scroll error: {type(e).__name__}: {e}")
             break
-        time.sleep(random.uniform(1.0, 2.0))  # planner guardrail delay 1-2s
-        if len(driver.find_elements(By.XPATH, "//a[contains(@href, '/p/')]")) > 50:
-            break
-        # bounce back up briefly to encourage the next lazy chunk on some layouts
-        driver.execute_script("window.scrollBy(0, -600)")
-        time.sleep(random.uniform(0.5, 1.0))
     return driver.page_source
 
 

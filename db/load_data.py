@@ -21,7 +21,17 @@ def init_db() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH))
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     con.executescript(schema)
+    migrate_matched_products(con)
     return con
+
+
+def migrate_matched_products(con: sqlite3.Connection) -> None:
+    """Add v3 gate columns to matched_products if the table predates them."""
+    cols = {r[1] for r in con.execute("PRAGMA table_info(matched_products)")}
+    for col in ("cosine_score", "model_token_match", "pack_match", "form_match"):
+        if col not in cols:
+            con.execute(f"ALTER TABLE matched_products ADD COLUMN {col}")
+    con.commit()
 
 
 def parse_price(value):

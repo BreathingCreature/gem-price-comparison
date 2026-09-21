@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS matched_products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     gem_product_id INTEGER REFERENCES raw_products(id),
     market_product_id INTEGER REFERENCES raw_products(id),
-    similarity_score REAL,
+    similarity_score REAL,           -- cosine (0-1) for embedding method
+    cosine_score REAL,               -- official score used for the match
+    model_token_match INTEGER,       -- 1 if model-token gate passed
+    pack_match INTEGER,              -- 1 if pack-size gate passed
+    form_match INTEGER,              -- 1 if form-factor gate passed
     match_method TEXT,
     created_at TEXT
 );

@@ -87,7 +87,13 @@ def main() -> int:
     all_rows: list[dict] = []
     summary = []
     for gid, name, link, price, seller in gems:
-        rows = try_queries(gid, name, link)
+        try:
+            rows = try_queries(gid, name, link)
+        except Exception as e:
+            print(f"ERROR on {name[:30]}: {type(e).__name__}: {e}")
+            rows = []
+        if rows is None:
+            rows = []
         # cap per product at 5 (spec: top 3-5 per product)
         rows = rows[:5]
         # attach the STABLE gem link (not the autoincrement id, which changes

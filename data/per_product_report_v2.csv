@@ -1,0 +1,25 @@
+gem_id,gem_name,gem_slug,gem_price,query_primary,query_fallback,fk_name,fk_price,similarity,scorer,matched
+2,LAPCARE Wired Computer Mouse,lapcare-l70-plus,250.0,lapcare l70 plus,,"LAPCARE L-70 Plus / 1200 DPI Wired Ambidextrous Optical... USB 2.0, Black 3.9 (38)",199.0,0.6341,embedding,NO
+2,LAPCARE Wired Computer Mouse,lapcare-l70-plus,250.0,lapcare l70 plus,,LAPCARE BIS Certified Compatible Laptop Battery for HP ... 3.3 (9),1409.0,0.423,embedding,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,FINGERS SoundReflex W5 Wired 3.9 (112),325.0,0.5734,embedding,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,FINGERS SoundBoomerang Wired 3.8 (203),345.0,0.5641,embedding,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,FINGERS SoundBoss Wired 3.6 (132),325.0,0.4812,embedding,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,SPARENTERPRISES A30462 Wired,1498.0,0.3253,embedding,NO
+3,fingers Wired Computer Mouse,superhit-wired,250.0,fingers superhit wired,,Currently unavailable,236.0,0.0242,embedding,NO
+4,LAPCARE Wireless Computer Mouse,lapcare-safari-iii-lwm-003,250.0,lapcare safari iii lwm 003,lapcare safari iii,"LAPCARE LWC-012 WEBCAM HD 720M P, HD Webcam 720p, with ... Black 3.6 (54)",849.0,0.485,embedding,NO
+4,LAPCARE Wireless Computer Mouse,lapcare-safari-iii-lwm-003,250.0,lapcare safari iii lwm 003,lapcare safari iii,LAPCARE LSOBTSI2313 6 Cell Laptop Battery,3169.0,0.4436,embedding,NO
+4,LAPCARE Wireless Computer Mouse,lapcare-safari-iii-lwm-003,250.0,lapcare safari iii lwm 003,lapcare safari iii,LAPCARE ZWJL7R4 6 Cell Laptop Battery 3.2 (6),1350.0,0.4254,embedding,NO
+5,hp Wired Computer Mouse,hp-115-wired-mouse-india,250.0,hp 115 wired mouse,hp 115 wired,HP 115 USB SET OF 4 Wired Ambidextrous Optical Mouse,1349.0,0.7105,embedding,NO
+5,hp Wired Computer Mouse,hp-115-wired-mouse-india,250.0,hp 115 wired mouse,hp 115 wired,"HP 115 / 1600 DPI Optical Tracking, Ambidextrous Wired ... 4.4 (81)",448.0,0.52,embedding,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,"PRODOT Curvy USB Wired Mouse 1000 DPI Wired Ergonomic L... USB 2.0, USB 3.0, Black",248.0,0.8472,embedding,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,"PRODOT 253 PS2 Wired Ambidextrous Optical Mouse PS/2, Black 4 (15)",246.0,0.7197,embedding,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,PRODOT USB HUB PLAY PLUS DIC-USB_HUB-4_1P USB Hub Black 3.8 (67),224.0,0.5894,embedding,NO
+7,ProDot Wired Computer Mouse,prodot-mu-curvy-usb-wired,250.0,prodot mu curvy usb wired,prodot mu curvy,"PRODOT DIC-MU-253s-MAP-02 Wired Right Handed Optical Mo... USB 2.0, Black 3.6 (88)",199.0,0.5431,embedding,NO
+8,hp Wireless Computer Mouse,hp-115-wireless-mouse-india,256.0,hp 115 wireless mouse,hp 115 wireless,"HP M290 Wireless Ambidextrous Optical Mouse Mode Switch... 4.1 (1,868)",498.0,0.5457,embedding,NO
+10,LAPCARE USB Type A Wired Keyboard + Wired …,lapcare-magma-lmk-105,600.0,lapcare magma lmk 105,lapcare magma lmk,LAPCARE Desktop 3 Pin Power Cable Combo Set Black,199.0,0.4147,embedding,NO
+10,LAPCARE USB Type A Wired Keyboard + Wired …,lapcare-magma-lmk-105,600.0,lapcare magma lmk 105,lapcare magma lmk,"LAPCARE DCX-A101 2 Fan Ergonomic Cooling Pad with Adjus... Black 4.2 (19,016)",679.0,0.337,embedding,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,"PRODOT New Universal Powder 12A 88A, 337, 912, 925, 35A... 4.7 (10)",707.0,0.359,embedding,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT ProSeries Dot Matrix Ribbon Cartridge Compatible...,299.0,0.2752,embedding,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT H-2612A Laser Toner Cartridge for HP Q2612A & Ca... 3.9 (24),554.0,0.2571,embedding,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT ProSeries Dot Matrix Ribbon Cartridge Compatible... 4.9 (8),649.0,0.2398,embedding,NO
+17,ProDot RF (with USB Receiver) Wireless …,prodot-wlc-sparsh,750.0,prodot wlc sparsh,,PRODOT 2612A/12A Laser Toner Cartridge for HP Q2612A & ... 3.8 (46),779.0,0.2374,embedding,NO

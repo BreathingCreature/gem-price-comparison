@@ -66,7 +66,7 @@ def extract_attributes(name: str) -> dict:
         m = BRAND_RE.search(name.strip())
         if m:
             brand = m.group(1).lower()
-    units = {u.lower().replace(" ", "") for u in UNIT_RE.findall(name)}
+    units = {u.lower().replace(" ", "") for (_, u) in UNIT_RE.findall(name)}
     models = {m.upper() for m in MODEL_RE.findall(name)}
     return {"brand": brand, "units": units, "models": models}
 
@@ -86,6 +86,225 @@ def passes_filter(gem_attrs: dict, flip_name: str) -> bool:
         # No — per plan this is a hard filter to avoid false matches.
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# v3 gates on top of embeddings: model-token overlap + pack-size consistency.
+# Kept as separate, inspectable signals (not merged into one score).
+# ---------------------------------------------------------------------------
+MODEL_TOKEN_STOP = (
+    # category / spec words that never carry model identity
+    "mouse", "mice", "wired", "wireless", "optical", "laser", "computer",
+    "keyboard", "combo", "usb", "ps2", "bluetooth", "rf", "gaming", "ergo",
+    "ergonomic", "ambidextrous", "optical", "tracking", "silent", "horizontal",
+    "vertical", "desktop", "laptop", "notebook", "pc", "cpu", "monitor",
+    "motherboard", "ssd", "hdd", "ram", "processor", "printer", "scanner",
+    "toner", "cartridge", "battery", "charger", "adapter", "cable", "webcam",
+    "hub", "router", "modem", "switch", "pen", "drive", "storage", "memory",
+    "with", "and", "the", "of", "for", "in", "on", "at", "by", "to", "a",
+    "an", "it", "is", "are", "was", "be", "or", "not", "from", "this",
+    "that", "black", "white", "grey", "gray", "silver", "blue", "red",
+    "green", "gold", "rose", "multicolor", "color", "colour", "new", "gen",
+    "plus", "pro", "max", "mini", "s", "x", "l", "m", "n", "h", "xl", "xxl",
+    "inch", "inches", "mm", "cm", "gb", "tb", "mb", "dpi", "ghz", "mhz",
+    "hz", "v", "w", "a", "series", "model", "brand", "standard", "edition",
+    "version", "genuine", "original", "oem", "compatible", "india", "indian",
+    "made", "make", "product", "products", "goods", "quantity", "price",
+    "mrp", "incl", "gst", "tax", "taxes", "shipping", "delivery", "warranty",
+    "offer", "offerings", "best", "deal", "deals", "pack", "set", "kit",
+    "bundle", "packaging", "box", "pieces", "pcs", "single", "unit", "units",
+    "total", "each", "piece", "no", "nos", "of", "qty", "count", "numbers",
+    "ps", "rating", "reviews",
+)
+
+RATING_NOISE_RE = re.compile(
+    r"\b\d(?:\.\d)?\s*\([\d,\s]+\)\b|\(\s*[\d,\s]+\s*\)\s*\d(?:\.\d)?|"
+    r"\b\d(?:\.\d)?\s*stars?\b")
+
+# numeric token -> it must contain a digit; model-carrying tokens almost always
+# do ("115", "l70", "m290", "lmk105"). Words without digits still count when
+# they are distinctive (e.g. "curvy") — handled by the caller via allowlist?
+# We keep words like "curvy" OUT of the stoplist so they survive extraction.
+
+
+MODEL_TOKEN_BRANDS = KNOWN_BRANDS | {
+    "fingers", "lapcare", "prodot", "tvs", "intel", "amd", "nvidia", "ob",
+}
+
+
+def extract_model_tokens(name: str) -> set[str]:
+    """Pull model-carrying tokens from a normalized product name.
+
+    Drops category/spec/adjective words (MODEL_TOKEN_STOP) AND brand names —
+    brand alone must never satisfy Gate 1 (e.g. 'prodot' on both sides of
+    two different ProDot mice). Keeps numeric or distinctive tokens like
+    '115', 'l70plus', 'curvy', 'm290', 'lmk105'.
+    """
+    raw = (name or "").lower()
+    raw = RATING_NOISE_RE.sub(" ", raw)
+    norm = normalize(raw)
+    toks = set(norm.split())
+    out = set()
+    for t in toks:
+        if t in MODEL_TOKEN_STOP or t in MODEL_TOKEN_BRANDS:
+            continue
+        if len(t) < 2:
+            continue
+        out.add(t)
+        # split letter+digit compounds ("l70" -> also "70") so hyphen/slug
+        # variants match ("L-70 Plus" normalizes to "l 70" -> token "70")
+        m = re.match(r"(.+?)(\d+)$", t)
+        if m and len(m.group(1)) >= 1 and len(m.group(2)) >= 1 and \
+                m.group(2)[0] != t[0]:
+            out.add(m.group(2))
+    return out
+
+
+def pack_signature(name: str) -> str:
+    """Pack/quantity signature from the RAW (un-normalized) name.
+
+    '1' -> single unit (no pack wording)
+    'n' -> explicit count (set of 4, 4 pact/pack, x2, 2-in-1, pack of 3)
+    'bundle' -> bundle/kit/combo wording (needs matching wording to pass)
+    """
+    low = (name or "").lower()
+    if not low:
+        return "1"
+    multi = re.search(
+        r"(?:set|pack|bundle)\s+of\s+(\d+)|"
+        r"\b(\d+)\s*[- ]?(?:pack|pcs?|packs|set|bundle|units?|in1|"
+        r"in\s*1|way|x)\b|"
+        r"\bx(\d+)\b|"
+        r"(\d+)\s*[-/]?\s*in[- ]1\b",
+        low)
+    if multi:
+        n = next((g for g in multi.groups() if g), "1")
+        try:
+            return str(int(n))
+        except ValueError:
+            return n
+    if re.search(r"\b(bundle|kit|combo|multipack|multi[- ]?pack|twin\s*pack|"
+                 r"pack\s*of\s*two)\b", low):
+        return "bundle"
+    return "1"
+
+
+FORM_DESKTOP = {
+    "desktop", "tower", "sff", "usff", "workstation",
+    "mini computer", "compact computer",
+}
+FORM_LAPTOP = {
+    "laptop", "notebook", "ultrabook", "netbook", "chromebook", "aspire",
+    "x360", "spectre", "thinkpad", "elitebook", "probook", "vivobook",
+    "zenbook", "macbook", "macbookair", "macbookpro", "surface", "tablet",
+    "2in1", "2-in-1", "convertible",
+}
+FORM_LAPTOP_LINK = {
+    "thin-light-laptop", "laptop/p", "notebook/p", "-laptop-", "ultrabook",
+}
+
+
+def form_factor(name: str, link: str = "") -> str:
+    """Classify a product as 'desktop' or 'laptop' ('' if unknown).
+
+    Uses strong, non-generic signals on name text plus the page/slug when the
+    name text is truncated (Flipkart titles are cut before the word 'laptop').
+    If signals for BOTH form factors are present (e.g. "compatible with
+    desktop and laptop"), returns '' so the gate stays silent. Only used to
+    REJECT desktop-vs-laptop mismatches — never to accept."""
+    low = (name or "").lower() + " " + (link or "").lower()
+    is_desk = any(w in low for w in FORM_DESKTOP)
+    link_low = (link or "").lower()
+    is_lap = any(w in low for w in FORM_LAPTOP) or any(w in link_low for w in FORM_LAPTOP_LINK)
+    if is_desk and is_lap:
+        return ""
+    if is_lap:
+        return "laptop"
+    if is_desk:
+        return "desktop"
+    return ""
+
+
+def gates_pass(gem_text: str, flip_name: str,
+               cos: float = None, threshold: float = 0.6,
+               gem_link: str = "", flip_link: str = "") -> dict:
+    """Apply Gate1 (model-token overlap) + Gate2 (pack consistency) +
+    Gate3 (form factor — desktop vs laptop must agree).
+
+    Returns {'pass': bool, 'model': bool, 'pack': bool, 'why': str} so
+    rejections are explainable even when cosine clears the threshold."""
+    gem_norm = normalize(gem_text or "")
+    flip_norm = normalize(flip_name or "")
+    gem_toks = extract_model_tokens(gem_text)
+    flip_toks = extract_model_tokens(flip_name)
+
+    model_ok = bool(gem_toks & flip_toks)
+    gem_pack = pack_signature(gem_text)
+    flip_pack = pack_signature(flip_name)
+    pack_ok = (gem_pack == flip_pack)
+
+    gf = form_factor(gem_text, gem_link or "")
+    ff = form_factor(flip_name, flip_link or "")
+    form_ok = (not gf or not ff) or (gf == ff)
+
+    score_ok = cos is None or cos >= threshold
+
+    why = []
+    if not score_ok:
+        why.append(f"cosine {cos:.3f} < {threshold}")
+    if not model_ok:
+        why.append(f"no model token overlap ({gem_toks or '-'} vs {flip_toks or '-'})")
+    if not pack_ok:
+        why.append(f"pack mismatch (gem={gem_pack} vs fk={flip_pack})")
+    if not form_ok:
+        why.append(f"form factor mismatch (gem={gf} vs fk={ff})")
+    return {
+        "pass": score_ok and model_ok and pack_ok and form_ok,
+        "model": model_ok,
+        "pack": pack_ok,
+        "form": form_ok,
+        "gem_form": gf or "",
+        "fk_form": ff or "",
+        "score_ok": score_ok,
+        "gem_tokens": sorted(gem_toks),
+        "fk_tokens": sorted(flip_toks),
+        "gem_pack": gem_pack,
+        "fk_pack": flip_pack,
+        "why": "; ".join(why) or "accept",
+    }
+
+
+# ---------------------------------------------------------------------------
+# v2 embedding scoring (sentence-transformers, all-MiniLM-L6-v2)
+# Loaded once at module level per spec; cosine in 0-1 scale, NOT 0-100.
+# ---------------------------------------------------------------------------
+_MODEL = None
+
+
+def get_model():
+    global _MODEL
+    if _MODEL is None:
+        from sentence_transformers import SentenceTransformer
+        _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return _MODEL
+
+
+def embed(texts: list[str]):
+    """Encode a batch of texts -> dense vectors (module-level model reused)."""
+    model = get_model()
+    return model.encode([t or "" for t in texts], normalize_embeddings=True)
+
+
+def cos_score(texts_a: list[str], texts_b: list[str]) -> list[float]:
+    """Cosine similarity (0-1) between normalized embeddings of two batches.
+
+    Returns one similarity per (texts_a[i], texts_b[i]) pair."""
+    from sentence_transformers.util import cos_sim
+    if not texts_a or not texts_b or len(texts_a) != len(texts_b):
+        return []
+    va = embed(texts_a)
+    vb = embed(texts_b)
+    return [float(cos_sim(a, b)[0][0]) for a, b in zip(va, vb)]
 
 
 def load_products(con):
