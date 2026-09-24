@@ -7,3 +7,4 @@ cache/*
 debug_html/
 .venv/
 venv/
+RAW/
