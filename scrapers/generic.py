@@ -41,7 +41,9 @@ def _meta_content(soup: BeautifulSoup, prop: str) -> str:
 
 
 def scrape(url: str, *, session: Optional[requests.Session] = None) -> CandidateResult:
-    domain = urlparse(url).netloc.replace("www.", "")
+    # removeprefix, not replace: str.replace("www.", "") also strips a
+    # mid-host occurrence ("awww.com" -> "a.com").
+    domain = urlparse(url).netloc.lower().removeprefix("www.")
     sess = session or requests.Session()
 
     try:

@@ -18,6 +18,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scrapers import flipkart, amazon, generic  # noqa: E402
+from scrapers.base import parse_indian_price  # noqa: E402
+
+
+# --- parse_indian_price (base) ------------------------------------------------------------
+
+def test_parse_indian_price_rupee_forms():
+    assert parse_indian_price("₹1,299") == "1299"
+    assert parse_indian_price("₹1,299.00") == "1299.00"
+    assert parse_indian_price("₹1,499-₹1,999") == "1499"
+
+
+def test_parse_indian_price_comma_grouped_without_rupee():
+    assert parse_indian_price("1,499.00") == "1499.00"
+
+
+def test_parse_indian_price_does_not_read_spec_digits_as_price():
+    # Live bug: bare \d+ fallback read "3" from "i3" when the price
+    # selector drifted and code fell back to full card text.
+    assert parse_indian_price("Intel Core i3 1215U 16GB RAM") is None
+    assert parse_indian_price("16GB 512GB SSD") is None
+
+
+def test_parse_indian_price_empty_and_none():
+    assert parse_indian_price("") is None
+    assert parse_indian_price(None) is None
 
 
 # --- Flipkart --------------------------------------------------------------------
@@ -150,6 +175,12 @@ def test_generic_scrape_handles_fetch_error():
     assert result.structured_fields is None
     assert result.raw_page_text is None
     assert "boom" in result.fetch_error
+
+
+def test_generic_scrape_domain_strips_single_www_prefix_only():
+    # str.replace("www.", "") also strips mid-host: "awww.com" -> "a.com".
+    result = generic.scrape("https://www.awww.com/x", session=_FakeSession(GENERIC_MOCK_HTML))
+    assert result.source_domain == "awww.com"
 
 
 if __name__ == "__main__":

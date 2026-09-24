@@ -37,13 +37,18 @@ def parse_indian_price(text: Optional[str]) -> Optional[str]:
       ₹1,299        -> "1299"
       ₹1,299.00     -> "1299.00"   (digits-only would give 129900 — the bug)
       ₹1,499-₹1,999 -> "1499"      (range: first amount)
-      1,499.00      -> "1499.00"   (no rupee sign)
+      1,499.00      -> "1499.00"   (no rupee sign, but comma-grouped)
+
+    The no-rupee fallback only accepts comma-grouped amounts, never a bare
+    digit run: "Intel Core i3 1215U" used to parse as price "3" (spec digits
+    read as money when the price selector drifted). A bare unformatted
+    number with no ₹ anywhere in the card is not recognized — returning
+    None (candidate dropped / falls back to full card text) beats returning
+    a wrong price.
     """
     if not text:
         return None
-    m = re.search(r"₹\s*([\d,]+(?:\.\d+)?)", text) or re.search(
-        r"(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)", text
-    )
+    m = re.search(r"₹\s*([\d,]+(?:\.\d+)?)", text) or re.search(r"\b(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?)\b", text)
     return m.group(1).replace(",", "") if m else None
 
 

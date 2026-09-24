@@ -328,7 +328,7 @@ Respond with ONLY a JSON object with exactly these keys:
 - "confidence": a number from 0 to 1
 - "reason": one short sentence
 - "extracted_title": the title you actually used
-- "extracted_price": the numeric price you actually used, or null
+- "extracted_price": the numeric price you actually used (the selling price, never MRP unless MRP is the only price), or null
 - "extraction_source": "scraper" if you trusted the parsed fields, "llm_raw_read" if you had to read raw_page_text yourself
 
 No markdown fences, no other text."""

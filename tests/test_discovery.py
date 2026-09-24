@@ -83,6 +83,26 @@ def test_parse_result_urls_handles_h3_style():
     assert "https://www.reliancedigital.in/logitech-m650" in urls
 
 
+def test_parse_result_urls_handles_searxng_h3_wraps_a():
+    # SearXNG shape: <h3><a href=...>title</a></h3> (opposite of Google's
+    # <a><h3>). Live bug 2026-09-24: parser used find_parent("a") only and
+    # extracted ZERO links from working SearXNG instances.
+    html = """
+    <html><body>
+    <article class="result result-default">
+      <a class="url_header" href="https://www.croma.com/product/p/1"><div class="url_wrapper">croma.com</div></a>
+      <h3><a href="https://www.croma.com/product/p/1">Croma <span class="highlight">Mouse</span></a></h3>
+    </article>
+    <article class="result result-default">
+      <h3><a href="https://www.snapdeal.com/product/x">Snapdeal Mouse</a></h3>
+    </article>
+    </body></html>
+    """
+    urls = discovery._parse_result_urls(html)
+    assert "https://www.croma.com/product/p/1" in urls
+    assert "https://www.snapdeal.com/product/x" in urls
+
+
 # --- discover_candidates: filtering ------------------------------------------------
 
 def test_discover_candidates_strict_mode_keeps_only_allowed_domains():

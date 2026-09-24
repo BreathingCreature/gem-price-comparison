@@ -73,8 +73,12 @@ MATCH_CONFIDENCE_THRESHOLD = float(os.getenv("MATCH_CONFIDENCE_THRESHOLD", "0.75
 # scraped as "39.99 INR" passed LLM verify at 95% and was crowned cheapest
 # vs a ₹2,725 GeM listing — prompt-level price-sanity instructions alone
 # are not enough.
-PRICE_SANITY_LOW_RATIO = 0.15   # below 15% of GeM price → implausible
-PRICE_SANITY_HIGH_RATIO = 5.0   # above 5x GeM price → implausible
+PRICE_SANITY_LOW_RATIO = 0.15   # below 15% of GeM price -> implausible
+PRICE_SANITY_HIGH_RATIO = 5.0   # above 5x GeM price -> implausible
+# Companion gate (matcher): a candidate whose scraper reports an explicit
+# non-INR currency is rejected even if the number falls inside that band —
+# numeric-band checks alone cannot catch USD/EUR values that happen to
+# overlap the rupee range (e.g. $300 vs GeM ₹10,000).
 KNOWN_MARKETPLACE_DOMAINS = ["amazon.in", "flipkart.com"]
 
 REQUEST_TIMEOUT_SECONDS = 15

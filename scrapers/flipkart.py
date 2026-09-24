@@ -38,7 +38,9 @@ _BLOCK_PHRASES = ["flipkart recaptcha"]
 
 
 def _load_search_page(driver, query: str, page: int = 1) -> str | None:
+    from selenium.common.exceptions import TimeoutException
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
 
     url = f"https://www.flipkart.com/search?q={quote_plus(query)}&page={page}"
     try:
@@ -51,6 +53,16 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
             query, page, type(e).__name__, str(e)[:120],
         )
         time.sleep(random.uniform(4.0, 6.0))
+
+    # Page 2+ especially renders its shell first and fills cards via JS —
+    # reading too early gave "no cards parsed" on live runs. Wait for a
+    # reasonable number of product links before the scroll pass.
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[data-id], a[href*='/p/']")) >= 5
+        )
+    except TimeoutException:
+        logger.info("flipkart cards for %r p%d not rendered after wait — parsing whatever is present.", query, page)
 
     time.sleep(random.uniform(2.0, 3.0))  # initial render
     if detect_block(driver, _BLOCK_PHRASES):
@@ -150,6 +162,28 @@ def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrap
                 break
 
             cards = parse_cards_from_html(html)
+
+            # Lazy-load miss on page 2+ (seen live): one reload + re-wait
+            # before giving up. Page-1 results are already in hand, so a
+            # second failure just stops pagination as before.
+            if not cards and page >= 2:
+                logger.info("Flipkart page %d for %r: zero cards — reloading once (lazy-load miss).", page, query)
+                time.sleep(random.uniform(1.5, 2.5))
+                html = _load_search_page(driver, query, page)
+                if html is None:
+                    # Reload hit CAPTCHA — previously fell through as
+                    # "no cards parsed" with blocked=False, reporting a
+                    # scrape failure as a clean empty search.
+                    blocked = True
+                    debug_path = DEBUG_DIR / f"flipkart_block_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
+                    try:
+                        debug_path.write_text(driver.page_source, encoding="utf-8")
+                        logger.warning("Flipkart blocked/CAPTCHA on %r page %d reload — stopping, no bypass. Saved %s", query, page, debug_path)
+                    except Exception:
+                        logger.warning("Flipkart blocked/CAPTCHA on %r page %d reload — stopping, no bypass.", query, page)
+                    break
+                cards = parse_cards_from_html(html)
+
             pages_scraped += 1
             if not cards:
                 logger.info("Flipkart page %d for %r: no cards parsed (selectors may have drifted).", page, query)

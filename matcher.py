@@ -17,6 +17,13 @@ from dataclasses import dataclass, field
 from config import MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
 from llm_client import verify_or_extract
 
+# Currencies that count as "same money as GeM". Empty/missing = unknown =
+# allowed through (Amazon/Flipkart always tag INR; generic scrapes the page's
+# own og:price:currency). Explicit non-INR is a hard reject: a USD price that
+# happens to fall inside the numeric sanity band would otherwise pass —
+# $300 vs GeM ₹10,000 sits inside [1,500, 50,000].
+_INR_CURRENCIES = {"", "INR", "RS", "₹", "RUPEES", "INR RUPEE", "INR RUPEES"}
+
 
 @dataclass
 class MatchBatchResult:
@@ -50,6 +57,25 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
         ):
             logger.info("skipping %s — fetch failed (%s), no evidence to verify against.", url, candidate_dict.get("fetch_error"))
             skipped.append(url)
+            continue
+        # Currency hard-gate BEFORE burning an LLM call: explicit non-INR
+        # (e.g. generic scrape of a .com page tagged USD) can never confirm,
+        # even if its numeric price falls inside the sanity band below.
+        sf = candidate_dict.get("structured_fields") or {}
+        currency = str(sf.get("currency") or "").strip().upper() if hasattr(sf, "get") else ""
+        if currency not in _INR_CURRENCIES:
+            logger.warning("currency gate rejected %s: %s is not INR — not sending to LLM.", url, currency)
+            all_decisions.append(
+                {
+                    "candidate_url": url,
+                    "source_domain": candidate_dict.get("source_domain"),
+                    "is_match": False,
+                    "confidence": 0.0,
+                    "reason": f"[hard-rejected: currency {currency} is not INR]",
+                    "price_used": None,
+                    "extraction_source": "scraper",
+                }
+            )
             continue
         try:
             decision = verify_or_extract(normalized, candidate_dict, client=client)
@@ -87,8 +113,22 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
                     PRICE_SANITY_HIGH_RATIO,
                 )
 
-    confirmed = [d for d in all_decisions if d["is_match"] and d["confidence"] >= MATCH_CONFIDENCE_THRESHOLD]
-    confirmed.sort(key=lambda d: d["price_used"] if d["price_used"] is not None else float("inf"))
+    # A match with no price is NOT confirmable — it can't enter cheapest /
+    # savings arithmetic, and silently listing it made "matches" disagree
+    # with "comparison". Keep the decision in all_decisions for the trace,
+    # demote the URL to skipped so it reads as incomplete, not as found.
+    confirmed = []
+    for d in all_decisions:
+        if not (d["is_match"] and d["confidence"] >= MATCH_CONFIDENCE_THRESHOLD):
+            continue
+        if d.get("price_used") is None:
+            reason = d.get("reason") or ""
+            d["reason"] = f"{reason} [demoted: match confirmed but no price extracted]".strip()
+            skipped.append(d.get("candidate_url", "<unknown url>"))
+            logger.warning("demoting match at %s — confirmed at %.0f%% but price_used is null.", d.get("candidate_url", "?"), d["confidence"] * 100)
+            continue
+        confirmed.append(d)
+    confirmed.sort(key=lambda d: d["price_used"])
 
     return MatchBatchResult(all_decisions=all_decisions, confirmed_matches=confirmed, skipped=skipped)
 

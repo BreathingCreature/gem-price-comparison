@@ -37,6 +37,11 @@ def print_result(gem_url: str, result: dict) -> None:
     print(f"URL      : {gem_url}")
     print()
 
+    for warning in result.get("warnings") or []:
+        print(f"WARNING: {warning}")
+    if result.get("warnings"):
+        print()
+
     if result.get("from_cache"):
         print("(served from cache — use --refresh to force a live re-check)")
         print()
@@ -91,6 +96,20 @@ def print_result(gem_url: str, result: dict) -> None:
     if skipped:
         print()
         print(f"Candidates skipped (no evidence or LLM error): {len(skipped)}")
+        # A skip on a domain means verify never finished there — without
+        # naming them, the user can't tell which "not found" verdicts (or
+        # absent matches) are actually incomplete.
+        from urllib.parse import urlparse
+
+        skipped_doms = sorted(
+            {
+                urlparse(u).netloc.lower().removeprefix("www.")
+                for u in skipped
+                if isinstance(u, str) and u.startswith("http") and urlparse(u).netloc
+            }
+        )
+        if skipped_doms:
+            print("  on: " + ", ".join(skipped_doms))
 
     trace_id = result.get("trace_id")
     if trace_id:

@@ -233,6 +233,19 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
             break  # page 1 was fine, a later page failed → keep what we have
 
         cards = parse_cards_from_html(html)
+
+        # Zero-card pages are sometimes probe fatigue, not a bot wall
+        # (seen live: same query succeeds on a second fetch ~50% of the
+        # time). One delayed retry before declaring the fast path
+        # inconclusive — cheaper than spinning up Selenium.
+        if cards == [] and not _genuine_no_results(html):
+            time.sleep(random.uniform(2.0, 3.5))
+            retry_html = _fetch_curl_cffi_page(query, page)
+            if retry_html is not None:
+                retry_cards = parse_cards_from_html(retry_html)
+                if retry_cards or _genuine_no_results(retry_html):
+                    html, cards = retry_html, retry_cards
+
         pages_scraped += 1
 
         if not cards:

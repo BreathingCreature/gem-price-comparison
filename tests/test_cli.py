@@ -84,7 +84,9 @@ def test_print_result_shows_cache_notice():
 
 def test_print_result_handles_match_with_no_price():
     # a confirmed match where the LLM couldn't pin down a price shouldn't
-    # crash formatting or be wrongly marked "cheapest"
+    # crash formatting or be wrongly marked "cheapest" (matcher now demotes
+    # these to skipped for live runs, but cached/legacy results can still
+    # carry one)
     result = {
         "gem_product": {"title": "X", "gem_price": 100.0, "gem_price_type": "fixed"},
         "matches": [{"source_domain": "brand.example.com", "price_used": None, "confidence": 0.8, "candidate_url": "https://brand.example.com/x"}],
@@ -93,8 +95,35 @@ def test_print_result_handles_match_with_no_price():
         "trace_id": "jkl012",
     }
     output = _capture(cli.print_result, "https://mkp.gem.gov.in/x", result)
-    assert "\u2014" in output  # the em-dash placeholder for a missing price
+    assert "—" in output  # the em-dash placeholder for a missing price
     assert "* =" not in output  # nothing to mark as cheapest when no price exists
+
+
+def test_print_result_shows_warnings():
+    result = {
+        "gem_product": {"title": "X", "gem_price": None, "gem_price_type": "unknown"},
+        "matches": [],
+        "not_found_on": [],
+        "warnings": ["GeM price not extracted — price-sanity gate is OFF and savings comparison unavailable."],
+        "from_cache": False,
+        "trace_id": "warn01",
+    }
+    output = _capture(cli.print_result, "https://mkp.gem.gov.in/x", result)
+    assert "WARNING" in output
+    assert "sanity gate" in output
+
+
+def test_print_result_shows_skipped_domains():
+    result = {
+        "gem_product": {"title": "X", "gem_price": 100.0, "gem_price_type": "fixed"},
+        "matches": [],
+        "not_found_on": [],
+        "skipped": ["https://www.amazon.in/dp/B0SKIP"],
+        "from_cache": False,
+        "trace_id": "skip01",
+    }
+    output = _capture(cli.print_result, "https://mkp.gem.gov.in/x", result)
+    assert "amazon.in" in output  # which domain(s) the skips hit, not just a count
 
 
 if __name__ == "__main__":

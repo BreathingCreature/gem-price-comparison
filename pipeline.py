@@ -5,8 +5,8 @@ run_pipeline(gem_url) is the one function everything else in this project
 exists to support: GeM URL in, price comparison out. Sequence:
 
   extract (1) -> normalize (2) -> [flipkart.search + amazon.search (4)] and
-  [discover (3) -> generic.scrape (4)] in parallel-ish -> match (5) ->
-  if zero confirmed matches: expand_search (2) -> retry discovery+generic
+  [discover (3) -> generic.scrape (4)] -> match (5) -> if zero confirmed
+  matches: expand_search (2) -> retry direct searches + discovery + generic
   once, re-match -> cache + trace -> return.
 
 Every external collaborator (extract_fn, normalize_fn, the two search
@@ -17,11 +17,10 @@ logic (sequencing, the retry trigger, cache, trace shape, not_found_on
 computation) testable in isolation from whether the real scrapers/LLM
 calls work, the same way the previous parts were tested independently.
 
-Scope note on the retry step (your point 3, from early on): it only
-re-runs discovery + generic scraping with the LLM's suggested queries/
-domains, NOT a second Flipkart/Amazon search. That matches what you
-actually asked for — surfacing sites the dedicated scrapers don't cover —
-rather than just re-asking the same two marketplaces differently.
+Scope note on the retry step: expand_search's new_queries feed BOTH the
+direct Flipkart/Amazon scrapers (not just discovery — a bad primary
+phrasing used to never get the LLM's own alternate tried on the working
+marketplaces) and discovery+generic for sites those scrapers don't cover.
 
 Scope note on the trace: it captures structured input/output at each
 stage (queries used, candidates found, match decisions with their
@@ -36,11 +35,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
 import gem_extractor
@@ -52,6 +53,12 @@ from scrapers import amazon as amazon_scraper
 from scrapers import generic as generic_scraper
 
 MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped per run
+# A direct search is "enough" once it has this many candidates — stop trying
+# further normalized queries so a 3-query normalize doesn't cost 3 Selenium
+# runs when the first query already returned a full page of results.
+DIRECT_SEARCH_MIN_CANDIDATES = 5
+# Trace files are ~100-200KB each and grow forever otherwise.
+TRACE_MAX_FILES = 200
 
 
 # --- candidate helpers ----------------------------------------------------------
@@ -135,10 +142,14 @@ def _cache_get(gem_url: str) -> Optional[dict]:
 def _cache_set(gem_url: str, result: dict) -> None:
     path = _cache_path(gem_url)
     try:
-        path.write_text(
+        # tmp + os.replace: a crash mid-write otherwise leaves a truncated
+        # JSON that every later read has to discard as a miss anyway.
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(
             json.dumps({"cached_at": time.time(), "result": result}, ensure_ascii=False),
             encoding="utf-8",
         )
+        os.replace(tmp, path)
     except OSError as e:
         logger.warning("Cache write failed for %s: %s — continuing without caching this result.", gem_url, e)
 
@@ -152,10 +163,52 @@ def _write_trace(trace: dict) -> str:
         path.write_text(json.dumps(trace, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
         logger.warning("Trace write failed for %s: %s — pipeline result is still valid, just unlogged.", trace_id, e)
+        return trace_id
+    # Rotate: keep the newest TRACE_MAX_FILES traces, delete the rest.
+    # Unbounded growth was ~100-200KB per live run forever.
+    try:
+        traces = sorted(TRACES_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in traces[TRACE_MAX_FILES:]:
+            old.unlink(missing_ok=True)
+    except OSError as e:
+        logger.debug("Trace rotation skipped: %s", e)
     return trace_id
 
 
 # --- helpers ------------------------------------------------------------------------
+
+def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIRECT_SEARCH_MIN_CANDIDATES):
+    """Run a direct marketplace search over normalized queries until one
+    returns >= min_candidates (or queries run out).
+
+    Previously only queries[0] ever reached Amazon/Flipkart — secondary
+    normalized queries fed discovery only, and the retry used
+    expand_search's new_queries[0], so a bad primary phrasing meant the
+    two working marketplaces were searched once, wrong, and never retried
+    with the LLM's own alternate phrasing. The early-exit keeps a 3-query
+    normalize from costing 3 Selenium runs when query 1 already returned
+    a full page.
+
+    Returns (results, all_candidates): one SearchScrapeResult per query
+    actually run, and the cross-query URL-deduped candidate list."""
+    results = []
+    seen: set[str] = set()
+    all_candidates = []
+    for q in queries:
+        r = search_fn(q)
+        results.append(r)
+        for c in getattr(r, "candidates", None) or []:
+            d = _cand_dict(c)
+            key = (d.get("url") or "").split("#")[0].rstrip("/")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            all_candidates.append(c)
+        if len(all_candidates) >= min_candidates:
+            break
+    return results, all_candidates
+
 
 def _run_discovery_and_generic_scrape(
     queries: list[str],
@@ -166,13 +219,20 @@ def _run_discovery_and_generic_scrape(
 ) -> tuple[list, list]:
     """Returns (discovery_results, generic_candidates)."""
     discovery_results = discover_fn(queries, allowed_domains)
+    dicts = [dr.to_dict() if hasattr(dr, "to_dict") else dr for dr in discovery_results]
+
+    # Round-robin across queries before applying the URL cap: first-come
+    # order let query1's results starve query2-3 entirely out of the
+    # MAX_GENERIC_CANDIDATES budget.
+    lanes = [list(d.get("filtered_urls", [])) for d in dicts]
     urls: list[str] = []
-    for dr in discovery_results:
-        d = dr.to_dict() if hasattr(dr, "to_dict") else dr
-        for u in d.get("filtered_urls", []):
+    while any(lanes) and len(urls) < MAX_GENERIC_CANDIDATES:
+        for lane in lanes:
+            if not lane or len(urls) >= MAX_GENERIC_CANDIDATES:
+                continue
+            u = lane.pop(0)
             if u not in urls:
                 urls.append(u)
-    urls = urls[:MAX_GENERIC_CANDIDATES]
 
     generic_candidates = []
     for url in urls:
@@ -227,19 +287,20 @@ def run_pipeline(
     if not queries:
         fallback = (normalized.get("canonical_name") or gem_product_dict.get("title") or "").strip()
         queries = [fallback] if fallback else [gem_product_dict.get("category_slug") or "product"]
-    primary_query = queries[0]
 
     # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
-    flipkart_result = flipkart_search_fn(primary_query)
-    amazon_result = amazon_search_fn(primary_query)
-    trace["stages"]["flipkart_search"] = flipkart_result.to_dict() if hasattr(flipkart_result, "to_dict") else flipkart_result
-    trace["stages"]["amazon_search"] = amazon_result.to_dict() if hasattr(amazon_result, "to_dict") else amazon_result
+    # Every normalized query is eligible (early-exit once one query has
+    # enough candidates), not just queries[0].
+    flipkart_results, flipkart_candidates = _search_direct(flipkart_search_fn, queries)
+    amazon_results, amazon_candidates = _search_direct(amazon_search_fn, queries)
+    trace["stages"]["flipkart_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in flipkart_results]
+    trace["stages"]["amazon_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in amazon_results]
 
     # Search health decides who's honestly "searched" vs who failed to scrape.
     search_issues: list[str] = []
     tried_domains: set = set()
-    _record_search_health(flipkart_result, tried_domains, search_issues)
-    _record_search_health(amazon_result, tried_domains, search_issues)
+    for r in flipkart_results + amazon_results:
+        _record_search_health(r, tried_domains, search_issues)
 
     # --- stage 3/4 first pass: open discovery + generic scrape for everything else ---
     discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
@@ -262,7 +323,7 @@ def run_pipeline(
             tried_domains.add(d["source_domain"])
 
     all_candidates = _dedup(
-        [c for c in list(flipkart_result.candidates) + list(amazon_result.candidates) + generic_candidates if _usable(c)]
+        [c for c in list(flipkart_candidates) + list(amazon_candidates) + generic_candidates if _usable(c)]
     )
 
     # --- stage 5: match ---------------------------------------------------------------
@@ -288,21 +349,27 @@ def run_pipeline(
         retry_trace["expansion"] = expansion
 
         retry_queries = _str_list(expansion.get("new_queries"))
-        retry_domains = _str_list(expansion.get("suggested_domains")) or None  # None -> open discovery
+        # Strict-mode Indian filter: the prompt asks for Indian domains but
+        # doesn't enforce it — a foreign suggestion (bestbuy.com) must not
+        # reopen open-mode .com discovery.
+        retry_domains = [d for d in _str_list(expansion.get("suggested_domains")) if discovery._is_indian_retail(d)] or None  # None -> open discovery
 
         if retry_queries:
-            # Re-search the two DIRECT scrapers with the expanded query —
+            # Re-search the two DIRECT scrapers with the expanded queries —
             # expansion used to feed only the (dead) Google discovery path,
             # so a bad primary query on the working marketplaces was never
-            # retried with the LLM's better phrasing.
-            retry_flipkart = flipkart_search_fn(retry_queries[0])
-            retry_amazon = amazon_search_fn(retry_queries[0])
-            trace["stages"]["flipkart_search_retry"] = (
-                retry_flipkart.to_dict() if hasattr(retry_flipkart, "to_dict") else retry_flipkart
-            )
-            trace["stages"]["amazon_search_retry"] = retry_amazon.to_dict() if hasattr(retry_amazon, "to_dict") else retry_amazon
-            _record_search_health(retry_flipkart, tried_domains, search_issues)
-            _record_search_health(retry_amazon, tried_domains, search_issues)
+            # retried with the LLM's better phrasing. All retry_queries are
+            # eligible, not just [0].
+            retry_flipkart_results, retry_flipkart_candidates = _search_direct(flipkart_search_fn, retry_queries)
+            retry_amazon_results, retry_amazon_candidates = _search_direct(amazon_search_fn, retry_queries)
+            trace["stages"]["flipkart_search_retry"] = [
+                r.to_dict() if hasattr(r, "to_dict") else r for r in retry_flipkart_results
+            ]
+            trace["stages"]["amazon_search_retry"] = [
+                r.to_dict() if hasattr(r, "to_dict") else r for r in retry_amazon_results
+            ]
+            for r in retry_flipkart_results + retry_amazon_results:
+                _record_search_health(r, tried_domains, search_issues)
 
             retry_discovery_results, retry_generic_candidates = _run_discovery_and_generic_scrape(
                 retry_queries, retry_domains, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
@@ -321,7 +388,7 @@ def run_pipeline(
             # retry's new ones — previously retry discarded pass-1 candidates
             # entirely.
             retry_pool = _dedup(
-                [c for c in list(all_candidates) + list(retry_flipkart.candidates) + list(retry_amazon.candidates)
+                [c for c in list(all_candidates) + list(retry_flipkart_candidates) + list(retry_amazon_candidates)
                  + retry_generic_candidates if _usable(c)]
             )
             retry_match_result = match_fn(normalized, retry_pool)
@@ -335,10 +402,35 @@ def run_pipeline(
     trace["stages"]["retry"] = retry_trace
 
     matched_domains = {m.get("source_domain") for m in confirmed}
-    not_found_on = sorted(tried_domains - matched_domains)
+
+    # not_found_on is a verdict ("we searched cleanly, nothing matched") —
+    # a domain whose candidates were all SKIPPED (verify never returned a
+    # decision: LLM outage, null-price demotion) never got that verdict, so
+    # it must not appear here. Report it as a search issue instead.
+    skipped = list(final_match_result.skipped) if hasattr(final_match_result, "skipped") else []
+    skipped_domains: set = set()
+    for u in skipped:
+        if isinstance(u, str) and u.startswith("http"):
+            d = urlparse(u).netloc.lower().removeprefix("www.")
+            if d:
+                skipped_domains.add(d)
+    verify_incomplete = sorted((tried_domains - matched_domains) & skipped_domains)
+    not_found_on = sorted(tried_domains - matched_domains - skipped_domains)
+    for d in verify_incomplete:
+        search_issues.append(f"{d}: candidates skipped (verify incomplete) — not counted as 'not found'")
+
+    # Dedupe while preserving order — retry paths can append the same
+    # domain's issue twice.
+    seen_issues: set = set()
+    search_issues = [i for i in search_issues if not (i in seen_issues or seen_issues.add(i))]
 
     # --- comparison arithmetic — the actual point of the project ----------------------
     gem_price = gem_product_dict.get("gem_price")
+    warnings: list[str] = []
+    if gem_price is None:
+        warnings.append(
+            "GeM price not extracted — price-sanity gate is OFF and savings comparison unavailable."
+        )
     for m in confirmed:
         price = m.get("price_used")
         if gem_price is not None and price is not None:
@@ -352,14 +444,13 @@ def run_pipeline(
         "savings_vs_gem": (gem_price - min(priced)) if (gem_price is not None and priced) else None,
     }
 
-    skipped = list(final_match_result.skipped) if hasattr(final_match_result, "skipped") else []
-
     result = {
         "gem_product": gem_product_dict,
         "matches": confirmed,
         "not_found_on": not_found_on,
         "search_issues": search_issues,
         "skipped": skipped,
+        "warnings": warnings,
         "comparison": comparison,
         "from_cache": False,
         "trace_id": trace_id,

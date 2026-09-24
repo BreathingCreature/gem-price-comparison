@@ -93,7 +93,11 @@ def test_match_candidates_sorts_confirmed_by_price_ascending():
     assert prices == [500.0, 999.0, 1500.0]
 
 
-def test_match_candidates_confirmed_with_no_price_sorts_last():
+def test_match_candidates_demotes_confirmed_without_price_to_skipped():
+    # A null-price "match" can't enter cheapest/savings arithmetic — it
+    # must not sit in confirmed_matches looking like a verdict. Decision is
+    # kept in all_decisions for the trace; URL moves to skipped so the
+    # pipeline reports the domain as verify-incomplete, not "not found".
     fake = _FakeClient(
         _decision_json(True, 0.9, None),  # matched but no price extracted
         _decision_json(True, 0.9, 800),
@@ -101,8 +105,43 @@ def test_match_candidates_confirmed_with_no_price_sorts_last():
     candidates = [_candidate("https://x.com/a"), _candidate("https://x.com/b")]
     result = matcher.match_candidates({"canonical_name": "Demo"}, candidates, client=fake)
 
-    prices = [d["price_used"] for d in result.confirmed_matches]
-    assert prices == [800.0, None]  # priced one first, priceless one last, not crashed/misordered
+    assert [d["price_used"] for d in result.confirmed_matches] == [800.0]
+    assert result.skipped == ["https://x.com/a"]
+    demoted = next(d for d in result.all_decisions if d["candidate_url"] == "https://x.com/a")
+    assert demoted["is_match"] is True  # LLM verdict preserved for the trace
+    assert "demoted" in (demoted.get("reason") or "")
+
+
+def test_match_candidates_hard_rejects_non_inr_currency_without_llm_call():
+    # Numeric sanity band alone can't catch USD/EUR that overlap the
+    # rupee range ($300 vs GeM ₹10,000 sits inside [1500, 50000]) —
+    # explicit non-INR currency from the scraper must hard-reject before
+    # any LLM call (fake has only ONE response queued: if the USD
+    # candidate reached verify, the fake would raise on a second call).
+    fake = _FakeClient(_decision_json(True, 0.95, 2550.0))
+    usd = {
+        "url": "https://brand.example.com/m650-us",
+        "source_domain": "brand.example.com",
+        "structured_fields": {"title": "M650", "price": 300.0, "currency": "USD"},
+        "raw_page_text": "",
+    }
+    inr = _candidate("https://x.com/inr")
+    normalized = {"canonical_name": "Logitech M650", "gem_price": 10000.0}
+    result = matcher.match_candidates(normalized, [usd, inr], client=fake)
+
+    rejected = next(d for d in result.all_decisions if d["candidate_url"] == usd["url"])
+    assert rejected["is_match"] is False
+    assert "USD" in (rejected.get("reason") or "")
+    assert [d["candidate_url"] for d in result.confirmed_matches] == ["https://x.com/inr"]
+
+
+def test_match_candidates_missing_currency_field_still_reaches_llm():
+    # Absence of a currency key (direct scrapers always tag INR; a raw
+    # scrape may have none) must NOT be treated as non-INR.
+    fake = _FakeClient(_decision_json(True, 0.9, 999))
+    c = _candidate("https://x.com/no-currency")  # structured_fields has no currency key
+    result = matcher.match_candidates({"canonical_name": "Demo"}, [c], client=fake)
+    assert len(result.confirmed_matches) == 1
 
 
 def test_match_candidates_price_sanity_gate_rejects_implausible_prices():

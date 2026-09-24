@@ -215,6 +215,177 @@ def test_retry_skipped_when_expand_search_has_no_new_queries():
     assert "amazon.in" in result["not_found_on"]
 
 
+# --- honesty: skipped vs not_found ------------------------------------------------------
+
+def test_skipped_domain_not_reported_as_not_found():
+    # Amazon search succeeded but EVERY candidate's verify was skipped
+    # (LLM outage). Previously the domain was listed under "Not found"
+    # — a verify failure dressed up as a shopping verdict.
+    url = "https://mkp.gem.gov.in/test/skipped-not-notfound/p-7-7-cat.html"
+
+    def amazon_search_fn(q):
+        return SearchScrapeResult(
+            source_domain="amazon.in",
+            query=q,
+            candidates=[
+                CandidateResult(
+                    source_domain="amazon.in",
+                    url="https://www.amazon.in/dp/B0SKIP",
+                    scraper_used="amazon",
+                    structured_fields={"title": "x", "price": 1.0, "currency": "INR"},
+                    raw_page_text="x",
+                )
+            ],
+        )
+
+    def match_fn(normalized, candidates):
+        return MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=["https://www.amazon.in/dp/B0SKIP"])
+
+    result = pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=lambda q: SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[]),
+        amazon_search_fn=amazon_search_fn,
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=match_fn,
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert "amazon.in" not in result["not_found_on"]
+    assert "flipkart.com" in result["not_found_on"]  # clean empty search still honestly not-found
+    assert any("amazon.in" in i and "skipped" in i for i in result["search_issues"])
+
+
+def test_gem_price_missing_emits_warning():
+    url = "https://mkp.gem.gov.in/test/no-gem-price-warning/p-9-9-cat.html"
+
+    def extract_no_price(u):
+        p = _fake_gem_product(u)
+        p["gem_price"] = None
+        p["gem_price_type"] = "unknown"
+        return p
+
+    result = pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=extract_no_price, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=lambda q: SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[]),
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert any("sanity gate" in w.lower() for w in result["warnings"])
+
+
+# --- secondary normalized queries reach direct scrapers -----------------------------------
+
+def test_all_normalized_queries_reach_direct_scrapers():
+    # Previously only search_queries[0] hit Amazon/Flipkart — a bad primary
+    # phrasing meant the two working marketplaces were searched once, wrong.
+    url = "https://mkp.gem.gov.in/test/all-queries-direct/p-10-10-cat.html"
+    seen = {"flipkart": [], "amazon": []}
+
+    def normalize_multi(gp):
+        n = _fake_normalized()
+        n["search_queries"] = ["query one", "query two", "query three"]
+        return n
+
+    def fk(q):
+        seen["flipkart"].append(q)
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[])
+
+    def az(q):
+        seen["amazon"].append(q)
+        return SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[])
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=normalize_multi,
+        flipkart_search_fn=fk, amazon_search_fn=az,
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert seen["flipkart"] == ["query one", "query two", "query three"]
+    assert seen["amazon"] == ["query one", "query two", "query three"]
+
+
+def test_direct_search_stops_once_enough_candidates():
+    # Early-exit: a query that already returned >= DIRECT_SEARCH_MIN_CANDIDATES
+    # candidates must not trigger more (expensive) Selenium runs.
+    url = "https://mkp.gem.gov.in/test/stop-early/p-11-11-cat.html"
+    fk_calls = []
+
+    def normalize_multi(gp):
+        n = _fake_normalized()
+        n["search_queries"] = ["q1", "q2", "q3"]
+        return n
+
+    def fk(q):
+        fk_calls.append(q)
+        cands = [
+            CandidateResult(
+                source_domain="flipkart.com",
+                url=f"https://www.flipkart.com/item/p{i}",
+                scraper_used="flipkart",
+                structured_fields={"title": f"Item {i}", "price": 100.0 + i, "currency": "INR"},
+                raw_page_text="",
+            )
+            for i in range(pipeline.DIRECT_SEARCH_MIN_CANDIDATES)
+        ]
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=cands)
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=normalize_multi,
+        flipkart_search_fn=fk,
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert fk_calls == ["q1"]  # enough after first query — q2/q3 never searched
+
+
+def test_retry_filters_non_indian_suggested_domains():
+    # LLM prompt asks for Indian domains but doesn't enforce it —
+    # bestbuy.com must not reopen open-mode .com discovery.
+    url = "https://mkp.gem.gov.in/test/retry-indian-filter/p-12-12-cat.html"
+    discover_calls = []
+
+    def discover_fn(queries, allowed_domains):
+        discover_calls.append(allowed_domains)
+        return []
+
+    def expand_search_fn(normalized, tried_queries, tried_domains):
+        return {
+            "new_queries": ["alternate phrasing"],
+            "suggested_domains": ["bestbuy.com", "reliancedigital.in"],
+            "notes": "test",
+        }
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=lambda q: SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[]),
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=discover_fn,
+        generic_scrape_fn=lambda u: {"source_domain": "reliancedigital.in", "url": u, "scraper_used": "generic", "structured_fields": None, "raw_page_text": "x"},
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=expand_search_fn,
+    )
+
+    assert discover_calls[0] is None  # first pass: open discovery
+    assert discover_calls[-1] == ["reliancedigital.in"]  # retry: Indian suggestion kept, bestbuy dropped
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0
