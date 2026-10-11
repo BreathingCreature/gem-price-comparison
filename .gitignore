@@ -1,4 +1,5 @@
 .env
+AGENTS.md
 __pycache__/
 *.pyc
 traces/*.json
