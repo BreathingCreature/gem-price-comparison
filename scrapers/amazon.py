@@ -32,8 +32,8 @@ from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
 
-from config import logger
-from scrapers.base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
+from core.config import logger
+from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
 from scrapers.flipkart import DEBUG_DIR  # reuse the same debug-html folder
 
 _BLOCK_PHRASES = [

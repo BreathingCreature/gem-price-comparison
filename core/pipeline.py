@@ -43,11 +43,11 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
-import gem_extractor
-import llm_client
+from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
+from scrapers import gem as gem_extractor
+from llm import client as llm_client
 import discovery
-import matcher
+from llm import match as matcher
 from scrapers import flipkart as flipkart_scraper
 from scrapers import amazon as amazon_scraper
 from scrapers import generic as generic_scraper

@@ -14,8 +14,7 @@ import json
 import os
 import sys
 
-import config
-import pipeline
+from core import config, pipeline
 
 
 def format_price(value) -> str:

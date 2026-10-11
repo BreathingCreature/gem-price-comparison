@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gem_extractor import (  # noqa: E402
+from scrapers.gem import (  # noqa: E402
     classify_price,
     extract_gem_product,
     parse_gem_url,

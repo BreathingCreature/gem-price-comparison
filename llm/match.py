@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from config import MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
-from llm_client import verify_or_extract
+from core.config import MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
+from llm.client import verify_or_extract
 
 # Currencies that count as "same money as GeM". Empty/missing = unknown =
 # allowed through (Amazon/Flipkart always tag INR; generic scrapes the page's

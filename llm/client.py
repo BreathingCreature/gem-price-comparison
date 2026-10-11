@@ -34,7 +34,7 @@ import re
 import time
 from typing import Optional
 
-from config import (
+from core.config import (
     NVIDIA_BASE_URL,
     NVIDIA_MODELS,
     NVIDIA_MIN_SECONDS_BETWEEN_CALLS,

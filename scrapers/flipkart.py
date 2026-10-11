@@ -26,8 +26,8 @@ from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
 
-from config import CACHE_DIR, logger
-from scrapers.base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
+from core.config import CACHE_DIR, logger
+from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
 
 DEBUG_DIR = CACHE_DIR.parent / "debug_html"
 DEBUG_DIR.mkdir(exist_ok=True)

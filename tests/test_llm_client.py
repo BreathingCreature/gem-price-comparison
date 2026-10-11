@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import llm_client  # noqa: E402
+from llm import client as llm_client  # noqa: E402
 
 # Kill the rate-limit sleep for tests — otherwise every multi-call test adds
 # real wall-clock delay for no benefit.

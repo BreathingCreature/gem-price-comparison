@@ -25,9 +25,9 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
-from gem_extractor import classify_price
-from scrapers.base import CandidateResult
+from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
+from scrapers.gem import classify_price
+from scrapers._base import CandidateResult
 
 RAW_TEXT_CHAR_CAP = 5000  # keep what's fed to the LLM later to a sane size
 

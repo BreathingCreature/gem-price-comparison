@@ -16,9 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pipeline  # noqa: E402
-from scrapers.base import SearchScrapeResult, CandidateResult  # noqa: E402
-from matcher import MatchBatchResult  # noqa: E402
+from core import pipeline  # noqa: E402
+from scrapers._base import SearchScrapeResult, CandidateResult  # noqa: E402
+from llm.match import MatchBatchResult  # noqa: E402
 
 
 def _fake_gem_product(url):

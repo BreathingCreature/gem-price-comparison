@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scrapers import flipkart, amazon, generic  # noqa: E402
-from scrapers.base import parse_indian_price  # noqa: E402
+from scrapers._base import parse_indian_price  # noqa: E402
 
 
 # --- parse_indian_price (base) ------------------------------------------------------------

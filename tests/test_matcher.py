@@ -9,8 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import matcher  # noqa: E402
-import llm_client  # noqa: E402
+from llm import match as matcher  # noqa: E402
+from llm import client as llm_client  # noqa: E402
 
 matcher.MATCH_CONFIDENCE_THRESHOLD = 0.75  # deterministic regardless of .env
 llm_client.NVIDIA_MIN_SECONDS_BETWEEN_CALLS = 0.0  # don't actually wait between fake calls

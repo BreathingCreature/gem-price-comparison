@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import discovery  # noqa: E402
+from discovery import discover_candidates, discover_for_queries  # noqa: E402
 
 discovery.QUERY_DELAY_RANGE = (0.0, 0.0)  # no reason to actually wait in tests
 

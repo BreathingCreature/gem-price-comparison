@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
+from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
 
 # --- data contract -----------------------------------------------------------
 

@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
+from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
 
 GOOGLE_RESULTS_PER_QUERY = 20
 QUERY_DELAY_RANGE = (1.5, 2.5)  # polite delay between queries in one discover_candidates call
