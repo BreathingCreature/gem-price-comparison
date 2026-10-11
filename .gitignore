@@ -4,8 +4,8 @@ __pycache__/
 *.pyc
 traces/*.json
 cache/*
-!cache/.gitkeep
 debug_html/
 .venv/
 venv/
+.vscode/
 RAW/
