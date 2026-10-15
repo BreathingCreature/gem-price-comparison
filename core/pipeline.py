@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+from core import events
 from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
@@ -76,6 +77,35 @@ def _str_list(value) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(v).strip() for v in value if v is not None and str(v).strip()]
+
+
+def _brief(candidate) -> dict:
+    """The few fields of a candidate worth showing in a progress event."""
+    d = _cand_dict(candidate)
+    if not isinstance(d, dict):
+        return {}
+    fields = d.get("structured_fields")
+    if not isinstance(fields, dict):
+        fields = {}
+    return {
+        "title": fields.get("title"),
+        "price": fields.get("price"),
+        "url": d.get("url"),
+        "domain": d.get("source_domain"),
+        "error": d.get("fetch_error"),
+    }
+
+
+def _emit_finished(result: dict) -> None:
+    comparison = result.get("comparison") or {}
+    events.emit(
+        "run_finished",
+        from_cache=bool(result.get("from_cache")),
+        matches=len(result.get("matches") or []),
+        cheapest=comparison.get("cheapest_match_price"),
+        savings=comparison.get("savings_vs_gem"),
+        trace_id=result.get("trace_id"),
+    )
 
 
 def _usable(candidate) -> bool:
@@ -177,7 +207,7 @@ def _write_trace(trace: dict) -> str:
 
 # --- helpers ------------------------------------------------------------------------
 
-def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIRECT_SEARCH_MIN_CANDIDATES):
+def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIRECT_SEARCH_MIN_CANDIDATES, label: str = ""):
     """Run a direct marketplace search over normalized queries until one
     returns >= min_candidates (or queries run out).
 
@@ -195,8 +225,19 @@ def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIREC
     seen: set[str] = set()
     all_candidates = []
     for q in queries:
+        events.emit("search_started", marketplace=label, query=q)
         r = search_fn(q)
         results.append(r)
+        found = getattr(r, "candidates", None) or []
+        events.emit(
+            "search_finished",
+            marketplace=label,
+            query=q,
+            count=len(found),
+            blocked=bool(getattr(r, "blocked", False)),
+            error=getattr(r, "error", None),
+            candidates=[_brief(c) for c in found][:20],
+        )
         for c in getattr(r, "candidates", None) or []:
             d = _cand_dict(c)
             key = (d.get("url") or "").split("#")[0].rstrip("/")
@@ -234,10 +275,14 @@ def _run_discovery_and_generic_scrape(
             if u not in urls:
                 urls.append(u)
 
+    events.emit("discovery_finished", queries=list(queries), urls=urls)
     generic_candidates = []
     for url in urls:
+        events.emit("scrape_started", url=url)
         try:
-            generic_candidates.append(generic_scrape_fn(url))
+            scraped = generic_scrape_fn(url)
+            generic_candidates.append(scraped)
+            events.emit("scrape_finished", **_brief(scraped))
         except Exception as e:
             logger.warning("generic scrape raised for %s: %s: %s — skipping.", url, type(e).__name__, e)
 
@@ -246,7 +291,7 @@ def _run_discovery_and_generic_scrape(
 
 # --- main entry point --------------------------------------------------------------
 
-def run_pipeline(
+def _run_pipeline(
     gem_url: str,
     refresh: bool = False,
     *,
@@ -259,11 +304,14 @@ def run_pipeline(
     match_fn=matcher.match_candidates,
     expand_search_fn=llm_client.expand_search,
 ) -> dict:
+    events.emit("run_started", gem_url=gem_url, refresh=refresh)
     if not refresh:
         cached = _cache_get(gem_url)
         if cached is not None:
             result = dict(cached)
             result["from_cache"] = True
+            events.emit("cache_hit", gem_url=gem_url)
+            _emit_finished(result)
             return result
 
     trace_id = uuid.uuid4().hex[:16]
@@ -275,13 +323,33 @@ def run_pipeline(
     }
 
     # --- stage 1: extract -----------------------------------------------------------
+    events.emit("stage", name="extract", label="Reading the GeM product page")
     gem_product = extract_fn(gem_url)
     gem_product_dict = gem_product.to_dict() if hasattr(gem_product, "to_dict") else gem_product
     trace["stages"]["extraction"] = gem_product_dict
+    events.emit(
+        "gem_product",
+        title=gem_product_dict.get("title"),
+        price=gem_product_dict.get("gem_price"),
+        price_type=gem_product_dict.get("gem_price_type"),
+        brand=gem_product_dict.get("brand"),
+        model=gem_product_dict.get("model"),
+        category=gem_product_dict.get("category_slug"),
+        specs=gem_product_dict.get("specs") or {},
+    )
 
     # --- stage 2: normalize ----------------------------------------------------------
+    events.emit("stage", name="normalize", label="Working out what the product really is")
     normalized = normalize_fn(gem_product_dict)
     trace["stages"]["normalization"] = normalized
+    events.emit(
+        "normalized",
+        canonical_name=normalized.get("canonical_name"),
+        brand=normalized.get("brand"),
+        model=normalized.get("model"),
+        queries=_str_list(normalized.get("search_queries")),
+        key_identifiers=_str_list(normalized.get("key_identifiers")),
+    )
 
     queries = _str_list(normalized.get("search_queries"))
     if not queries:
@@ -291,8 +359,10 @@ def run_pipeline(
     # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
     # Every normalized query is eligible (early-exit once one query has
     # enough candidates), not just queries[0].
-    flipkart_results, flipkart_candidates = _search_direct(flipkart_search_fn, queries)
-    amazon_results, amazon_candidates = _search_direct(amazon_search_fn, queries)
+    events.emit("stage", name="search_flipkart", label="Searching Flipkart")
+    flipkart_results, flipkart_candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
+    events.emit("stage", name="search_amazon", label="Searching Amazon")
+    amazon_results, amazon_candidates = _search_direct(amazon_search_fn, queries, label="amazon")
     trace["stages"]["flipkart_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in flipkart_results]
     trace["stages"]["amazon_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in amazon_results]
 
@@ -303,6 +373,7 @@ def run_pipeline(
         _record_search_health(r, tried_domains, search_issues)
 
     # --- stage 3/4 first pass: open discovery + generic scrape for everything else ---
+    events.emit("stage", name="discovery", label="Looking for other shops")
     discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
         queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
     )
@@ -327,6 +398,8 @@ def run_pipeline(
     )
 
     # --- stage 5: match ---------------------------------------------------------------
+    events.emit("stage", name="match", label="Checking which listings are the same product")
+    events.emit("candidates_total", count=len(all_candidates))
     match_result = match_fn(normalized, all_candidates)
     final_match_result = match_result
     trace["stages"]["matching"] = match_result.to_dict() if hasattr(match_result, "to_dict") else match_result
@@ -337,6 +410,7 @@ def run_pipeline(
     retry_trace = {"triggered": False}
     if not confirmed:
         retry_trace["triggered"] = True
+        events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
         # expand_search is OPTIONAL logic — if it throws (bad JSON, 429,
         # timeout) the run must survive on its first-pass results. It
         # previously propagated and destroyed a fully successful run.
@@ -347,6 +421,7 @@ def run_pipeline(
             logger.warning("expand_search failed (%s) — skipping retry, keeping first-pass results.", e)
             expansion = {"new_queries": [], "suggested_domains": [], "notes": ""}
         retry_trace["expansion"] = expansion
+        events.emit("retry_plan", new_queries=_str_list(expansion.get("new_queries")), notes=expansion.get("notes", ""))
 
         retry_queries = _str_list(expansion.get("new_queries"))
         # Strict-mode Indian filter: the prompt asks for Indian domains but
@@ -360,8 +435,10 @@ def run_pipeline(
             # so a bad primary query on the working marketplaces was never
             # retried with the LLM's better phrasing. All retry_queries are
             # eligible, not just [0].
-            retry_flipkart_results, retry_flipkart_candidates = _search_direct(flipkart_search_fn, retry_queries)
-            retry_amazon_results, retry_amazon_candidates = _search_direct(amazon_search_fn, retry_queries)
+            events.emit("stage", name="retry_flipkart", label="Searching Flipkart again")
+            retry_flipkart_results, retry_flipkart_candidates = _search_direct(flipkart_search_fn, retry_queries, label="flipkart")
+            events.emit("stage", name="retry_amazon", label="Searching Amazon again")
+            retry_amazon_results, retry_amazon_candidates = _search_direct(amazon_search_fn, retry_queries, label="amazon")
             trace["stages"]["flipkart_search_retry"] = [
                 r.to_dict() if hasattr(r, "to_dict") else r for r in retry_flipkart_results
             ]
@@ -391,6 +468,7 @@ def run_pipeline(
                 [c for c in list(all_candidates) + list(retry_flipkart_candidates) + list(retry_amazon_candidates)
                  + retry_generic_candidates if _usable(c)]
             )
+            events.emit("stage", name="match_retry", label="Checking the new listings")
             retry_match_result = match_fn(normalized, retry_pool)
             final_match_result = retry_match_result
             retry_trace["matching"] = retry_match_result.to_dict() if hasattr(retry_match_result, "to_dict") else retry_match_result
@@ -457,6 +535,8 @@ def run_pipeline(
     }
 
     trace["final_result"] = {"matches": confirmed, "not_found_on": not_found_on, "search_issues": search_issues}
+    _emit_finished(result)
+    trace["events"] = events.snapshot()
     _write_trace(trace)
     if search_issues:
         logger.info("Not caching this run: %d search issue(s) reported.", len(search_issues))
@@ -464,6 +544,16 @@ def run_pipeline(
         _cache_set(gem_url, result)
 
     return result
+
+
+def run_pipeline(gem_url: str, refresh: bool = False, *, on_event=None, **overrides) -> dict:
+    """Run the whole comparison for one GeM URL.
+
+    on_event, if given, is called with one small dict for every progress
+    event (see core/events.py and docs/api.md). The keyword overrides are
+    the same stage functions as before and exist for tests."""
+    with events.capture(on_event):
+        return _run_pipeline(gem_url, refresh, **overrides)
 
 
 if __name__ == "__main__":
