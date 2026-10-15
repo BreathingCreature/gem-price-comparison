@@ -13,3 +13,4 @@ TASKS.md
 agent_payload.zip
 agent_payload/
 .agent/
+.pytest_cache/
