@@ -458,7 +458,10 @@ def run_pipeline(
 
     trace["final_result"] = {"matches": confirmed, "not_found_on": not_found_on, "search_issues": search_issues}
     _write_trace(trace)
-    _cache_set(gem_url, result)
+    if search_issues:
+        logger.info("Not caching this run: %d search issue(s) reported.", len(search_issues))
+    else:
+        _cache_set(gem_url, result)
 
     return result
 

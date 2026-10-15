@@ -162,7 +162,7 @@ def build_stealth_driver():
             _USE_UC = True
             return driver
         except Exception as e:
-            from config import logger
+            from core.config import logger
 
             logger.warning("undetected-chromedriver failed (%s: %s) — falling back to plain Selenium.", type(e).__name__, e)
             _USE_UC = False
