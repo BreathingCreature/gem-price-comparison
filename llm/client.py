@@ -146,7 +146,7 @@ def _get_client():
     return _client_singleton[0]
 
 
-def _model_kwargs(model: str) -> dict:
+def _model_kwargs(model: str, style: str = "nvidia") -> dict:
     """Per-model request params required by the NVIDIA NIM API (see
     docs.api.nvidia.com/nim/reference/*-infer):
     - Nemotron models default stream=true (SSE) and thinking=ON — thinking
@@ -156,6 +156,8 @@ def _model_kwargs(model: str) -> dict:
       goes to a separate reasoning_content field, so content stays clean.
     """
     kwargs: dict = {"stream": False}
+    if style != "nvidia":
+        return kwargs  # other providers get a plain request
     if model.startswith("nvidia/"):
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     elif model.startswith("openai/gpt-oss"):
