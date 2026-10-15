@@ -9,3 +9,7 @@ debug_html/
 venv/
 .vscode/
 RAW/
+TASKS.md
+agent_payload.zip
+agent_payload/
+.agent/
