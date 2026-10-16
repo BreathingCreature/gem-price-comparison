@@ -78,3 +78,22 @@ python tests\test_scrapers.py
 ```
 
 > **Note:** `python -m unittest discover` runs 0 tests — use per-file runners above.
+
+## Web app
+
+Run the server and open http://localhost:8000:
+
+```
+python -m uvicorn api.server:app --port 8000
+```
+
+Paste a GeM product link and the page shows each step as it happens: the GeM
+product, the Flipkart and Amazon results, the other shops, and the verdict on
+every listing, with a running clock. The Advanced tab shows the LLM endpoints,
+time per step, every LLM call and the raw event log.
+
+To work on the page without scraping anything, start the server in demo mode
+(`GEM_DEMO=1`, fake data, no LLM calls). Check that everything is wired up with
+`python tools/doctor.py`.
+
+More: `docs/architecture.md`, `docs/api.md`, `docs/llm-providers.md`.
