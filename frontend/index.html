@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeM Price Comparison</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>GeM Price Comparison</h1>
+      <p class="sub">Paste a GeM product link and watch the search happen.</p>
+    </div>
+    <div class="clock-box">
+      <span id="status-pill" class="pill">idle</span>
+      <span id="elapsed" class="clock" title="Time since the run started">00:00</span>
+    </div>
+  </header>
+
+  <form id="run-form" class="run-form">
+    <input id="gem-url" type="url" required placeholder="https://mkp.gem.gov.in/.../p-123-456-cat.html" aria-label="GeM product link">
+    <label class="check"><input id="refresh" type="checkbox"> Fresh run (ignore saved result)</label>
+    <button id="run-btn" type="submit">Compare prices</button>
+    <span id="demo-badge" class="pill demo" hidden>demo mode: fake data</span>
+  </form>
+  <p id="form-error" class="error" role="alert" hidden></p>
+
+  <nav class="tabs" aria-label="Views">
+    <button class="tab active" data-tab="progress" type="button">Progress</button>
+    <button class="tab" data-tab="advanced" type="button">Advanced</button>
+  </nav>
+
+  <main id="view-progress" class="view">
+    <section id="now" class="now" aria-live="polite">Nothing running yet.</section>
+    <ol id="timeline" class="timeline"></ol>
+    <section id="gem-card" class="card" hidden></section>
+    <section id="searches" class="stack"></section>
+    <section id="checks" class="card" hidden>
+      <h2>Checking the listings</h2>
+      <ul id="check-list" class="checks"></ul>
+    </section>
+    <section id="final" class="card" hidden></section>
+  </main>
+
+  <main id="view-advanced" class="view" hidden>
+    <section class="card">
+      <h2>LLM endpoints</h2>
+      <p class="muted" id="llm-strategy"></p>
+      <table class="grid" id="providers"><thead><tr>
+        <th>Endpoint</th><th>State</th><th>Calls</th><th>Errors</th><th>Avg s</th><th>Note</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+    <section class="card">
+      <h2>Time per step</h2>
+      <table class="grid" id="stage-times"><thead><tr><th>Step</th><th>Seconds</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section class="card">
+      <h2>LLM calls in this run</h2>
+      <p class="muted" id="llm-summary">No calls yet.</p>
+      <table class="grid" id="llm-calls"><thead><tr>
+        <th>At (s)</th><th>Endpoint</th><th>For</th><th>Took (s)</th><th>Result</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+    <section class="card">
+      <h2>Every event</h2>
+      <div class="row">
+        <label>Show
+          <select id="event-filter">
+            <option value="">everything</option>
+            <option value="stage">steps</option>
+            <option value="search">searches</option>
+            <option value="candidate">candidate checks</option>
+            <option value="llm">llm</option>
+          </select>
+        </label>
+        <a id="download-events" href="#" download="events.json">Download events (JSON)</a>
+        <a id="trace-link" href="#" target="_blank" rel="noopener" hidden>Open full trace</a>
+      </div>
+      <table class="grid mono" id="event-log"><thead><tr><th>t</th><th>#</th><th>type</th><th>details</th></tr></thead><tbody></tbody></table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
