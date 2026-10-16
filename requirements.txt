@@ -7,3 +7,5 @@ openai==3.19.0
 undetected-chromedriver==3.5.5
 setuptools>=70.0  # provides distutils shim on Python 3.12+ (undetected-chromedriver needs it)
 curl_cffi==0.16.3  # TLS/JA3 impersonation — primary Amazon path, no browser
+fastapi>=0.110
+uvicorn>=0.30
