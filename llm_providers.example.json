@@ -1,0 +1,24 @@
+{
+  "strategy": "failover",
+  "providers": [
+    {
+      "name": "nvidia",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key_env": "NVIDIA_API_KEY",
+      "models": ["nvidia/nemotron-3-super-120b-a12b"],
+      "min_seconds_between_calls": 1.6,
+      "timeout_seconds": 90,
+      "style": "nvidia"
+    },
+    {
+      "name": "second-provider",
+      "base_url": "https://CHANGE-ME.example.com/v1",
+      "api_key_env": "SECOND_PROVIDER_API_KEY",
+      "models": ["CHANGE-ME-model-name"],
+      "min_seconds_between_calls": 2.0,
+      "timeout_seconds": 60,
+      "style": "plain",
+      "enabled": false
+    }
+  ]
+}

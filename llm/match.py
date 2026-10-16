@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from core import events
 from core.config import MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
 from llm.client import verify_or_extract
 
@@ -39,6 +40,18 @@ class MatchBatchResult:
         }
 
 
+def _emit_verdict(decision: dict) -> None:
+    events.emit(
+        "candidate_verdict",
+        url=decision.get("candidate_url"),
+        domain=decision.get("source_domain"),
+        is_match=bool(decision.get("is_match")),
+        confidence=decision.get("confidence"),
+        reason=decision.get("reason"),
+        price=decision.get("price_used"),
+    )
+
+
 def match_candidates(normalized: dict, candidates: list, *, client=None) -> MatchBatchResult:
     """normalized: a NormalizedProduct dict (from llm_client.normalize_product).
     candidates: a list of CandidateResult objects or dicts (from any of the
@@ -47,9 +60,20 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
     all_decisions: list[dict] = []
     skipped: list[str] = []
 
-    for candidate in candidates:
+    for position, candidate in enumerate(candidates, start=1):
         candidate_dict = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
         url = candidate_dict.get("url", "<unknown url>")
+        shown = candidate_dict.get("structured_fields")
+        shown = shown if isinstance(shown, dict) else {}
+        events.emit(
+            "candidate_checking",
+            url=url,
+            domain=candidate_dict.get("source_domain"),
+            title=shown.get("title"),
+            price=shown.get("price"),
+            index=position,
+            total=len(candidates),
+        )
         # A fetch that failed has no evidence to judge — don't burn an LLM
         # call letting the model guess from the reference alone (it will).
         if candidate_dict.get("fetch_error") and not candidate_dict.get("raw_page_text") and not candidate_dict.get(
@@ -57,6 +81,7 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
         ):
             logger.info("skipping %s — fetch failed (%s), no evidence to verify against.", url, candidate_dict.get("fetch_error"))
             skipped.append(url)
+            events.emit("candidate_skipped", url=url, reason=f"fetch failed: {candidate_dict.get('fetch_error')}")
             continue
         # Currency hard-gate BEFORE burning an LLM call: explicit non-INR
         # (e.g. generic scrape of a .com page tagged USD) can never confirm,
@@ -76,14 +101,17 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
                     "extraction_source": "scraper",
                 }
             )
+            _emit_verdict(all_decisions[-1])
             continue
         try:
             decision = verify_or_extract(normalized, candidate_dict, client=client)
         except Exception as e:
             logger.warning("verify_or_extract failed for %s: %s: %s — skipping this candidate.", url, type(e).__name__, e)
             skipped.append(url)
+            events.emit("candidate_skipped", url=url, reason=f"{type(e).__name__}: {e}")
             continue
         all_decisions.append(decision)
+        _emit_verdict(decision)
 
     # Hard price-sanity gate. The verify prompt asks the LLM to distrust
     # wild price gaps, but it confirmed a $39.99-parsed-as-₹39.99 match at
@@ -99,6 +127,11 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
                 continue
             if price < gem_price * PRICE_SANITY_LOW_RATIO or price > gem_price * PRICE_SANITY_HIGH_RATIO:
                 d["is_match"] = False
+                events.emit(
+                    "candidate_gate_rejected",
+                    url=d.get("candidate_url"),
+                    reason=f"price {price} is outside {PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x the GeM price {gem_price}",
+                )
                 reason = d.get("reason") or ""
                 d["reason"] = (
                     f"{reason} [hard-rejected: price {price} outside "

@@ -40,6 +40,19 @@ NVIDIA_TIMEOUT_SECONDS = float(os.getenv("NVIDIA_TIMEOUT_SECONDS", "90.0"))
 _PLACEHOLDER_KEYS = {"", "your_key_here", "changeme", "xxx"}
 
 
+def key_is_set(value) -> bool:
+    """True if an API key looks real (not empty and not a template placeholder)."""
+    return (value or "").strip().lower() not in _PLACEHOLDER_KEYS
+
+
+# --- LLM endpoint router (see llm/router.py) ---------------------------------
+# Which providers exist is described in llm_providers.json. If that file is
+# missing, only NVIDIA (from the settings above) is used.
+LLM_PROVIDERS_FILE = Path(os.getenv("LLM_PROVIDERS_FILE", str(BASE_DIR / "llm_providers.json")))
+# Longest a single LLM call may wait for a busy endpoint before giving up.
+LLM_MAX_WAIT_SECONDS = float(os.getenv("LLM_MAX_WAIT_SECONDS", "45"))
+
+
 def require_nvidia_key() -> str:
     """Call this from anything that's about to make an LLM call — NOT at
     import time. That way parts that don't need the LLM (like the GeM

@@ -35,17 +35,13 @@ import time
 from typing import Optional
 
 from core.config import (
-    NVIDIA_BASE_URL,
     NVIDIA_MODELS,
     NVIDIA_MIN_SECONDS_BETWEEN_CALLS,
-    NVIDIA_TIMEOUT_SECONDS,
     NVIDIA_MAX_TOKENS,
-    require_nvidia_key,
     logger,
 )
 
 _last_call_ts = [0.0]
-_client_singleton = [None]
 _working_model = [None]  # first model that actually answers, reused afterwards
 
 # NVIDIA's free tier answers 503 "Service temporarily overloaded" in bursts.
@@ -128,25 +124,7 @@ def _respect_rate_limit() -> None:
         time.sleep(NVIDIA_MIN_SECONDS_BETWEEN_CALLS - elapsed)
 
 
-def _get_client():
-    """Lazy singleton — only requires the API key (and only imports
-    `openai`) the first time an LLM call actually happens, not at module
-    import time. Tests inject their own fake client instead of calling
-    this at all."""
-    if _client_singleton[0] is None:
-        api_key = require_nvidia_key()
-        from openai import OpenAI
-
-        _client_singleton[0] = OpenAI(
-            base_url=NVIDIA_BASE_URL,
-            api_key=api_key,
-            timeout=NVIDIA_TIMEOUT_SECONDS,
-            max_retries=0,
-        )
-    return _client_singleton[0]
-
-
-def _model_kwargs(model: str) -> dict:
+def _model_kwargs(model: str, style: str = "nvidia") -> dict:
     """Per-model request params required by the NVIDIA NIM API (see
     docs.api.nvidia.com/nim/reference/*-infer):
     - Nemotron models default stream=true (SSE) and thinking=ON — thinking
@@ -156,6 +134,8 @@ def _model_kwargs(model: str) -> dict:
       goes to a separate reasoning_content field, so content stays clean.
     """
     kwargs: dict = {"stream": False}
+    if style != "nvidia":
+        return kwargs  # other providers get a plain request
     if model.startswith("nvidia/"):
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     elif model.startswith("openai/gpt-oss"):
@@ -235,19 +215,31 @@ def _complete(client, messages: list[dict], max_tokens: int) -> str:
     raise RuntimeError("All LLM models failed: " + " | ".join(errors))
 
 
-def _call_llm(system_prompt: str, user_content: str, *, max_tokens: int = NVIDIA_MAX_TOKENS, client=None) -> dict:
+def _ask(client, messages: list[dict], max_tokens: int, purpose: str) -> str:
+    """One round trip to an LLM. With no client given, the router picks the
+    endpoint. A client passed in (tests, one-off scripts) is used directly."""
+    if client is not None:
+        _respect_rate_limit()
+        raw = _complete(client, messages, max_tokens)
+        _last_call_ts[0] = time.time()
+        return raw
+    from llm.router import get_router
+
+    return get_router().complete(messages, max_tokens, purpose=purpose)
+
+
+def _call_llm(
+    system_prompt: str, user_content: str, *, max_tokens: int = NVIDIA_MAX_TOKENS, client=None, purpose: str = ""
+) -> dict:
     """Forces JSON-only output. Retries once with a correction message on
     unparseable output, then raises — no silent fallback, that's
     deliberately deferred scope (see module docstring)."""
-    active_client = client or _get_client()
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
 
-    _respect_rate_limit()
-    raw = _complete(active_client, messages, max_tokens)
-    _last_call_ts[0] = time.time()
+    raw = _ask(client, messages, max_tokens, purpose)
     data = _extract_json(raw)
     if data is not None:
         return data
@@ -260,9 +252,7 @@ def _call_llm(system_prompt: str, user_content: str, *, max_tokens: int = NVIDIA
             "content": "That wasn't valid JSON. Respond with ONLY a valid JSON object, no markdown fences, no commentary.",
         }
     )
-    _respect_rate_limit()
-    raw2 = _complete(active_client, messages, max_tokens)
-    _last_call_ts[0] = time.time()
+    raw2 = _ask(client, messages, max_tokens, purpose)
     data2 = _extract_json(raw2)
     if data2 is not None:
         return data2
@@ -296,7 +286,7 @@ def normalize_product(gem_product: dict, *, client=None) -> dict:
         f"specs:\n{specs_lines or '(none found)'}"
     )
 
-    data = _call_llm(_NORMALIZE_SYSTEM, user_content, client=client)
+    data = _call_llm(_NORMALIZE_SYSTEM, user_content, client=client, purpose="normalize")
 
     return {
         "canonical_name": data.get("canonical_name") or gem_product.get("title", ""),
@@ -347,7 +337,7 @@ def verify_or_extract(normalized: dict, candidate: dict, *, client=None) -> dict
     }
     user_content = json.dumps(payload, ensure_ascii=False)
 
-    data = _call_llm(_VERIFY_SYSTEM, user_content, client=client)
+    data = _call_llm(_VERIFY_SYSTEM, user_content, client=client, purpose="verify")
 
     is_match = _as_bool(data.get("is_match", False))
     try:
@@ -397,7 +387,7 @@ def expand_search(normalized: dict, tried_queries: list[str], tried_domains: lis
         ensure_ascii=False,
     )
 
-    data = _call_llm(_EXPAND_SYSTEM, user_content, max_tokens=400, client=client)
+    data = _call_llm(_EXPAND_SYSTEM, user_content, max_tokens=400, client=client, purpose="expand")
 
     return {
         "new_queries": _as_str_list(data.get("new_queries")),
@@ -410,10 +400,10 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) != 2:
-        print("Usage: python llm_client.py <gem_product_url>  (runs extract_gem_product -> normalize_product)")
+        print("Usage: python -m llm.client <gem_product_url>  (runs extract_gem_product -> normalize_product)")
         sys.exit(1)
 
-    from gem_extractor import extract_gem_product
+    from scrapers.gem import extract_gem_product
 
     product = extract_gem_product(sys.argv[1])
     normalized = normalize_product(product.to_dict())
