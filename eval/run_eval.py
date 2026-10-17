@@ -56,6 +56,8 @@ def record_for(row: dict, run_fn) -> dict:
         result = run_fn(row["gem_url"], refresh=True, on_event=on_event) or {}
     except Exception as e:  # one broken product must not stop the whole batch
         error = f"{type(e).__name__}: {e}"
+    if error is None and counts["llm_failures"] > 0 and not result.get("matches"):
+        error = f"all {counts['llm_failures']} LLM call(s) failed, no match verdicts"
     seconds = round(time.perf_counter() - started, 2)
     return {
         "id": row["id"],

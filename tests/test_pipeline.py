@@ -354,6 +354,33 @@ def test_direct_search_stops_once_enough_candidates():
     assert fk_calls == ["q1"]  # enough after first query — q2/q3 never searched
 
 
+# --- dedup uses per-site key (asin/pid/itm or host+path) ----------------
+
+
+def test_dedup_flipkart_same_pid_collapses():
+    c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-a/p/itm1?pid=PID1&lid=LST1", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-b/p/itm2?pid=PID1&lid=LST2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same pid -> one
+
+
+def test_dedup_flipkart_diff_pid_stays_separate():
+    c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-a/p/itm1?pid=PID1", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-a/p/itm1?pid=PID2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 2  # different pids -> two
+
+
+def test_dedup_amazon_same_asin_collapses():
+    c1 = CandidateResult(source_domain="amazon.in", url="https://www.amazon.in/dp/B0ABCDEFGH", scraper_used="amazon", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="amazon.in", url="https://www.amazon.in/dp/B0ABCDEFGH?crid=123&sprefix=abc", scraper_used="amazon", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same ASIN -> one
+
+
+def test_dedup_other_shop_diff_id_stays_separate():
+    c1 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/product.php?id=1", scraper_used="generic", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/product.php?id=2", scraper_used="generic", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 2  # different query ids -> two
+
+
 def test_retry_filters_non_indian_suggested_domains():
     # LLM prompt asks for Indian domains but doesn't enforce it —
     # bestbuy.com must not reopen open-mode .com discovery.

@@ -58,3 +58,38 @@ def test_settings_snapshot_lists_only_what_is_set(monkeypatch):
     monkeypatch.setenv("GEM_RETRY", "0")
     snap = run_eval.settings_snapshot()
     assert snap["settings"].get("GEM_RETRY") == "0" and "GEM_PARALLEL" not in snap["settings"]
+
+
+def test_settings_snapshot_loads_dotenv(monkeypatch):
+    called = []
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: called.append(True))
+    monkeypatch.setenv("GEM_PARALLEL", "1")
+    snap = run_eval.settings_snapshot()
+    assert called  # load_dotenv was invoked so .env values are visible
+    assert snap["settings"]["GEM_PARALLEL"] == "1"
+
+
+def test_settings_snapshot_records_active_providers(monkeypatch):
+    class _FakeEndpoint:
+        def __init__(self, name, model, enabled):
+            self.name = name
+            self.model = model
+            self.enabled = enabled
+
+    monkeypatch.setattr("llm.router.load_endpoints", lambda: ([_FakeEndpoint("nvidia", "m1", True)], None))
+    monkeypatch.setenv("GEM_PARALLEL", "1")
+    snap = run_eval.settings_snapshot()
+    assert snap["settings"]["llm_providers"] == [{"name": "nvidia", "model": "m1", "enabled": True}]
+
+
+def test_all_llm_failures_with_no_verdicts_marked_error(tmp_path):
+    out = tmp_path / "r.jsonl"
+
+    def _fake_run_all_fail(gem_url, refresh=False, on_event=None):
+        on_event({"type": "llm_call", "ok": False, "model": "m1"})
+        return {"trace_id": "t", "matches": [], "not_found_on": [], "search_issues": []}
+
+    run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out, run_fn=_fake_run_all_fail, log=lambda *_: None)
+    rec = __import__("json").loads(out.read_text().splitlines()[0])
+    assert rec["error"] is not None
+    assert "LLM call" in rec["error"]

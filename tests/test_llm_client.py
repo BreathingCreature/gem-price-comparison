@@ -181,6 +181,54 @@ def test_verify_or_extract_no_match_has_no_price():
     assert decision["price_used"] is None  # not surfaced when it's not actually a match
 
 
+# --- confidence clamp -----------------------------------------------------------
+
+_NORMALIZED = {"canonical_name": "X", "brand": "B", "model": "M", "key_identifiers": ["M"]}
+_CANDIDATE = {"url": "https://example.com/x", "source_domain": "example.com", "structured_fields": None, "raw_page_text": ""}
+
+
+def _verify(confidence_value):
+    fake = _FakeClient(
+        '{"is_match": true, "confidence": %s, "reason": "x", "extracted_title": "t", "extracted_price": null, "extraction_source": "scraper"}' % confidence_value
+    )
+    return llm_client.verify_or_extract(_NORMALIZED, _CANDIDATE, client=fake)
+
+
+def test_verify_confidence_85_percent_becomes_0_85():
+    assert _verify(85)["confidence"] == 0.85
+
+
+def test_verify_confidence_40_percent_becomes_0_4():
+    assert _verify(40)["confidence"] == 0.4
+
+
+def test_verify_confidence_100_percent_becomes_1_0():
+    assert _verify(100)["confidence"] == 1.0
+
+
+def test_verify_confidence_already_fraction_unchanged():
+    assert _verify(0.9)["confidence"] == 0.9
+    assert _verify(1.0)["confidence"] == 1.0
+    assert _verify(0.0)["confidence"] == 0.0
+
+
+def test_verify_confidence_out_of_range_is_zero():
+    assert _verify(150)["confidence"] == 0.0
+    assert _verify(-5)["confidence"] == 0.0
+
+
+def test_verify_confidence_nan_is_zero(monkeypatch):
+    monkeypatch.setattr(llm_client, "_extract_json", lambda raw: {"confidence": float("nan"), "is_match": True, "reason": "x", "extracted_title": "t", "extracted_price": None, "extraction_source": "scraper"})
+    fake = _FakeClient("ignored - _extract_json is monkeypatched")
+    assert llm_client.verify_or_extract(_NORMALIZED, _CANDIDATE, client=fake)["confidence"] == 0.0
+
+
+def test_verify_confidence_inf_is_zero(monkeypatch):
+    monkeypatch.setattr(llm_client, "_extract_json", lambda raw: {"confidence": float("inf"), "is_match": True, "reason": "x", "extracted_title": "t", "extracted_price": None, "extraction_source": "scraper"})
+    fake = _FakeClient("ignored - _extract_json is monkeypatched")
+    assert llm_client.verify_or_extract(_NORMALIZED, _CANDIDATE, client=fake)["confidence"] == 0.0
+
+
 # --- expand_search -------------------------------------------------------------------
 
 def test_expand_search_returns_new_queries_and_domains():
