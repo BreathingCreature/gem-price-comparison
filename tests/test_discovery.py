@@ -153,6 +153,26 @@ def test_discover_candidates_always_excludes_google_domains():
     assert any("reliancedigital.in" in u for u in result.filtered_urls)
 
 
+def test_discover_candidates_strict_mode_skips_direct_scraper_domains():
+    # E2: if the LLM suggests amazon.in / flipkart.com in strict mode, the
+    # generic scraper would fetch them by hand (and get blocked). They have
+    # their own direct scrapers — they must not surface as discovery URLs.
+    html = """
+    <html><body>
+    <a href="/url?q=https://www.amazon.in/logitech-m650/p/AMZ1&amp;sa=U">
+      <h3>Logitech M650 - Amazon.in</h3>
+    </a>
+    <a href="/url?q=https://www.croma.com/logitech-m650/p/12345&amp;sa=U">
+      <h3>Logitech M650 - Croma</h3>
+    </a>
+    </body></html>
+    """
+    result = discovery.discover_candidates(
+        "logitech m650", ["amazon.in", "croma.com"], session=_FakeSession(html)
+    )
+    assert result.filtered_urls == ["https://www.croma.com/logitech-m650/p/12345"]
+
+
 # --- block / error handling --------------------------------------------------------
 
 def test_discover_candidates_detects_block():

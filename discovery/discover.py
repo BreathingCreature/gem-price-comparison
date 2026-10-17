@@ -428,7 +428,14 @@ def discover_candidates(
         if not domain or _is_excluded(domain):
             continue
         if allowed_domains:
-            if _matches_allowed(domain, allowed_domains):
+            # Strict mode targets suggested domains, but Amazon/Flipkart
+            # must not leak in even when the LLM suggests them: they have
+            # their own direct scrapers, and generic-fetching their pages
+            # just burns one of the 8-URL scrape cap slots on a 403/robot
+            # page.
+            if _matches_allowed(domain, allowed_domains) and not _domain_matches_set(
+                domain, _DIRECT_SCRAPER_DOMAINS
+            ):
                 filtered.append(u)
         else:
             if _domain_matches_set(domain, _NON_RETAIL_BLOCKLIST):

@@ -125,6 +125,83 @@ def test_normalize_product_falls_back_to_gem_fields_when_llm_returns_null():
     assert result["search_queries"] == ["Unbranded Office Chair"]  # falls back to title as a last resort
 
 
+# --- normalize_product prompt-size cap (E1) -------------------------------------------
+
+def _last_normalize_prompt(fake):
+    return fake.chat.completions.calls[0]["messages"][1]["content"]
+
+
+def test_normalize_product_small_specs_prompt_is_unchanged():
+    # E1 regression guard: with few short specs the prompt must be exactly
+    # the same text the old join-everything formatting produced.
+    fake = _FakeClient('{"search_queries": ["q"]}')
+    gem_product = {
+        "title": "Logitech M650 Wireless Mouse",
+        "category_slug": "computer-mouse",
+        "product_slug": "logitech-m650-mouse-bt-usb",
+        "specs": {"Connectivity": "Bluetooth + USB", "Colour": "Graphite"},
+    }
+    llm_client.normalize_product(gem_product, client=fake)
+    assert _last_normalize_prompt(fake) == (
+        'title: "Logitech M650 Wireless Mouse"\n'
+        'slug_words: "computer mouse logitech m650 mouse bt usb"\n'
+        "specs:\n"
+        "- Connectivity: Bluetooth + USB\n"
+        "- Colour: Graphite"
+    )
+
+
+def test_normalize_product_caps_specs_at_40_and_flags_omitted():
+    fake = _FakeClient('{"search_queries": ["q"]}')
+    specs = {f"Spec {i}": f"value {i}" for i in range(100)}
+    gem_product = {"title": "T", "category_slug": "c", "product_slug": "p", "specs": specs}
+    llm_client.normalize_product(gem_product, client=fake)
+    prompt = _last_normalize_prompt(fake)
+    spec_lines = [ln for ln in prompt.splitlines() if ln.startswith("- ")]
+    assert len(spec_lines) == 41  # 40 kept rows + the omitted flag
+    assert spec_lines[-1] == "- (60 more specs omitted)"
+    assert "- Spec 0: value 0" in spec_lines
+    assert "- Spec 39: value 39" in spec_lines
+
+
+def test_normalize_product_cuts_long_spec_values():
+    fake = _FakeClient('{"search_queries": ["q"]}')
+    gem_product = {
+        "title": "T", "category_slug": "c", "product_slug": "p",
+        "specs": {"Detail": "x" * 1000, "Colour": "Graphite"},
+    }
+    llm_client.normalize_product(gem_product, client=fake)
+    prompt = _last_normalize_prompt(fake)
+    assert "- Detail: " + "x" * 200 in prompt
+    assert "x" * 201 not in prompt
+    assert "- Colour: Graphite" in prompt
+
+
+def test_normalize_product_cuts_long_spec_keys():
+    fake = _FakeClient('{"search_queries": ["q"]}')
+    gem_product = {
+        "title": "T", "category_slug": "c", "product_slug": "p",
+        "specs": {"K" * 1000: "v"},
+    }
+    llm_client.normalize_product(gem_product, client=fake)
+    prompt = _last_normalize_prompt(fake)
+    assert "- " + "K" * 80 + ": v" in prompt
+    assert "K" * 81 not in prompt
+
+
+def test_normalize_product_skips_empty_spec_rows_and_reports_omitted():
+    fake = _FakeClient('{"search_queries": ["q"]}')
+    gem_product = {
+        "title": "T", "category_slug": "c", "product_slug": "p",
+        "specs": {"Empty": "", "OK": "fine"},
+    }
+    llm_client.normalize_product(gem_product, client=fake)
+    prompt = _last_normalize_prompt(fake)
+    assert "Empty" not in prompt
+    assert "- OK: fine" in prompt
+    assert "- (1 more specs omitted)" in prompt
+
+
 # --- verify_or_extract -------------------------------------------------------------
 
 def test_verify_or_extract_trusts_scraper_fields():

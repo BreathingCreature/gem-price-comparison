@@ -317,6 +317,34 @@ def _call_llm(
 
 # --- 1. normalize_product ----------------------------------------------------
 
+# Spec tables on GeM pages can be enormous (_extract_specs reads every
+# table/dl on the page), and every token is billed against the free-tier
+# tokens-per-minute cap. normalize_product sends only what identity
+# matching actually needs: the first 40 rows, keys cut to 80 chars,
+# values to 200, empty rows skipped, plus one honest "(N more specs
+# omitted)" line when anything got left out. Fewer than 40 short specs ->
+# prompt is byte-identical to the old join-everything formatting.
+MAX_SPECS_IN_PROMPT = 40
+MAX_SPEC_KEY_CHARS = 80
+MAX_SPEC_VALUE_CHARS = 200
+
+
+def _specs_for_prompt(specs) -> str:
+    if not specs:
+        return "(none found)"
+    lines = []
+    for key, value in list(specs.items())[:MAX_SPECS_IN_PROMPT]:
+        k = str(key)[:MAX_SPEC_KEY_CHARS]
+        v = str(value)[:MAX_SPEC_VALUE_CHARS]
+        if not k or not v:
+            continue
+        lines.append(f"- {k}: {v}")
+    omitted = len(specs) - len(lines)
+    if omitted > 0:
+        lines.append(f"- ({omitted} more specs omitted)")
+    return "\n".join(lines)
+
+
 _NORMALIZE_SYSTEM = """You are extracting structured product identification data from an Indian government e-marketplace (GeM) product listing, so the SAME physical product can be searched for and matched against retail marketplaces like Amazon and Flipkart.
 
 Given the product's title, its URL category/product slug words, and whatever spec fields were found on the page, extract:
@@ -333,7 +361,7 @@ def normalize_product(gem_product: dict, *, client=None) -> dict:
     """gem_product: a GemProduct.to_dict() (see gem_extractor.py).
     Returns a NormalizedProduct dict."""
     slug_words = f"{gem_product.get('category_slug', '')} {gem_product.get('product_slug', '')}".replace("-", " ").strip()
-    specs_lines = "\n".join(f"- {k}: {v}" for k, v in (gem_product.get("specs") or {}).items())
+    specs_lines = _specs_for_prompt(gem_product.get("specs") or {})
 
     user_content = (
         f"title: \"{gem_product.get('title', '')}\"\n"
