@@ -25,6 +25,40 @@ CACHE_DIR = BASE_DIR / "cache"
 TRACES_DIR.mkdir(exist_ok=True)
 CACHE_DIR.mkdir(exist_ok=True)
 
+
+def _flag(name: str, default: bool) -> bool:
+    """Read an on/off setting from the environment: 1, true, yes or on mean on.
+    Empty or whitespace-only means use the default."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _float_setting(name: str, default: float) -> float:
+    """Read a float env var, returning the default on any parse problem."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw.strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r, using default %r", name, raw, default)
+        return default
+
+
+def _int_setting(name: str, default: int) -> int:
+    """Read an int env var, returning the default on any parse problem."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r, using default %r", name, raw, default)
+        return default
+
+
 # --- NVIDIA / LLM ----------------------------------------------------------
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
@@ -33,9 +67,9 @@ NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com
 _DEFAULT_MODELS = "nvidia/nemotron-3-super-120b-a12b"
 NVIDIA_MODELS = [m.strip() for m in os.getenv("NVIDIA_MODELS", _DEFAULT_MODELS).split(",") if m.strip()]
 NVIDIA_MODEL = NVIDIA_MODELS[0]  # back-compat alias
-NVIDIA_MAX_TOKENS = int(os.getenv("NVIDIA_MAX_TOKENS", "2000"))
-NVIDIA_MIN_SECONDS_BETWEEN_CALLS = float(os.getenv("NVIDIA_MIN_SECONDS_BETWEEN_CALLS", "1.6"))
-NVIDIA_TIMEOUT_SECONDS = float(os.getenv("NVIDIA_TIMEOUT_SECONDS", "90.0"))
+NVIDIA_MAX_TOKENS = _int_setting("NVIDIA_MAX_TOKENS", 2000)
+NVIDIA_MIN_SECONDS_BETWEEN_CALLS = _float_setting("NVIDIA_MIN_SECONDS_BETWEEN_CALLS", 1.6)
+NVIDIA_TIMEOUT_SECONDS = _float_setting("NVIDIA_TIMEOUT_SECONDS", 90.0)
 
 _PLACEHOLDER_KEYS = {"", "your_key_here", "changeme", "xxx"}
 
@@ -50,7 +84,10 @@ def key_is_set(value) -> bool:
 # missing, only NVIDIA (from the settings above) is used.
 LLM_PROVIDERS_FILE = Path(os.getenv("LLM_PROVIDERS_FILE", str(BASE_DIR / "llm_providers.json")))
 # Longest a single LLM call may wait for a busy endpoint before giving up.
-LLM_MAX_WAIT_SECONDS = float(os.getenv("LLM_MAX_WAIT_SECONDS", "45"))
+LLM_MAX_WAIT_SECONDS = _float_setting("LLM_MAX_WAIT_SECONDS", 45.0)
+# Optional tag mixed into every LLM cache key so different models or experiments
+# don't replay each other's answers. Empty string = no tag (old keys unchanged).
+LLM_CACHE_TAG = os.getenv("LLM_CACHE_TAG", "")
 
 
 def require_nvidia_key() -> str:
@@ -78,24 +115,16 @@ def log_startup_check() -> None:
 
 
 # --- pipeline behaviour ----------------------------------------------------
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
-MATCH_CONFIDENCE_THRESHOLD = float(os.getenv("MATCH_CONFIDENCE_THRESHOLD", "0.75"))
+CACHE_TTL_SECONDS = _float_setting("CACHE_TTL_SECONDS", 3600.0)
+MATCH_CONFIDENCE_THRESHOLD = _float_setting("MATCH_CONFIDENCE_THRESHOLD", 0.75)
 # Hard price-sanity gate applied AFTER the LLM verdict: a "match" priced
 # outside [GeM * LOW, GeM * HIGH] is rejected regardless of confidence.
 # Rationale (live bug 2026-09): a logitech.com/en-us page listing $39.99
 # scraped as "39.99 INR" passed LLM verify at 95% and was crowned cheapest
 # vs a ₹2,725 GeM listing — prompt-level price-sanity instructions alone
 # are not enough.
-PRICE_SANITY_LOW_RATIO = float(os.getenv("PRICE_SANITY_LOW_RATIO", "0.15"))   # below 15% of GeM price -> implausible
-PRICE_SANITY_HIGH_RATIO = float(os.getenv("PRICE_SANITY_HIGH_RATIO", "5.0"))   # above 5x GeM price -> implausible
-
-
-def _flag(name: str, default: bool) -> bool:
-    """Read an on/off setting from the environment: 1, true, yes or on mean on."""
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+PRICE_SANITY_LOW_RATIO = _float_setting("PRICE_SANITY_LOW_RATIO", 0.15)   # below 15% of GeM price -> implausible
+PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0)   # above 5x GeM price -> implausible
 
 
 # On/off switches. The defaults are the normal behaviour. They exist so the
