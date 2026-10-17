@@ -44,6 +44,7 @@ run started), `type`, plus the fields below.
 | `candidate_skipped` | url, reason | could not be judged (fetch failed, LLM down) |
 | `retry_plan` | new_queries, notes | nothing matched, trying other search words |
 | `llm_call` | endpoint, provider, model, purpose, seconds, ok, status, error | one attempt on one LLM endpoint (`purpose` is normalize, verify or expand) |
+| `llm_cache_hit` | purpose | an answer came from the saved-answer cache (`LLM_CACHE=1`), no LLM call was made |
 | `llm_cooldown` | endpoint, seconds, reason | an endpoint is resting after an error |
 | `llm_disabled` | endpoint, reason | an endpoint was switched off (bad key, unknown model) |
 | `run_finished` | from_cache, matches, cheapest, savings, trace_id | the run is over |
