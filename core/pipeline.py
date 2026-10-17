@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from core import events
 from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
@@ -55,6 +55,7 @@ from llm import match as matcher
 from scrapers import flipkart as flipkart_scraper
 from scrapers import amazon as amazon_scraper
 from scrapers import generic as generic_scraper
+import re
 
 MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped per run
 # A direct search is "enough" once it has this many candidates — stop trying
@@ -120,6 +121,32 @@ def _usable(candidate) -> bool:
     return True
 
 
+def _listing_key(url: str) -> str:
+    """Per-site key for dedup: ASIN for Amazon, pid/itm for Flipkart,
+    full URL (with query string) for everything else.
+
+    Using the full URL for other shops avoids collapsing distinct products
+    that differ only in query parameters (e.g. product.php?id=1 vs id=2).
+    """
+    url = (url or "").strip()
+    parsed = urlparse(url if "//" in url else "//" + url)
+    host = (parsed.hostname or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    path = parsed.path or ""
+    if host.endswith("amazon.in") or host.endswith("amazon.com"):
+        m = re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})", path)
+        if m:
+            return "asin:" + m.group(1).upper()
+    if host.endswith("flipkart.com"):
+        pid = parse_qs(parsed.query).get("pid")
+        if pid:
+            return "pid:" + pid[0].upper()
+        m = re.search(r"/p/(itm[a-z0-9]+)", path, re.I)
+        if m:
+            return "itm:" + m.group(1).lower()
+    return url.lower()
+
+
 def _dedup(candidates: list) -> list:
     """Cross-source URL dedup (the same Flipkart listing could arrive from
     the direct scraper AND from discovery) — duplicate verify calls and
@@ -128,9 +155,7 @@ def _dedup(candidates: list) -> list:
     out = []
     for c in candidates:
         d = _cand_dict(c)
-        # Strip query string + fragment: Flipkart URLs carry lid=/q= params that
-        # change per query, so the same pid appears under many URLs.
-        key = (d.get("url") or "").split("?")[0].split("#")[0].rstrip("/")
+        key = _listing_key(d.get("url"))
         if not key:
             key = f"__noid_{len(out)}"
         if key in seen:
@@ -245,7 +270,7 @@ def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIREC
         )
         for c in getattr(r, "candidates", None) or []:
             d = _cand_dict(c)
-            key = (d.get("url") or "").split("?")[0].split("#")[0]
+            key = _listing_key(d.get("url"))
             if key and key in seen:
                 continue
             if key:
