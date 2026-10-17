@@ -86,8 +86,25 @@ MATCH_CONFIDENCE_THRESHOLD = float(os.getenv("MATCH_CONFIDENCE_THRESHOLD", "0.75
 # scraped as "39.99 INR" passed LLM verify at 95% and was crowned cheapest
 # vs a ₹2,725 GeM listing — prompt-level price-sanity instructions alone
 # are not enough.
-PRICE_SANITY_LOW_RATIO = 0.15   # below 15% of GeM price -> implausible
-PRICE_SANITY_HIGH_RATIO = 5.0   # above 5x GeM price -> implausible
+PRICE_SANITY_LOW_RATIO = float(os.getenv("PRICE_SANITY_LOW_RATIO", "0.15"))   # below 15% of GeM price -> implausible
+PRICE_SANITY_HIGH_RATIO = float(os.getenv("PRICE_SANITY_HIGH_RATIO", "5.0"))   # above 5x GeM price -> implausible
+
+
+def _flag(name: str, default: bool) -> bool:
+    """Read an on/off setting from the environment: 1, true, yes or on mean on."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# On/off switches. The defaults are the normal behaviour. They exist so the
+# evaluation can switch one feature off at a time (see docs/evaluation.md).
+PARALLEL_SEARCH = _flag("GEM_PARALLEL", False)  # search Flipkart and Amazon at the same time
+RETRY_ENABLED = _flag("GEM_RETRY", True)  # ask the LLM for better search words when nothing matched
+GATES_ENABLED = _flag("GEM_GATES", True)  # the currency check and the price-band check after the LLM verdict
+LLM_CACHE_ENABLED = _flag("LLM_CACHE", False)  # remember LLM answers on disk (llm/cache.py)
+LLM_CACHE_DIR = Path(os.getenv("LLM_CACHE_DIR", str(CACHE_DIR / "llm")))
 # Companion gate (matcher): a candidate whose scraper reports an explicit
 # non-INR currency is rejected even if the number falls inside that band —
 # numeric-band checks alone cannot catch USD/EUR values that happen to
