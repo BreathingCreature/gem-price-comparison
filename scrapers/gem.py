@@ -15,6 +15,7 @@ module's approach over there.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
@@ -76,7 +77,27 @@ def parse_gem_url(url: str) -> tuple[str, str]:
 # because GeM pricing isn't always a single clean number (reverse-auction
 # pricing means "range" and "L1_rate" show up regularly).
 
-_NUM_RE = re.compile(r"([\d,]+(?:\.\d+)?)")
+_NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
+# A real range needs an actual range shape: two amounts joined by a dash
+# (hyphen, en dash, em dash) or the word "to". Text like
+# "Rs.2,725.00 17% You Save: ₹570.00" has several numbers but no range
+# shape, and must stay a fixed price.
+_RANGE_RE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(?:[-\u2013\u2014]|\bto\b)\s*\u20b9?\s*(\d[\d,]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _match_to_float(match: Optional[re.Match]) -> Optional[float]:
+    """float() a number match, stripping a trailing comma from it first.
+    Extracted here so a malformed match can never crash the run — an
+    unusable number is honestly None, not an exception."""
+    if not match:
+        return None
+    try:
+        return float(match.group(1).rstrip(",").replace(",", ""))
+    except ValueError:
+        return None
 
 
 def classify_price(text: str) -> tuple[Optional[float], str]:
@@ -90,19 +111,23 @@ def classify_price(text: str) -> tuple[Optional[float], str]:
         # Strip the "L1" token itself first — otherwise the '1' in 'L1' gets
         # picked up as the price by the regex below instead of the real value.
         stripped = re.sub(r"\bl-?1\b", "", t, flags=re.IGNORECASE)
-        m = _NUM_RE.search(stripped)
-        return (float(m.group(1).replace(",", "")) if m else None), "L1_rate"
+        return _match_to_float(_NUM_RE.search(stripped)), "L1_rate"
     # "Our Price: ₹2,725.00 17% You Save: ₹570.00" contains several numbers
     # but is a single fixed price — keyword forms must not be read as a range.
     if any(k in low for k in ("our price", "final price", "offer price", "our_price")):
-        m = _NUM_RE.search(t)
-        if m:
-            return float(m.group(1).replace(",", "")), "fixed"
-    nums = _NUM_RE.findall(t)
-    if len(nums) >= 2:
-        return float(nums[0].replace(",", "")), "range"
-    if len(nums) == 1:
-        return float(nums[0].replace(",", "")), "fixed"
+        value = _match_to_float(_NUM_RE.search(t))
+        if value is not None:
+            return value, "fixed"
+    m = _RANGE_RE.search(t)
+    if m:
+        value = _match_to_float(m)
+        if value is not None:
+            return value, "range"
+    m = _NUM_RE.search(t)
+    if m:
+        value = _match_to_float(m)
+        if value is not None:
+            return value, "fixed"
     return None, "unknown"
 
 
@@ -184,13 +209,58 @@ def _guess_brand_model(title: str) -> tuple[Optional[str], Optional[str]]:
     return brand, None
 
 
+# --- fetch with one small retry (D4) -------------------------------------------
+# One timeout, reset connection or 5xx during a burst shouldn't kill a whole
+# run over a failure the next attempt would have survived.
+
+RETRY_SLEEP_SECONDS = 2.0  # between attempts; patched to 0 in tests
+_MAX_FETCH_ATTEMPTS = 2
+_RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
+
+
+def _is_retryable_fetch_error(exc: BaseException) -> bool:
+    """Transient-only retry policy: ConnectionError, Timeout and HTTP
+    500/502/503/504. A 404 or 403 means the page itself said no — retrying
+    those just burns seconds."""
+    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        return exc.response.status_code in _RETRYABLE_STATUS
+    return False
+
+
+def _fetch_gem_page(url: str, sess, headers: dict):
+    """sess.get + raise_for_status with a single retry for transient
+    failures. The sleep constant is module-level and the time module is
+    imported here, so tests can zero the wait by patching either."""
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            resp = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            return resp
+        except Exception as exc:
+            if attempt >= _MAX_FETCH_ATTEMPTS or not _is_retryable_fetch_error(exc):
+                raise
+            logger.warning(
+                "GeM fetch failed (%s: %s), attempt %d/%d for %s — retrying in %.0fs.",
+                type(exc).__name__,
+                str(exc)[:120],
+                attempt,
+                _MAX_FETCH_ATTEMPTS,
+                url,
+                RETRY_SLEEP_SECONDS,
+            )
+            time.sleep(RETRY_SLEEP_SECONDS)
+
+
 def extract_gem_product(url: str, *, session: Optional[requests.Session] = None) -> GemProduct:
     category_slug, product_slug = parse_gem_url(url)
 
     sess = session or requests.Session()
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-IN,en;q=0.9"}
-    resp = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-    resp.raise_for_status()
+    resp = _fetch_gem_page(url, sess, headers)
 
     soup = BeautifulSoup(resp.text, "lxml")
 
@@ -203,6 +273,15 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
 
     price_value, price_type = classify_price(price_text)
     brand, model = _guess_brand_model(title)
+
+    # A page with neither a title nor a price is a block page, a captcha or
+    # a changed layout — an empty product here would just burn LLM calls on
+    # nothing downstream. Say so loudly instead of playing along.
+    if not title and price_value is None:
+        raise RuntimeError(
+            "The GeM page gave no title and no price (the page may be blocked "
+            "or its layout changed): " + url
+        )
 
     if not title:
         logger.warning(
