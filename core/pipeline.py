@@ -47,6 +47,7 @@ from core import events
 from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
 from core.config import PARALLEL_SEARCH
 from core.parallel import run_pair
+from core.config import RETRY_ENABLED
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
 import discovery
@@ -430,7 +431,7 @@ def _run_pipeline(
 
     # --- retry: only if the first pass found nothing ----------------------------------
     retry_trace = {"triggered": False}
-    if not confirmed:
+    if not confirmed and RETRY_ENABLED:
         retry_trace["triggered"] = True
         events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
         # expand_search is OPTIONAL logic — if it throws (bad JSON, 429,
