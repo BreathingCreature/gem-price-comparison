@@ -128,7 +128,9 @@ def _dedup(candidates: list) -> list:
     out = []
     for c in candidates:
         d = _cand_dict(c)
-        key = (d.get("url") or "").split("#")[0].rstrip("/")
+        # Strip query string + fragment: Flipkart URLs carry lid=/q= params that
+        # change per query, so the same pid appears under many URLs.
+        key = (d.get("url") or "").split("?")[0].split("#")[0].rstrip("/")
         if not key:
             key = f"__noid_{len(out)}"
         if key in seen:
@@ -243,7 +245,7 @@ def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIREC
         )
         for c in getattr(r, "candidates", None) or []:
             d = _cand_dict(c)
-            key = (d.get("url") or "").split("#")[0].rstrip("/")
+            key = (d.get("url") or "").split("?")[0].split("#")[0]
             if key and key in seen:
                 continue
             if key:
