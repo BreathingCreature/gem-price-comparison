@@ -112,7 +112,14 @@ def parse_cards_from_html(html: str) -> list[dict]:
             # became "149900" (100x inflation) and ranges concatenated both ends.
             price = parse_indian_price(price_el.get_text(" ", strip=True))
         if not price:
-            price = parse_indian_price(card.get_text(" ", strip=True))
+            # Strip EMI lines first so "₹99/month" or "No Cost EMI from ₹99/month"
+            # don't get picked as the product price.
+            card_text = card.get_text(" ", strip=True)
+            card_text = re.sub(r"₹\s*\d[\d,]*(?:\.\d+)?\s*/\s*month", "", card_text)
+            card_text = re.sub(r"₹\s*\d[\d,]*(?:\.\d+)?\s*per\s*month", "", card_text, flags=re.I)
+            card_text = re.sub(r"No\s*Cost\s*EMI\s*from\s*₹\s*\d[\d,]*(?:\.\d+)?", "", card_text, flags=re.I)
+            card_text = re.sub(r"EMI", "", card_text, flags=re.I)
+            price = parse_indian_price(card_text)
 
         link_el = card.select_one('a[href*="/p/"]')
         if link_el is None and getattr(card, "name", None) == "a" and "/p/" in (card.get("href") or ""):

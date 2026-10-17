@@ -29,7 +29,7 @@ from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
 from scrapers.gem import classify_price
 from scrapers._base import CandidateResult
 
-RAW_TEXT_CHAR_CAP = 5000  # keep what's fed to the LLM later to a sane size
+RAW_TEXT_CHAR_CAP = 2_000_000  # limit raw text fed into LLM later
 
 
 def _meta_content(soup: BeautifulSoup, prop: str) -> str:
@@ -64,6 +64,9 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
             fetch_error=f"{type(e).__name__}: {e}",
         )
 
+    # Limit raw text before parsing to avoid blowing memory on huge pages
+    resp.text = resp.text[:RAW_TEXT_CHAR_CAP]
+
     soup = BeautifulSoup(resp.text, "lxml")
 
     title = _meta_content(soup, "og:title") or (soup.title.get_text(strip=True) if soup.title else "")
@@ -83,12 +86,16 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
         or _meta_content(soup, "product:price:currency")
         or _meta_content(soup, "priceCurrency")
     ).upper()
+    currency_raw = currency_raw.strip()
     if currency_raw in ("", "INR", "RS", "₹", "RUPEES", "INR RUPEE"):
         currency = "INR"
+        currency_assumed = not bool(currency_raw)
     elif currency_raw:
         currency = currency_raw
+        currency_assumed = False
     else:
         currency = "INR"
+        currency_assumed = True
 
     # strip script/style before dumping visible text, or the LLM gets junk
     for tag in soup(["script", "style", "noscript"]):
@@ -105,6 +112,8 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
             "image_url": image_url,
             "in_stock": None,  # generic scrape has no reliable stock signal
         }
+        if currency_assumed:
+            structured["currency_assumed"] = True
 
     if not structured:
         logger.info("generic scrape got no og:/meta signal from %s — relying on raw_page_text only.", url)
