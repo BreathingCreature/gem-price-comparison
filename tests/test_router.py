@@ -301,3 +301,49 @@ def test_without_a_config_file_it_falls_back_to_nvidia_only(tmp_path, monkeypatc
     assert strategy == "failover"
     assert {e.provider for e in endpoints} == {"nvidia"}
     assert endpoints[0].style == "nvidia" and endpoints[0].enabled
+
+
+# --- B2: request_options -----------------------------------------------------
+
+def test_request_options_must_be_a_dict(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_X", "real-key")
+    path = _write_config(tmp_path, [{"name": "x", "base_url": "https://x.test/v1", "api_key_env": "KEY_X", "models": ["m"], "request_options": "not-a-dict"}])
+    with pytest.raises(ValueError) as err:
+        load_endpoints(path)
+    assert "request_options" in str(err.value)
+    assert "x" in str(err.value)
+
+
+def test_request_options_merged_into_create_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_X", "real-key")
+    path = _write_config(tmp_path, [{"name": "x", "base_url": "https://x.test/v1", "api_key_env": "KEY_X", "models": ["m"], "request_options": {"reasoning_effort": "low"}}])
+    endpoints, _ = load_endpoints(path)
+    ep = endpoints[0]
+    from llm.client import _model_kwargs
+    kwargs = _model_kwargs("m", "plain", ep.request_options)
+    assert kwargs.get("reasoning_effort") == "low"
+    assert kwargs.get("stream") is False
+
+
+# --- B3: empty answer includes finish_reason ---------------------------------
+
+def test_empty_answer_includes_finish_reason():
+    class _ClientWithFinishReason:
+        def __init__(self, label):
+            self.label = label
+            self.calls = 0
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            self.calls += 1
+            choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="length")
+            return SimpleNamespace(choices=[choice])
+
+    a = _ClientWithFinishReason(label="a")
+    router, _ = make_router({"a": a})
+
+    with pytest.raises(RuntimeError) as err:
+        router.complete(MESSAGES, 100)
+    assert "finish_reason=length" in str(err.value)
+
+
