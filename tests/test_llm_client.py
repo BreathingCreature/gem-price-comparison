@@ -341,6 +341,164 @@ def test_complete_raises_after_all_transient_attempts_exhausted():
         llm_client.ENDPOINT_RETRY_ATTEMPTS = orig_attempts
 
 
+# --- B1: confidence parsing ------------------------------------------------
+
+def test_complete_raises_after_all_transient_attempts_exhausted():
+    class _AlwaysDown(Exception):
+        pass
+
+    class _DeadCompletions:
+        def __init__(self):
+            self.n = 0
+
+        def create(self, **kwargs):
+            self.n += 1
+            raise _AlwaysDown("503 forever")
+
+    class _DeadChat:
+        def __init__(self):
+            self.completions = _DeadCompletions()
+
+    class _DeadClient:
+        def __init__(self):
+            self.chat = _DeadChat()
+
+    orig_errors = llm_client._endpoint_errors
+    orig_backoff = llm_client.ENDPOINT_RETRY_BACKOFF
+    orig_attempts = llm_client.ENDPOINT_RETRY_ATTEMPTS
+    llm_client._endpoint_errors = lambda: (_AlwaysDown,)
+    llm_client.ENDPOINT_RETRY_BACKOFF = (0.0, 0.0)
+    llm_client.ENDPOINT_RETRY_ATTEMPTS = 2
+    try:
+        client = _DeadClient()
+        try:
+            llm_client._call_llm("system", "user", client=client)
+            assert False, "expected RuntimeError"
+        except RuntimeError as e:
+            assert "All LLM models failed" in str(e)
+        assert client.chat.completions.n == 2  # exactly the configured attempts, then give up
+    finally:
+        llm_client._endpoint_errors = orig_errors
+        llm_client.ENDPOINT_RETRY_BACKOFF = orig_backoff
+        llm_client.ENDPOINT_RETRY_ATTEMPTS = orig_attempts
+
+
+# --- B1: confidence parsing ------------------------------------------------
+
+def test_confidence_0_9_stays_0_9():
+    assert llm_client._parse_confidence(0.9) == 0.9
+
+
+def test_confidence_1_0_stays_1_0():
+    assert llm_client._parse_confidence(1.0) == 1.0
+
+
+def test_confidence_0_stays_0():
+    assert llm_client._parse_confidence(0) == 0.0
+
+
+def test_confidence_85_percent_divided():
+    assert llm_client._parse_confidence(85) == 0.85
+
+
+def test_confidence_40_percent_divided():
+    assert llm_client._parse_confidence(40) == 0.4
+
+
+def test_confidence_100_percent_divided():
+    assert llm_client._parse_confidence(100) == 1.0
+
+
+def test_confidence_string_95_percent():
+    assert llm_client._parse_confidence("95%") == 0.95
+
+
+def test_confidence_string_0_8():
+    assert llm_client._parse_confidence("0.8") == 0.8
+
+
+def test_confidence_bool_true_is_zero():
+    assert llm_client._parse_confidence(True) == 0.0
+
+
+def test_confidence_bool_false_is_zero():
+    assert llm_client._parse_confidence(False) == 0.0
+
+
+def test_confidence_none_is_zero():
+    assert llm_client._parse_confidence(None) == 0.0
+
+
+def test_confidence_nan_is_zero():
+    assert llm_client._parse_confidence(float("nan")) == 0.0
+
+
+def test_confidence_inf_is_zero():
+    assert llm_client._parse_confidence(float("inf")) == 0.0
+
+
+def test_confidence_negative_is_zero():
+    assert llm_client._parse_confidence(-3) == 0.0
+
+
+def test_confidence_above_100_is_zero():
+    assert llm_client._parse_confidence(150) == 0.0
+
+
+# --- B5: config settings helpers -------------------------------------------
+
+def test_flag_empty_means_default(monkeypatch):
+    import importlib
+    import core.config as config_mod
+
+    monkeypatch.setenv("GEM_PARALLEL", "")
+    importlib.reload(config_mod)
+    assert config_mod.PARALLEL_SEARCH is False  # default
+
+    monkeypatch.setenv("GEM_PARALLEL", "1")
+    importlib.reload(config_mod)
+    assert config_mod.PARALLEL_SEARCH is True
+
+    # Restore for other tests
+    monkeypatch.setenv("GEM_PARALLEL", "0")
+    importlib.reload(config_mod)
+
+
+def test_float_setting_invalid_uses_default(monkeypatch):
+    import importlib
+    import core.config as config_mod
+
+    monkeypatch.setenv("PRICE_SANITY_LOW_RATIO", "not-a-number")
+    importlib.reload(config_mod)
+    assert config_mod.PRICE_SANITY_LOW_RATIO == 0.15  # default
+
+    monkeypatch.setenv("PRICE_SANITY_LOW_RATIO", "0.5")
+    importlib.reload(config_mod)
+    assert config_mod.PRICE_SANITY_LOW_RATIO == 0.5
+
+    monkeypatch.setenv("PRICE_SANITY_LOW_RATIO", "0.15")
+    importlib.reload(config_mod)
+
+
+def test_int_setting_invalid_uses_default(monkeypatch):
+    import importlib
+    import core.config as config_mod
+
+    monkeypatch.setenv("NVIDIA_MAX_TOKENS", "not-a-number")
+    importlib.reload(config_mod)
+    assert config_mod.NVIDIA_MAX_TOKENS == 2000  # default
+
+    monkeypatch.setenv("NVIDIA_MAX_TOKENS", "4000")
+    importlib.reload(config_mod)
+    assert config_mod.NVIDIA_MAX_TOKENS == 4000
+
+    monkeypatch.setenv("NVIDIA_MAX_TOKENS", "2000")
+    importlib.reload(config_mod)
+
+
+# --- end B5 ---
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0

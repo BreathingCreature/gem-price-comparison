@@ -18,7 +18,7 @@
       "min_seconds_between_calls": 2.0,
       "timeout_seconds": 60,
       "style": "plain",
-      "enabled": false
+      "request_options": {"reasoning_effort": "low"}
     }
   ]
 }

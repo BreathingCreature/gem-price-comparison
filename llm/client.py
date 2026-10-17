@@ -81,6 +81,33 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
+def _parse_confidence(value) -> float:
+    """Parse a confidence value from an LLM answer into a 0-1 float.
+
+    - Bool True/False -> 0.0 (a boolean is not a confidence)
+    - String like "95%" or "95" -> strip %, parse as number
+    - Number in (1, 100] -> divide by 100
+    - Number in [0, 1] -> keep as-is
+    - NaN, inf, negative, > 100 -> 0.0
+    - Anything unparseable -> 0.0
+    """
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, str):
+        value = value.strip().rstrip("%")
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(confidence) or math.isinf(confidence):
+        return 0.0
+    if confidence > 1.0 and confidence <= 100.0:
+        return confidence / 100.0
+    if not (0.0 <= confidence <= 1.0):
+        return 0.0
+    return confidence
+
+
 def _extract_json(raw: str) -> Optional[dict]:
     """Parse the first JSON object out of an LLM response. Handles stray
     prose before/after the object, markdown fences, and trailing text.
@@ -128,7 +155,7 @@ def _respect_rate_limit() -> None:
         time.sleep(NVIDIA_MIN_SECONDS_BETWEEN_CALLS - elapsed)
 
 
-def _model_kwargs(model: str, style: str = "nvidia") -> dict:
+def _model_kwargs(model: str, style: str = "nvidia", request_options: Optional[dict] = None) -> dict:
     """Per-model request params required by the NVIDIA NIM API (see
     docs.api.nvidia.com/nim/reference/*-infer):
     - Nemotron models default stream=true (SSE) and thinking=ON — thinking
@@ -136,14 +163,25 @@ def _model_kwargs(model: str, style: str = "nvidia") -> dict:
       The official off-switch is chat_template_kwargs.enable_thinking=false.
     - gpt-oss supports reasoning_effort; 'low' keeps it fast — its reasoning
       goes to a separate reasoning_content field, so content stays clean.
+    - Providers can add their own request_options in llm_providers.json; those
+      are merged on top. If request_options has an "extra_body" key it is
+      merged into extra_body; every other key is passed through as-is.
     """
     kwargs: dict = {"stream": False}
     if style != "nvidia":
-        return kwargs  # other providers get a plain request
+        kwargs.update(request_options or {})
+        return kwargs
     if model.startswith("nvidia/"):
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     elif model.startswith("openai/gpt-oss"):
         kwargs["reasoning_effort"] = "low"
+    if request_options:
+        extra = request_options.get("extra_body")
+        if extra:
+            kwargs.setdefault("extra_body", {}).update(extra)
+        for k, v in request_options.items():
+            if k != "extra_body":
+                kwargs[k] = v
     return kwargs
 
 
@@ -369,18 +407,7 @@ def verify_or_extract(normalized: dict, candidate: dict, *, client=None) -> dict
     data = _call_llm(_VERIFY_SYSTEM, user_content, client=client, purpose="verify")
 
     is_match = _as_bool(data.get("is_match", False))
-    try:
-        confidence = float(data.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    # Models sometimes emit "85" meaning 85%. Convert to a 0-1 fraction;
-    # NaN/inf/out-of-range become 0 so a rejected match never becomes perfect.
-    if math.isnan(confidence) or math.isinf(confidence):
-        confidence = 0.0
-    elif confidence > 1.0 and confidence <= 100.0:
-        confidence = confidence / 100.0
-    elif not (0.0 <= confidence <= 1.0):
-        confidence = 0.0
+    confidence = _parse_confidence(data.get("confidence", 0.0))
 
     price_used = None
     if is_match:

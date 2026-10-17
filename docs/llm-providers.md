@@ -31,6 +31,31 @@ Check the provider's own site for current model names, they change.
 An entry with a missing or placeholder key is listed but switched off, so
 you can leave entries in the file and fill in keys later.
 
+## Per-model request options
+
+Some providers need extra request parameters beyond `model`, `messages`,
+`temperature`, and `max_tokens`. Add a `request_options` object to a
+provider entry and its contents are merged into the `chat.completions.create()`
+call for that endpoint:
+
+```json
+{
+  "name": "groq",
+  "base_url": "https://api.groq.com/openai/v1",
+  "api_key_env": "GROQ_API_KEY",
+  "models": ["openai/gpt-oss-120b"],
+  "min_seconds_between_calls": 2.1,
+  "timeout_seconds": 60,
+  "style": "plain",
+  "request_options": {"reasoning_effort": "low"}
+}
+```
+
+If `request_options` contains an `extra_body` key, it is merged into the
+`extra_body` dict; every other key is passed through as a top-level
+parameter. `request_options` must be a JSON object; anything else is a
+configuration error.
+
 ## How it chooses
 
 - `"strategy": "failover"` (default): the first endpoint in the file is used

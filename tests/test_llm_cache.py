@@ -1,5 +1,7 @@
 """Saved LLM answers: used only when asked for, and only for valid answers."""
+import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -82,3 +84,36 @@ def test_a_client_passed_in_never_uses_the_cache(monkeypatch):
     calls = _count_calls(monkeypatch, ['{"fresh": 1}'])
     assert llm_client._call_llm("sys", "user", purpose="verify", client=object()) == {"fresh": 1}
     assert calls == ["verify"]
+
+
+# --- B4: LLM_CACHE_TAG -------------------------------------------------------
+
+def test_cache_key_changes_with_llm_cache_tag(monkeypatch):
+    import importlib
+    import core.config as config_mod
+
+    msgs = [{"role": "user", "content": "hi"}]
+
+    # Default (no tag)
+    key1 = cache.key_for(msgs, 100, "verify")
+
+    # With tag
+    monkeypatch.setenv("LLM_CACHE_TAG", "exp-a")
+    importlib.reload(config_mod)
+    importlib.reload(cache)
+    key2 = cache.key_for(msgs, 100, "verify")
+
+    assert key1 != key2
+
+    # Same tag gives same key
+    key3 = cache.key_for(msgs, 100, "verify")
+    assert key2 == key3
+
+
+def test_put_stores_model_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "llm")
+    cache.put("test-key", {"answer": "hello"}, model="gpt-4")
+    path = Path(cache.CACHE_DIR) / "test-key.json"
+    data = json.loads(path.read_text())
+    assert data["model"] == "gpt-4"
+    assert data["answer"] == {"answer": "hello"}
