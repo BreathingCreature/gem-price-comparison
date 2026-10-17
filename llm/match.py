@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from core import events
-from core.config import MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
+from core.config import GATES_ENABLED, MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
 from llm.client import verify_or_extract
 
 # Currencies that count as "same money as GeM". Empty/missing = unknown =
@@ -88,7 +88,7 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
         # even if its numeric price falls inside the sanity band below.
         sf = candidate_dict.get("structured_fields") or {}
         currency = str(sf.get("currency") or "").strip().upper() if hasattr(sf, "get") else ""
-        if currency not in _INR_CURRENCIES:
+        if GATES_ENABLED and currency not in _INR_CURRENCIES:
             logger.warning("currency gate rejected %s: %s is not INR — not sending to LLM.", url, currency)
             all_decisions.append(
                 {
@@ -118,7 +118,7 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
     # 95% confidence live — so enforce the band mechanically here. A
     # decision already marked is_match=False is left untouched.
     gem_price = normalized.get("gem_price") if isinstance(normalized, dict) else None
-    if gem_price is not None:
+    if gem_price is not None and GATES_ENABLED:
         for d in all_decisions:
             if not d.get("is_match"):
                 continue
