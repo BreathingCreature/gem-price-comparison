@@ -140,6 +140,9 @@ LLM_CACHE_DIR = Path(os.getenv("LLM_CACHE_DIR", str(CACHE_DIR / "llm")))
 # overlap the rupee range (e.g. $300 vs GeM ₹10,000).
 KNOWN_MARKETPLACE_DOMAINS = ["amazon.in", "flipkart.com"]
 
+# Max trace files to keep before rotation deletes oldest. Env-overrideable.
+TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)
+
 REQUEST_TIMEOUT_SECONDS = 15
 
 USER_AGENT = (
