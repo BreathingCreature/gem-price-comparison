@@ -62,6 +62,13 @@
   function shortHost(url) {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return url || ""; }
   }
+  function safeHref(url) {
+    // Scraped URLs are untrusted: only real web schemes become links,
+    // everything else renders as plain text (never javascript:, data:, ...)
+    if (typeof url !== "string") return null;
+    var u = url.trim();
+    return /^https?:\/\//i.test(u) ? u : null;
+  }
 
   // ---- clock and the "right now" line ----
   function tick() {
@@ -264,7 +271,10 @@
         h("th", { text: "Shop" }), h("th", { text: "Price" }), h("th", { text: "Vs GeM" }), h("th", { text: "Match" }), h("th", { text: "Link" }))));
       var body = h("tbody");
       matches.forEach(function (m) {
-        var link = h("a", { href: m.candidate_url, target: "_blank", rel: "noopener noreferrer", text: "open" });
+        var href = safeHref(m.candidate_url);
+        var link = href
+          ? h("a", { href: href, target: "_blank", rel: "noopener noreferrer", text: "open" })
+          : h("span", { class: "muted", text: m.candidate_url || "-" });
         var delta = m.delta_vs_gem == null ? "-" : (m.delta_vs_gem <= 0 ? "-" : "+") + money(Math.abs(m.delta_vs_gem));
         body.appendChild(h("tr", null, h("td", { text: m.source_domain }), h("td", { text: money(m.price_used) }),
           h("td", { class: m.cheaper_than_gem ? "ok" : "", text: delta }),
