@@ -97,3 +97,7 @@ To work on the page without scraping anything, start the server in demo mode
 `python tools/doctor.py`.
 
 More: `docs/architecture.md`, `docs/api.md`, `docs/llm-providers.md`.
+
+## Evaluation
+
+How to measure recall, precision and speed against a hand-made answer key: see [docs/evaluation.md](docs/evaluation.md).
