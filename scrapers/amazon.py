@@ -115,7 +115,12 @@ def parse_cards_from_html(html: str) -> list[dict]:
         price = parse_indian_price(price_el.get_text(" ", strip=True)) if price_el else None
 
         link_el = card.select_one("h2 a") or card.select_one("a.a-link-normal.s-no-outline")
-        link = urljoin("https://www.amazon.in", link_el["href"]) if link_el and link_el.get("href") else None
+        # Sponsored cards link to /sspa/click?... — build a stable product
+        # URL from the card's data-asin instead so the scorer can match it.
+        asin = card.get("data-asin")
+        link = f"https://www.amazon.in/dp/{asin}" if asin else None
+        if not link and link_el and link_el.get("href"):
+            link = urljoin("https://www.amazon.in", link_el["href"])
 
         if not name or not price or not link:
             continue

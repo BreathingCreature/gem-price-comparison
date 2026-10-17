@@ -86,7 +86,11 @@ def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=N
     if out_path.exists():
         for line in out_path.read_text(encoding="utf-8").splitlines():
             if line.strip():
-                done.add(str(json.loads(line)["id"]))
+                rec = json.loads(line)
+                # A row that errored must be retried on resume — only clean
+                # rows are "done".
+                if not rec.get("error"):
+                    done.add(str(rec["id"]))
     todo = [r for r in rows if r.get("gem_url") and r["id"] not in done and (not only or r["id"] in only)]
     if limit:
         todo = todo[:limit]
@@ -101,7 +105,21 @@ def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=N
 
 
 def settings_snapshot() -> dict:
+    # Load .env so values only set there (not in the shell) are recorded.
+    from dotenv import load_dotenv
+
+    load_dotenv()
     snap = {name: os.getenv(name) for name in SETTING_NAMES if os.getenv(name) is not None}
+    # Record which LLM providers/models were active for this run's meta.
+    try:
+        from llm.router import load_endpoints
+
+        endpoints, _ = load_endpoints()
+        snap["llm_providers"] = [
+            {"name": e.name, "model": e.model, "enabled": e.enabled} for e in endpoints
+        ]
+    except Exception:
+        snap["llm_providers"] = []
     try:
         commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
     except Exception:

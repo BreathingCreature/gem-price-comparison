@@ -107,7 +107,7 @@ def test_amazon_parse_cards_basic():
     assert len(cards) == 1
     assert cards[0]["name"] == "Logitech M650 Wireless Mouse"
     assert cards[0]["price"] == "1199.00"
-    assert cards[0]["link"].startswith("https://www.amazon.in/Logitech-M650")
+    assert cards[0]["link"].startswith("https://www.amazon.in/dp/B0DEMO1234")
 
 
 def test_amazon_parse_cards_skips_no_asin():

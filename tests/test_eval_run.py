@@ -42,8 +42,9 @@ def test_a_second_run_only_does_what_is_missing(tmp_path):
     out = tmp_path / "r.jsonl"
     run_eval.run_all(ROWS, out, run_fn=_fake_run, limit=2, log=lambda *_: None)
     assert len(out.read_text().splitlines()) == 2
-    assert run_eval.run_all(ROWS, out, run_fn=_fake_run, log=lambda *_: None) == 1
-    assert len(out.read_text().splitlines()) == 3
+    # P2 errored on the first run, so it must be retried on resume; only P1 is done.
+    assert run_eval.run_all(ROWS, out, run_fn=_fake_run, log=lambda *_: None) == 2
+    assert len(out.read_text().splitlines()) == 4
 
 
 def test_only_filter(tmp_path):
