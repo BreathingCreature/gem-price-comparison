@@ -381,7 +381,65 @@ def test_dedup_other_shop_diff_id_stays_separate():
     assert len(pipeline._dedup([c1, c2])) == 2  # different query ids -> two
 
 
-def test_retry_filters_non_indian_suggested_domains():
+# --- A2: per-site key handles tracking params ----------------------------
+
+def test_a2_other_shop_diff_utm_is_one():
+    c1 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/p/123?utm_source=a", scraper_used="generic", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/p/123?utm_source=b", scraper_used="generic", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same page, different utm -> one
+
+
+def test_a2_other_shop_sorted_params_equal():
+    c1 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/A?x=1&y=2", scraper_used="generic", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/A?y=2&x=1", scraper_used="generic", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same params, different order -> one
+
+
+def test_a2_flipkart_same_itm_diff_pid_stays_two():
+    c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 2  # different pids -> two
+
+
+def test_a2_flipkart_same_pid_diff_lidq_is_one():
+    c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST1&q=mouse", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST2&q=mouse+2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same pid -> one
+
+
+def test_a2_amazon_dp_asin_equals_title_path_with_ref():
+    c1 = CandidateResult(source_domain="amazon.in", url="https://www.amazon.in/dp/B0ABCDEFGH", scraper_used="amazon", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
+    c2 = CandidateResult(source_domain="amazon.in", url="https://www.amazon.in/Title/dp/B0ABCDEFGH/ref=x?a=1", scraper_used="amazon", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same ASIN -> one
+
+
+# --- A3: _search_direct and _dedup share the same key function -----------
+
+def test_a3_search_direct_and_dedup_use_same_key():
+    """Both functions must produce identical keys for the same URL list."""
+    urls = [
+        "https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=X",
+        "https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=Y",
+        "https://brandstore.example.com/p/123?utm_source=a",
+        "https://brandstore.example.com/p/123?utm_source=b",
+        "https://www.amazon.in/dp/B0ABCDEFGH",
+        "https://www.amazon.in/dp/B0ABCDEFGH?crid=123",
+    ]
+    from scrapers._base import CandidateResult
+    candidates = [CandidateResult(source_domain="x", url=u, scraper_used="x", structured_fields={"title": "t", "price": 1.0}, raw_page_text="") for u in urls]
+
+    deduped = pipeline._dedup(candidates)
+    # Expected: flipkart same pid (1), other shop diff utm (1), amazon same ASIN (1) = 3
+    assert len(deduped) == 3, f"expected 3, got {len(deduped)}"
+
+    # Verify _search_direct produces the same dedup result
+    def _fake_search(q):
+        return SearchScrapeResult(source_domain="test", query=q, candidates=candidates)
+
+    _, all_candidates = pipeline._search_direct(_fake_search, ["q1"])
+    assert len(all_candidates) == 3, f"expected 3, got {len(all_candidates)}"
+
+
     # LLM prompt asks for Indian domains but doesn't enforce it —
     # bestbuy.com must not reopen open-mode .com discovery.
     url = "https://mkp.gem.gov.in/test/retry-indian-filter/p-12-12-cat.html"

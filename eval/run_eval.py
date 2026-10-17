@@ -56,8 +56,8 @@ def record_for(row: dict, run_fn) -> dict:
         result = run_fn(row["gem_url"], refresh=True, on_event=on_event) or {}
     except Exception as e:  # one broken product must not stop the whole batch
         error = f"{type(e).__name__}: {e}"
-    if error is None and counts["llm_failures"] > 0 and not result.get("matches"):
-        error = f"all {counts['llm_failures']} LLM call(s) failed, no match verdicts"
+    if error is None and counts["llm_failures"] > 0 and counts["llm_calls"] == 0 and counts["cache_hits"] == 0:
+        error = "all LLM call(s) failed, no match verdicts"
     seconds = round(time.perf_counter() - started, 2)
     return {
         "id": row["id"],
@@ -141,9 +141,23 @@ def main(argv=None) -> int:
     out = Path(args.dir) / f"{args.label}.jsonl"
     meta = Path(args.dir) / f"{args.label}.meta.json"
     rows = load_key(args.key)
-    if not meta.exists():
+    new_settings = settings_snapshot()
+    if meta.exists():
+        old_meta = json.loads(meta.read_text(encoding="utf-8"))
+        old_settings = old_meta.get("settings", {})
+        new_settings_dict = new_settings.get("settings", {})
+        diff = {k: (old_settings.get(k), new_settings_dict.get(k))
+                for k in set(old_settings) | set(new_settings_dict)
+                if old_settings.get(k) != new_settings_dict.get(k)}
+        if diff:
+            print(f"Warning: settings changed since last run with label '{args.label}':")
+            for k in sorted(diff):
+                old_v, new_v = diff[k]
+                print(f"  {k}: {old_v!r} -> {new_v!r}")
+            print("Use a new --label for a new setting.")
+    else:
         meta.parent.mkdir(parents=True, exist_ok=True)
-        meta.write_text(json.dumps(settings_snapshot(), indent=2), encoding="utf-8")
+        meta.write_text(json.dumps(new_settings, indent=2), encoding="utf-8")
     only = set(args.only.split(",")) if args.only else None
     run_all(rows, out, limit=args.limit, only=only)
     print(f"results: {out}\nscore them with: python -m eval.score --key {args.key} --results {out}")
