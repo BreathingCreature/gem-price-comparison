@@ -61,10 +61,16 @@ def _run(**overrides):
 
 # --- reading the settings ------------------------------------------------------
 
-@pytest.mark.parametrize("raw,expected", [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("no", False), ("", False)])
+@pytest.mark.parametrize("raw,expected", [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("no", False)])
 def test_flag_parsing(monkeypatch, raw, expected):
     monkeypatch.setenv("SOME_FLAG", raw)
     assert config._flag("SOME_FLAG", not expected) is expected
+
+
+def test_flag_empty_means_default(monkeypatch):
+    monkeypatch.setenv("SOME_FLAG", "")
+    assert config._flag("SOME_FLAG", True) is True  # empty → default True
+    assert config._flag("SOME_FLAG", False) is False  # empty → default False
 
 
 def test_flag_default_when_unset(monkeypatch):
