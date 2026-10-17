@@ -253,7 +253,7 @@ def _call_llm(
 
     raw = _ask(client, messages, max_tokens, purpose)
     data = _extract_json(raw)
-    if data is not None:
+    if isinstance(data, dict):
         if cache_key:
             llm_cache.put(cache_key, data)
         return data
@@ -268,7 +268,7 @@ def _call_llm(
     )
     raw2 = _ask(client, messages, max_tokens, purpose)
     data2 = _extract_json(raw2)
-    if data2 is not None:
+    if isinstance(data2, dict):
         if cache_key:
             llm_cache.put(cache_key, data2)
         return data2
@@ -372,6 +372,7 @@ def verify_or_extract(normalized: dict, candidate: dict, *, client=None) -> dict
         confidence = float(data.get("confidence", 0.0))
     except (TypeError, ValueError):
         confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))  # clamp: 85 or 40 both sanitize
 
     price_used = None
     if is_match:
