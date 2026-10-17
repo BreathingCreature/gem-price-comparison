@@ -53,6 +53,10 @@ python -m eval.run_eval --key eval/answer_key.csv --label before --limit 3
 
 Run three first and look at the output. Then run all of them (the same command without `--limit`). It saves `eval/results/before.jsonl` (one line per product) and `eval/results/before.meta.json` (the settings and the git commit). You can stop it with Ctrl+C and start it again later: finished products are skipped.
 
+**Restart behavior:** On a resume, any row whose result line has no `error` is treated as done and skipped. A row where the LLM never answered (all LLM calls failed, no cache hits) counts as an error and is run again. A row with matches but some failed LLM calls is also treated as done — those failures were retried internally by the router.
+
+If you reuse a `--label` with different settings (for example `GEM_PARALLEL=1` vs `0`), the old `.meta.json` is kept and a warning lists the settings that changed. Use a new `--label` for a new setting.
+
 Every product is a fresh run. The one-hour cache of finished runs is bypassed.
 
 ## 3. The score
