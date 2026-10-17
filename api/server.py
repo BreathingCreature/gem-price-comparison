@@ -42,7 +42,10 @@ def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) 
 
 def _looks_like_gem_url(url: str) -> bool:
     parts = urlparse(url.strip())
-    return parts.scheme in ("http", "https") and (parts.hostname or "").endswith("gem.gov.in")
+    host = (parts.hostname or "").lower()
+    return parts.scheme in ("http", "https") and (
+        host == "gem.gov.in" or host.endswith(".gem.gov.in")
+    )
 
 
 def create_app(runner: Optional[Callable] = None, *, demo: Optional[bool] = None) -> FastAPI:
