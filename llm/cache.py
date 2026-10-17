@@ -23,10 +23,11 @@ from typing import Optional
 
 from core.config import LLM_CACHE_DIR as CACHE_DIR
 from core.config import LLM_CACHE_ENABLED as ENABLED
+from core.config import LLM_CACHE_TAG as CACHE_TAG
 
 
-def key_for(messages: list[dict], max_tokens: int, purpose: str) -> str:
-    raw = json.dumps({"m": messages, "t": max_tokens, "p": purpose}, sort_keys=True, ensure_ascii=False)
+def key_for(messages: list[dict], max_tokens: int, purpose: str, model: Optional[str] = None) -> str:
+    raw = json.dumps({"m": messages, "t": max_tokens, "p": purpose, "tag": CACHE_TAG, "model": model or ""}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -40,13 +41,16 @@ def get(key: str) -> Optional[dict]:
     return answer if isinstance(answer, dict) else None
 
 
-def put(key: str, answer: dict) -> None:
+def put(key: str, answer: dict, model: Optional[str] = None) -> None:
     try:
         folder = Path(CACHE_DIR)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{key}.json"
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps({"answer": answer}, ensure_ascii=False), encoding="utf-8")
+        payload = {"answer": answer}
+        if model:
+            payload["model"] = model
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         pass  # a cache that cannot be written is just a cache that does not help

@@ -59,6 +59,9 @@ class Endpoint:
     timeout: float = 60.0
     enabled: bool = True
     disabled_reason: str = ""
+    # Per-provider request options merged into chat.completions.create().
+    # Example: {"reasoning_effort": "low"} or {"extra_body": {...}}.
+    request_options: Optional[dict] = None
     # live state, changes while the program runs
     cooldown_until: float = 0.0
     last_start: float = -1e9
@@ -113,6 +116,9 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
                 raise ValueError(f"{path}: every provider needs '{key}' (problem in {entry.get('name', entry)!r})")
         key_ok = key_is_set(os.getenv(entry["api_key_env"]))
         wanted = entry.get("enabled", True)
+        request_options = entry.get("request_options")
+        if request_options is not None and not isinstance(request_options, dict):
+            raise ValueError(f"{path}: provider {entry['name']!r} request_options must be an object")
         for model in entry["models"]:
             ep = Endpoint(
                 provider=entry["name"],
@@ -122,6 +128,7 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
                 style=entry.get("style", "plain"),
                 min_gap=float(entry.get("min_seconds_between_calls", 0.0)),
                 timeout=float(entry.get("timeout_seconds", 60.0)),
+                request_options=request_options,
             )
             if not wanted:
                 ep.enabled, ep.disabled_reason = False, "turned off in the config file"
@@ -252,7 +259,7 @@ class Router:
                 messages=messages,
                 temperature=0.1,  # above 0 because nemotron's schema rejects exactly 0
                 max_tokens=max_tokens,
-                **_client._model_kwargs(endpoint.model, endpoint.style),
+                **_client._model_kwargs(endpoint.model, endpoint.style, endpoint.request_options),
             )
             raw = (resp.choices[0].message.content or "").strip()
         except _client._endpoint_errors() as exc:
@@ -260,7 +267,9 @@ class Router:
             return None
         seconds = self.clock() - started
         if not raw:
-            self._record_failure(endpoint, RuntimeError("empty answer"), seconds, purpose)
+            finish_reason = getattr(resp.choices[0], "finish_reason", None) or ""
+            reason_text = f"empty answer (finish_reason={finish_reason})" if finish_reason else "empty answer"
+            self._record_failure(endpoint, RuntimeError(reason_text), seconds, purpose)
             return None
         with self._lock:
             endpoint.calls += 1
