@@ -87,9 +87,114 @@ def test_all_llm_failures_with_no_verdicts_marked_error(tmp_path):
 
     def _fake_run_all_fail(gem_url, refresh=False, on_event=None):
         on_event({"type": "llm_call", "ok": False, "model": "m1"})
+        on_event({"type": "llm_call", "ok": False, "model": "m1"})
+        on_event({"type": "llm_call", "ok": False, "model": "m1"})
         return {"trace_id": "t", "matches": [], "not_found_on": [], "search_issues": []}
 
     run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out, run_fn=_fake_run_all_fail, log=lambda *_: None)
     rec = __import__("json").loads(out.read_text().splitlines()[0])
     assert rec["error"] is not None
     assert "LLM call" in rec["error"]
+
+
+# --- A1: error condition is "LLM never answered" -------------------------
+
+def _fake_run_pattern(failures, ok_calls, cache_hits, matches, gem_url, refresh=False, on_event=None):
+    for _ in range(failures):
+        on_event({"type": "llm_call", "ok": False, "model": "m1"})
+    for _ in range(ok_calls):
+        on_event({"type": "llm_call", "ok": True, "model": "m1"})
+    for _ in range(cache_hits):
+        on_event({"type": "llm_cache_hit"})
+    return {"trace_id": "t", "matches": matches, "not_found_on": [], "search_issues": []}
+
+
+def _fake_run_pattern(failures, ok_calls, cache_hits, matches, gem_url, refresh=False, on_event=None):
+    for _ in range(failures):
+        on_event({"type": "llm_call", "ok": False, "model": "m1"})
+    for _ in range(ok_calls):
+        on_event({"type": "llm_call", "ok": True, "model": "m1"})
+    for _ in range(cache_hits):
+        on_event({"type": "llm_cache_hit"})
+    return {"trace_id": "t", "matches": matches, "not_found_on": [], "search_issues": []}
+
+
+def test_a1_failures_plus_ok_calls_is_not_error(tmp_path):
+    out = tmp_path / "r.jsonl"
+    run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out,
+                     run_fn=lambda u, refresh=False, on_event=None: _fake_run_pattern(3, 5, 0,
+                         [{"candidate_url": "https://www.amazon.in/dp/B0X", "source_domain": "amazon.in",
+                           "price_used": 99.0, "confidence": 0.9}], u, refresh, on_event),
+                     log=lambda *_: None)
+    rec = __import__("json").loads(out.read_text().splitlines()[0])
+    assert rec["error"] is None
+
+
+def test_a1_all_failures_no_calls_is_error(tmp_path):
+    out = tmp_path / "r.jsonl"
+    run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out,
+                     run_fn=lambda u, refresh=False, on_event=None: _fake_run_pattern(3, 0, 0, [], u, refresh, on_event),
+                     log=lambda *_: None)
+    rec = __import__("json").loads(out.read_text().splitlines()[0])
+    assert rec["error"] is not None
+    assert "LLM call" in rec["error"]
+
+
+def test_a1_cache_hits_only_is_not_error(tmp_path):
+    out = tmp_path / "r.jsonl"
+    run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out,
+                     run_fn=lambda u, refresh=False, on_event=None: _fake_run_pattern(0, 0, 3, [], u, refresh, on_event),
+                     log=lambda *_: None)
+    rec = __import__("json").loads(out.read_text().splitlines()[0])
+    assert rec["error"] is None
+
+
+# --- A4: meta settings comparison on label reuse -------------------------
+
+def test_a4_meta_settings_changed_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
+    import csv
+    key_file = tmp_path / "key.csv"
+    key_file.write_text("id,gem_url\nP1,https://mkp.gem.gov.in/a\n")
+    
+    meta = tmp_path / "before.meta.json"
+    
+    # First run with GEM_PARALLEL=0 — write meta as if a previous run happened
+    monkeypatch.setenv("GEM_PARALLEL", "0")
+    monkeypatch.setenv("GEM_RETRY", "1")
+    snap = run_eval.settings_snapshot()
+    meta.write_text(json.dumps(snap, indent=2), encoding="utf-8")
+    
+    # Change settings and mock run_all to do nothing; main() will compare settings
+    monkeypatch.setenv("GEM_PARALLEL", "1")
+    monkeypatch.setattr(run_eval, "run_all", lambda rows, out_path, **k: None)
+    
+    run_eval.main(["--key", str(key_file), "--label", "before", "--dir", str(tmp_path)])
+    captured = capsys.readouterr()
+    assert "settings changed" in captured.out
+    assert "GEM_PARALLEL" in captured.out
+    assert "Use a new --label" in captured.out
+    
+    # Meta not overwritten
+    old = json.loads(meta.read_text(encoding="utf-8"))
+    assert old["settings"]["GEM_PARALLEL"] == "0"
+
+
+def test_a4_meta_settings_same_no_warning(tmp_path, monkeypatch, capsys):
+    import csv
+    key_file = tmp_path / "key.csv"
+    key_file.write_text("id,gem_url\nP1,https://mkp.gem.gov.in/a\n")
+    
+    meta = tmp_path / "before.meta.json"
+    
+    monkeypatch.setenv("GEM_PARALLEL", "0")
+    monkeypatch.setenv("GEM_RETRY", "1")
+    snap = run_eval.settings_snapshot()
+    meta.write_text(json.dumps(snap, indent=2), encoding="utf-8")
+    
+    monkeypatch.setenv("GEM_PARALLEL", "0")
+    monkeypatch.setenv("GEM_RETRY", "1")
+    monkeypatch.setattr(run_eval, "run_all", lambda rows, out_path, **k: None)
+    
+    run_eval.main(["--key", str(key_file), "--label", "before", "--dir", str(tmp_path)])
+    captured = capsys.readouterr()
+    assert "settings changed" not in captured.out

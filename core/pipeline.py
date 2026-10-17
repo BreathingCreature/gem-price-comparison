@@ -123,16 +123,18 @@ def _usable(candidate) -> bool:
 
 def _listing_key(url: str) -> str:
     """Per-site key for dedup: ASIN for Amazon, pid/itm for Flipkart,
-    full URL (with query string) for everything else.
+    cleaned URL for everything else.
 
-    Using the full URL for other shops avoids collapsing distinct products
-    that differ only in query parameters (e.g. product.php?id=1 vs id=2).
+    For other shops: lowercase host, drop fragment, drop trailing slash,
+    drop tracking parameters (utm_*, gclid, fbclid, ref, ref_, srsltid,
+    spm, cmpid, affid), keep all other parameters sorted by name.
     """
     url = (url or "").strip()
     parsed = urlparse(url if "//" in url else "//" + url)
     host = (parsed.hostname or "").lower()
     host = host[4:] if host.startswith("www.") else host
-    path = parsed.path or ""
+    path = (parsed.path or "").rstrip("/")
+
     if host.endswith("amazon.in") or host.endswith("amazon.com"):
         m = re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})", path)
         if m:
@@ -144,7 +146,14 @@ def _listing_key(url: str) -> str:
         m = re.search(r"/p/(itm[a-z0-9]+)", path, re.I)
         if m:
             return "itm:" + m.group(1).lower()
-    return url.lower()
+
+    # Other shops: host + path + sorted non-tracking query params
+    tracking = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+                "gclid", "fbclid", "ref", "ref_", "srsltid", "spm", "cmpid", "affid"}
+    params = parse_qs(parsed.query)
+    kept = sorted((k, v[0] if v else "") for k, v in params.items() if k not in tracking)
+    qs = "&".join(f"{k}={v}" for k, v in kept)
+    return f"{host}{path}?{qs}" if qs else f"{host}{path}"
 
 
 def _dedup(candidates: list) -> list:
