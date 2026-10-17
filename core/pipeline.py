@@ -45,6 +45,9 @@ from urllib.parse import urlparse
 
 from core import events
 from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
+from core.config import PARALLEL_SEARCH
+from core.parallel import run_pair
+from core.config import RETRY_ENABLED
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
 import discovery
@@ -251,6 +254,27 @@ def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIREC
     return results, all_candidates
 
 
+def _search_marketplaces(flipkart_search_fn, amazon_search_fn, queries: list[str], *, again: bool = False):
+    """Search Flipkart and Amazon. With GEM_PARALLEL=1 both run at the same
+    time, otherwise one after the other (Flipkart first), as before.
+    Returns (flipkart_results, flipkart_candidates, amazon_results, amazon_candidates)."""
+    kind = "retry" if again else "search"
+    suffix = " again" if again else ""
+    if PARALLEL_SEARCH:
+        events.emit("stage", name=f"{kind}_both", label=f"Searching Flipkart and Amazon at the same time{suffix}")
+        (f_results, f_candidates), (a_results, a_candidates) = run_pair(
+            lambda: _search_direct(flipkart_search_fn, queries, label="flipkart"),
+            lambda: _search_direct(amazon_search_fn, queries, label="amazon"),
+            parallel=True,
+        )
+    else:
+        events.emit("stage", name=f"{kind}_flipkart", label=f"Searching Flipkart{suffix}")
+        f_results, f_candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
+        events.emit("stage", name=f"{kind}_amazon", label=f"Searching Amazon{suffix}")
+        a_results, a_candidates = _search_direct(amazon_search_fn, queries, label="amazon")
+    return f_results, f_candidates, a_results, a_candidates
+
+
 def _run_discovery_and_generic_scrape(
     queries: list[str],
     allowed_domains: Optional[list[str]],
@@ -359,10 +383,9 @@ def _run_pipeline(
     # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
     # Every normalized query is eligible (early-exit once one query has
     # enough candidates), not just queries[0].
-    events.emit("stage", name="search_flipkart", label="Searching Flipkart")
-    flipkart_results, flipkart_candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
-    events.emit("stage", name="search_amazon", label="Searching Amazon")
-    amazon_results, amazon_candidates = _search_direct(amazon_search_fn, queries, label="amazon")
+    flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
+        flipkart_search_fn, amazon_search_fn, queries
+    )
     trace["stages"]["flipkart_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in flipkart_results]
     trace["stages"]["amazon_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in amazon_results]
 
@@ -408,7 +431,7 @@ def _run_pipeline(
 
     # --- retry: only if the first pass found nothing ----------------------------------
     retry_trace = {"triggered": False}
-    if not confirmed:
+    if not confirmed and RETRY_ENABLED:
         retry_trace["triggered"] = True
         events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
         # expand_search is OPTIONAL logic — if it throws (bad JSON, 429,
@@ -435,10 +458,12 @@ def _run_pipeline(
             # so a bad primary query on the working marketplaces was never
             # retried with the LLM's better phrasing. All retry_queries are
             # eligible, not just [0].
-            events.emit("stage", name="retry_flipkart", label="Searching Flipkart again")
-            retry_flipkart_results, retry_flipkart_candidates = _search_direct(flipkart_search_fn, retry_queries, label="flipkart")
-            events.emit("stage", name="retry_amazon", label="Searching Amazon again")
-            retry_amazon_results, retry_amazon_candidates = _search_direct(amazon_search_fn, retry_queries, label="amazon")
+            (
+                retry_flipkart_results,
+                retry_flipkart_candidates,
+                retry_amazon_results,
+                retry_amazon_candidates,
+            ) = _search_marketplaces(flipkart_search_fn, amazon_search_fn, retry_queries, again=True)
             trace["stages"]["flipkart_search_retry"] = [
                 r.to_dict() if hasattr(r, "to_dict") else r for r in retry_flipkart_results
             ]
