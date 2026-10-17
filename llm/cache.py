@@ -27,7 +27,12 @@ from core.config import LLM_CACHE_TAG as CACHE_TAG
 
 
 def key_for(messages: list[dict], max_tokens: int, purpose: str, model: Optional[str] = None) -> str:
-    raw = json.dumps({"m": messages, "t": max_tokens, "p": purpose, "tag": CACHE_TAG, "model": model or ""}, sort_keys=True, ensure_ascii=False)
+    payload = {"m": messages, "t": max_tokens, "p": purpose}
+    if CACHE_TAG:
+        payload["tag"] = CACHE_TAG
+    if model:
+        payload["model"] = model
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
