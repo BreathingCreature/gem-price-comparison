@@ -34,6 +34,9 @@ import re
 import time
 from typing import Optional
 
+from core import events
+from llm import cache as llm_cache
+
 from core.config import (
     NVIDIA_MODELS,
     NVIDIA_MIN_SECONDS_BETWEEN_CALLS,
@@ -239,9 +242,20 @@ def _call_llm(
         {"role": "user", "content": user_content},
     ]
 
+    # Saved answers are only used when the router picks the endpoint (no
+    # client passed in) and LLM_CACHE=1. See llm/cache.py.
+    cache_key = llm_cache.key_for(messages, max_tokens, purpose) if (client is None and llm_cache.ENABLED) else None
+    if cache_key:
+        saved = llm_cache.get(cache_key)
+        if saved is not None:
+            events.emit("llm_cache_hit", purpose=purpose)
+            return saved
+
     raw = _ask(client, messages, max_tokens, purpose)
     data = _extract_json(raw)
     if data is not None:
+        if cache_key:
+            llm_cache.put(cache_key, data)
         return data
 
     logger.warning("LLM returned non-JSON on first try (%r) — retrying once with a correction nudge.", raw[:120])
@@ -255,6 +269,8 @@ def _call_llm(
     raw2 = _ask(client, messages, max_tokens, purpose)
     data2 = _extract_json(raw2)
     if data2 is not None:
+        if cache_key:
+            llm_cache.put(cache_key, data2)
         return data2
 
     raise RuntimeError(f"LLM did not return valid JSON after one retry. Last response: {raw2[:200]!r}")
