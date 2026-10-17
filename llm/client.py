@@ -29,6 +29,7 @@ distinction matters.
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 import time
@@ -372,7 +373,14 @@ def verify_or_extract(normalized: dict, candidate: dict, *, client=None) -> dict
         confidence = float(data.get("confidence", 0.0))
     except (TypeError, ValueError):
         confidence = 0.0
-    confidence = max(0.0, min(1.0, confidence))  # clamp: 85 or 40 both sanitize
+    # Models sometimes emit "85" meaning 85%. Convert to a 0-1 fraction;
+    # NaN/inf/out-of-range become 0 so a rejected match never becomes perfect.
+    if math.isnan(confidence) or math.isinf(confidence):
+        confidence = 0.0
+    elif confidence > 1.0 and confidence <= 100.0:
+        confidence = confidence / 100.0
+    elif not (0.0 <= confidence <= 1.0):
+        confidence = 0.0
 
     price_used = None
     if is_match:
