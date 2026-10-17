@@ -15,3 +15,7 @@ agent_payload/
 .agent/
 .pytest_cache/
 llm_providers.json
+eval/results/
+TASKS2.md
+agent_payload2.zip
+agent_payload2/
