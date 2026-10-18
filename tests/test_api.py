@@ -159,6 +159,24 @@ def test_llm_status_lists_every_endpoint(client, monkeypatch):
     assert [(e["endpoint"], e["state"]) for e in body["endpoints"]] == [("one/m", "ready"), ("two/m", "disabled")]
 
 
+def test_the_real_app_warms_up_once_at_startup(monkeypatch):
+    calls = []
+    monkeypatch.setattr("api.server._warm_up", lambda: calls.append(1))
+    with TestClient(create_app(demo=False)) as client:
+        assert client.get("/api/health").json()["ok"] is True
+    assert calls == [1]
+
+
+def test_demo_and_injected_runners_never_warm_up(monkeypatch):
+    calls = []
+    monkeypatch.setattr("api.server._warm_up", lambda: calls.append(1))
+    with TestClient(create_app(demo=True)):
+        pass
+    with TestClient(create_app(runner=fake_runner, demo=False)):
+        pass
+    assert calls == []
+
+
 def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     monkeypatch.setenv("GEM_DEMO_SPEED", "0")
     client = TestClient(create_app(demo=True))

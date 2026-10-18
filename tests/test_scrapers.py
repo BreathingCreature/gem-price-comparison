@@ -632,6 +632,22 @@ def test_a_blocked_fingerprint_falls_through_to_the_next_session():
     assert len(_FakeCurlSession.made[1].gets) == 2  # chrome146 served both fetches
 
 
+def test_resolve_chromedriver_asks_selenium_manager_once():
+    import selenium.webdriver.common.selenium_manager as selenium_manager
+
+    seen = {}
+
+    def fake_binary_paths(self, args):
+        seen["args"] = list(args)
+        return {"browser_path": "C:/fake/chrome.exe", "driver_path": "C:/fake/chromedriver.exe"}
+
+    with _patched(selenium_manager.SeleniumManager, binary_paths=fake_binary_paths):
+        got = _base.resolve_chromedriver()
+
+    assert got == "C:/fake/chromedriver.exe"
+    assert seen["args"] == ["--browser", "chrome"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0
