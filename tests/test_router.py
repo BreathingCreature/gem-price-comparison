@@ -32,9 +32,10 @@ class Clock:
 class FakeClient:
     """Answers from a script. Each entry is a string (the answer) or an exception to raise."""
 
-    def __init__(self, script=None, label="x"):
+    def __init__(self, script=None, label="x", usage_tokens=None):
         self.script = list(script or [])
         self.label = label
+        self.usage_tokens = usage_tokens
         self.calls = 0
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
@@ -43,7 +44,10 @@ class FakeClient:
         step = self.script.pop(0) if self.script else f"answer from {self.label}"
         if isinstance(step, Exception):
             raise step
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=step))])
+        resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=step))])
+        if self.usage_tokens is not None:  # like the real API's resp.usage
+            resp.usage = SimpleNamespace(total_tokens=self.usage_tokens)
+        return resp
 
 
 def make_router(clients, *, strategy="failover", gaps=None, max_wait=30.0, purposes=None):
@@ -533,5 +537,138 @@ def test_purposes_must_be_a_list_of_known_purposes(tmp_path):
             load_endpoints(path)
         assert "purposes" in str(err.value)
         assert "x" in str(err.value)
+
+
+# --- checkpoint 22 / D2: per-provider tokens_per_minute ----------------------
+
+# 4000 chars ≈ 1000 tokens at the router's own 4-chars-per-token estimate.
+BIG_MESSAGES = [{"role": "user", "content": "x" * 4000}]
+
+
+def _budget_router(clients, *, budgets=None, max_wait=30.0):
+    """Like _limit_router, but for the per-provider tokens_per_minute budget."""
+    clock = Clock()
+    budgets = budgets or {}
+    endpoints = [
+        Endpoint(
+            provider=name,
+            model="m",
+            base_url=f"https://{name}.test/v1",
+            api_key_env="K",
+            tokens_per_minute=budgets.get(name, 0),
+        )
+        for name in clients
+    ]
+    router = Router(
+        endpoints, clock=clock, sleep=clock.sleep, max_wait=max_wait,
+        client_factory=lambda ep: clients[ep.provider],
+    )
+    return router, clock
+
+
+def test_the_token_budget_is_read_from_the_config_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_T", "real-key")
+    path = _write_config(tmp_path, [{
+        "name": "t", "base_url": "https://t.test/v1", "api_key_env": "KEY_T", "models": ["m"],
+        "tokens_per_minute": 6000,
+    }])
+
+    endpoints, _ = load_endpoints(path)
+    assert endpoints[0].tokens_per_minute == 6000
+
+
+def test_without_the_token_key_there_is_no_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_T", "real-key")
+    path = _write_config(tmp_path, [{"name": "t", "base_url": "https://t.test/v1", "api_key_env": "KEY_T", "models": ["m"]}])
+
+    endpoints, _ = load_endpoints(path)
+    assert endpoints[0].tokens_per_minute == 0
+
+
+def test_a_nonsense_token_budget_is_a_loud_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_T", "real-key")
+    path = _write_config(tmp_path, [{
+        "name": "t", "base_url": "https://t.test/v1", "api_key_env": "KEY_T", "models": ["m"],
+        "tokens_per_minute": "lots",
+    }])
+
+    with pytest.raises(ValueError) as err:
+        load_endpoints(path)
+    assert "tokens_per_minute" in str(err.value) and "t" in str(err.value)
+
+
+def test_a_provider_with_no_room_left_lets_another_provider_take_the_call():
+    a = FakeClient(label="a", usage_tokens=1500)
+    b = FakeClient(label="b")
+    router, _ = _budget_router({"a": a, "b": b}, budgets={"a": 2000})
+
+    assert router.complete(BIG_MESSAGES, 100) == "answer from a"
+    # a has used 1500 of its 2000-token minute; the next call estimates ~1000
+    # more, so it would go over — b takes it.
+    assert router.complete(BIG_MESSAGES, 100) == "answer from b"
+    assert (a.calls, b.calls) == (1, 1)
+
+
+def test_the_budget_forgets_calls_after_a_minute():
+    a = FakeClient(label="a", usage_tokens=1500)
+    b = FakeClient(label="b")
+    router, clock = _budget_router({"a": a, "b": b}, budgets={"a": 2000})
+
+    router.complete(BIG_MESSAGES, 100)
+    assert router.complete(BIG_MESSAGES, 100) == "answer from b"
+    clock.now += 61.0
+    assert router.complete(BIG_MESSAGES, 100) == "answer from a"
+
+
+def test_real_usage_replaces_the_estimate():
+    a = FakeClient(label="a", usage_tokens=500)
+    b = FakeClient(label="b")
+    router, _ = _budget_router({"a": a, "b": b}, budgets={"a": 2000})
+
+    # The estimate is ~1000 per call but real usage is 500: with usage
+    # counted, three calls fit (500, 1000, 1500 used) before b takes over.
+    # Counting estimates only would send the third call to b.
+    answers = [router.complete(BIG_MESSAGES, 100) for _ in range(4)]
+    assert answers == ["answer from a"] * 3 + ["answer from b"]
+    assert (a.calls, b.calls) == (3, 1)
+
+
+def test_without_usage_the_estimate_is_what_gets_counted():
+    a = FakeClient(label="a")  # no usage attribute on its answers
+    b = FakeClient(label="b")
+    router, _ = _budget_router({"a": a, "b": b}, budgets={"a": 1500})
+
+    assert router.complete(BIG_MESSAGES, 100) == "answer from a"  # ~1000 reserved, kept as the count
+    assert router.complete(BIG_MESSAGES, 100) == "answer from b"  # 1000 + 1000 > 1500
+    assert a.calls == 1
+
+
+def test_when_only_the_token_budget_blocks_it_waits_and_then_goes():
+    a = FakeClient(label="a", usage_tokens=1500)
+    router, clock = _budget_router({"a": a}, budgets={"a": 2000}, max_wait=120.0)
+    start = clock.now
+
+    assert router.complete(BIG_MESSAGES, 100) == "answer from a"
+    assert router.complete(BIG_MESSAGES, 100) == "answer from a"  # slept out the token minute
+    assert clock.now - start >= 60.0
+    assert a.calls == 2
+
+
+def test_a_single_call_still_goes_out_when_the_estimate_exceeds_the_budget():
+    a = FakeClient(label="a", usage_tokens=1500)
+    router, _ = _budget_router({"a": a}, budgets={"a": 100})
+
+    # A tiny budget must throttle the provider, not brick it.
+    assert router.complete(BIG_MESSAGES, 100) == "answer from a"
+
+
+def test_status_shows_the_token_budget_and_the_moving_count():
+    a = FakeClient(label="a", usage_tokens=1500)
+    router, _ = _budget_router({"a": a}, budgets={"a": 6000})
+    router.complete(BIG_MESSAGES, 100)
+
+    row = router.status()[0]
+    assert row["tokens_per_minute"] == 6000
+    assert row["tokens_last_minute"] == 1500
 
 
