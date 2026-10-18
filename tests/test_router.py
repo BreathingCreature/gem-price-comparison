@@ -46,12 +46,15 @@ class FakeClient:
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=step))])
 
 
-def make_router(clients, *, strategy="failover", gaps=None, max_wait=30.0):
-    """clients: {provider_name: FakeClient}. One endpoint per client."""
+def make_router(clients, *, strategy="failover", gaps=None, max_wait=30.0, purposes=None):
+    """clients: {provider_name: FakeClient}. One endpoint per client.
+    purposes: optional {provider_name: tuple of purposes it handles}."""
     clock = Clock()
     gaps = gaps or {}
     endpoints = [
-        Endpoint(provider=name, model="m", base_url=f"https://{name}.test/v1", api_key_env="K", min_gap=gaps.get(name, 0.0))
+        Endpoint(provider=name, model="m", base_url=f"https://{name}.test/v1", api_key_env="K",
+                 min_gap=gaps.get(name, 0.0),
+                 purposes=(purposes.get(name) if purposes else None))
         for name in clients
     ]
     router = Router(
@@ -456,5 +459,79 @@ def test_empty_answer_includes_finish_reason():
     with pytest.raises(RuntimeError) as err:
         router.complete(MESSAGES, 100)
     assert "finish_reason=length" in str(err.value)
+
+
+# --- checkpoint 19: per-provider purposes ----------------------------------------
+
+def test_router_picks_only_endpoints_that_advertise_the_purpose():
+    # slow verifies only, fast normalizes only, any matches everything.
+    slow = FakeClient(label="slow")
+    fast = FakeClient(label="fast")
+    any_ = FakeClient(label="any")
+    router, _ = make_router(
+        {"slow": slow, "fast": fast, "any": any_},
+        purposes={"slow": ("verify",), "fast": ("normalize",), "any": None},
+    )
+    router.complete(MESSAGES, 100, purpose="verify")
+    router.complete(MESSAGES, 100, purpose="normalize")
+    router.complete(MESSAGES, 100, purpose="expand")  # only "any" takes expand
+    assert (slow.calls, fast.calls, any_.calls) == (1, 1, 1)
+
+
+def test_restricted_routers_still_answer_unknown_purposes():
+    # No endpoint advertises "normalize" — the call must not fail; anyone
+    # may answer it so a restrictive purposes setting cannot break a run.
+    a = FakeClient(label="a")
+    b = FakeClient(label="b")
+    router, _ = make_router({"a": a, "b": b}, purposes={"a": ("verify",), "b": ("verify",)})
+    assert router.complete(MESSAGES, 100, purpose="normalize") == "answer from a"
+    assert a.calls == 1
+
+
+def test_provider_without_purposes_matches_every_purpose():
+    only = FakeClient(label="only")
+    router, _ = make_router({"only": only}, purposes={"only": None})
+    router.complete(MESSAGES, 100, purpose="verify")
+    router.complete(MESSAGES, 100, purpose="expand")
+    assert only.calls == 2
+
+
+def test_spread_turns_among_endpoints_matching_the_purpose():
+    a = FakeClient(label="a")
+    b = FakeClient(label="b")
+    router, _ = make_router({"a": a, "b": b}, strategy="spread",
+                            purposes={"a": ("verify",), "b": ("verify",)})
+    router.complete(MESSAGES, 100, purpose="verify")
+    router.complete(MESSAGES, 100, purpose="verify")
+    assert (a.calls, b.calls) == (1, 1)
+
+
+def test_purposes_are_read_from_the_config_file(tmp_path):
+    path = _write_config(tmp_path, [{
+        "name": "x", "base_url": "https://x.test/v1", "api_key_env": "KEY_X",
+        "models": ["m"], "purposes": ["verify"],
+    }])
+    endpoints, _ = load_endpoints(path)
+    assert endpoints[0].purposes == ("verify",)
+
+
+def test_purposes_are_none_when_the_config_does_not_mention_them(tmp_path):
+    path = _write_config(tmp_path, [{
+        "name": "x", "base_url": "https://x.test/v1", "api_key_env": "KEY_X", "models": ["m"],
+    }])
+    endpoints, _ = load_endpoints(path)
+    assert endpoints[0].purposes is None
+
+
+def test_purposes_must_be_a_list_of_known_purposes(tmp_path):
+    for bad in (["bogus"], "verify", 3):
+        path = _write_config(tmp_path, [{
+            "name": "x", "base_url": "https://x.test/v1", "api_key_env": "KEY_X",
+            "models": ["m"], "purposes": bad,
+        }])
+        with pytest.raises(ValueError) as err:
+            load_endpoints(path)
+        assert "purposes" in str(err.value)
+        assert "x" in str(err.value)
 
 
