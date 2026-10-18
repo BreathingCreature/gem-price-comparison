@@ -44,6 +44,18 @@ def _one_match(_n, candidates):
     return MatchBatchResult(all_decisions=[d], confirmed_matches=[d])
 
 
+def _all_matches(_n, candidates):
+    decisions = []
+    for c in candidates:
+        d = c.to_dict() if hasattr(c, "to_dict") else c
+        decisions.append(
+            {"candidate_url": d.get("url"), "source_domain": d.get("source_domain"), "is_match": True,
+             "confidence": 0.9, "reason": "same", "price_used": (d.get("structured_fields") or {}).get("price"),
+             "extraction_source": "scraper"}
+        )
+    return MatchBatchResult(all_decisions=decisions, confirmed_matches=list(decisions))
+
+
 def _run(**overrides):
     seen = []
     kwargs = dict(
@@ -110,11 +122,82 @@ def test_parallel_search_runs_both_at_once_and_events_survive(monkeypatch):
 
 
 def test_parallel_search_gives_the_same_answer_as_sequential(monkeypatch):
-    sequential, _ = _run()
+    # Real matching checks every candidate on its own, so the fake does the
+    # same in both modes — lanes must not change the answer.
+    sequential, _ = _run(match_fn=_all_matches)
     monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
-    parallel, _ = _run()
+    parallel, _ = _run(match_fn=_all_matches)
     assert parallel["matches"] == sequential["matches"]
     assert parallel["not_found_on"] == sequential["not_found_on"]
+
+
+# --- lanes: three searches at once, each checked the moment it lands -----------
+
+def test_three_lanes_run_at_the_same_time(monkeypatch):
+    # Discovery used to wait for the Flipkart/Amazon pair to finish first.
+    # With GEM_PARALLEL=1 all three are lanes and must overlap.
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    gate = threading.Barrier(3, timeout=5)
+    result, _ = _run(
+        flipkart_search_fn=_search("flipkart.com", [_cand("flipkart.com", "https://www.flipkart.com/a", 900.0)], hook=gate.wait),
+        amazon_search_fn=_search("amazon.in", [_cand("amazon.in", "https://www.amazon.in/dp/B0ABCDEFGH", 950.0)], hook=gate.wait),
+        discover_fn=lambda q, d: (gate.wait(), [])[1],
+        match_fn=_all_matches,
+    )
+    assert result["matches"]
+
+
+def test_each_lane_checks_its_listings_right_away(monkeypatch):
+    # Amazon answers while Flipkart is still searching — the Amazon lane
+    # must verify its own listings during that wait, not after every search.
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    amazon_checked = threading.Event()
+
+    def match_fn(normalized, candidates):
+        if any(getattr(c, "source_domain", "") == "amazon.in" for c in candidates):
+            amazon_checked.set()
+        return _all_matches(normalized, candidates)
+
+    def flipkart_search(q):
+        assert amazon_checked.wait(timeout=5), "Amazon listings were still unchecked while Flipkart was searching"
+        return SearchScrapeResult(source_domain="flipkart.com", query=q,
+                                  candidates=[_cand("flipkart.com", "https://www.flipkart.com/a", 900.0)])
+
+    result, _ = _run(flipkart_search_fn=flipkart_search, match_fn=match_fn)
+    assert result["matches"]
+
+
+def test_one_listing_found_by_two_lanes_is_counted_once(monkeypatch):
+    # The same Flipkart URL can arrive from the direct search AND discovery —
+    # the merge must keep one row: the first lane's copy.
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    url = "https://www.flipkart.com/m650/p/itm42"
+
+    def discover_fn(queries, allowed_domains):
+        return [{"query": queries[0], "raw_urls": [url], "filtered_urls": [url], "blocked": False, "error": None}]
+
+    def generic_scrape_fn(u):
+        return {"source_domain": "flipkart.com", "url": u, "scraper_used": "generic",
+                "structured_fields": {"title": "Demo Mouse", "price": 950.0, "currency": "INR"}, "raw_page_text": ""}
+
+    result, _ = _run(
+        flipkart_search_fn=_search("flipkart.com", [_cand("flipkart.com", url, 900.0)]),
+        amazon_search_fn=_search("amazon.in", []),
+        discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn,
+        match_fn=_all_matches,
+    )
+    assert len(result["matches"]) == 1
+    assert result["matches"][0]["price_used"] == 900.0
+
+
+def test_parallel_matches_are_sorted_by_price_across_lanes(monkeypatch):
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    result, _ = _run(
+        flipkart_search_fn=_search("flipkart.com", [_cand("flipkart.com", "https://www.flipkart.com/a", 950.0)]),
+        amazon_search_fn=_search("amazon.in", [_cand("amazon.in", "https://www.amazon.in/dp/B0ABCDEFGH", 900.0)]),
+        match_fn=_all_matches,
+    )
+    assert [m["price_used"] for m in result["matches"]] == [900.0, 950.0]
 
 
 # --- retry switch ---------------------------------------------------------------
