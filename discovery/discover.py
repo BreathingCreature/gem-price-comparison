@@ -12,10 +12,10 @@ Backend chain (researched 2026-09-24, all free):
    ddg-search-mcp uses this exact technique). Falls back to plain requests
    when a test session is injected or curl_cffi is missing.
 2. SearXNG public instances (aggregator; no CAPTCHA, HTML results parse
-   via the same h3 > a shape as Google). Replaces Google as the real
-   fallback — Google's results page went JS-only (live-verified 2026-09:
-   HTTP 200, zero <h3>, zero /url?q= links).
-3. Google plain HTML — kept last in case it ever serves real HTML again.
+   via the same h3 > a shape as Google). The old Google plain-HTML
+   fallback was removed (F): its page went JS-only from this machine
+   (live-verified 2026-09: HTTP 200, zero <h3>, zero /url?q= links), so it
+   only ever cost one wasted request per query.
 
 DDG CAPTCHA cooldown: a live DDG block sets a module-level 1-hour cooldown
 (pattern from searxng PR #5839) so later queries skip straight to SearXNG
@@ -42,7 +42,6 @@ from bs4 import BeautifulSoup
 
 from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, DISCOVERY_TIME_LIMIT_SECONDS, logger
 
-GOOGLE_RESULTS_PER_QUERY = 20
 QUERY_DELAY_RANGE = (1.5, 2.5)  # polite delay between queries in one discover_candidates call
 
 # Search engines' own domains and common non-retail sites that show up in
@@ -250,25 +249,19 @@ def _fetch_ddg_html(query: str, *, session: Optional[requests.Session] = None) -
 
 # Public instances (HTML mode — parses via the same h3 > a shape as Google).
 # SearXNG instances rate-limit aggressively (200 + tiny empty shell after a
-# few queries), so keep a wide pool and try them all per query; empty /
-# unparseable responses just advance past them. Live-verified 2026-09-24 via
-# curl_cffi: s.trung.fun returned 43 h3 results; searxng.site and opnxng.com
-# worked until rate-limited.
+# few queries); four live-verified ones are enough (F): a query used to fan
+# out to up to 11 random third parties at once. Empty / unparseable
+# responses just advance past them. Live-verified 2026-09-24 via curl_cffi:
+# s.trung.fun returned 43 h3 results; searxng.site and opnxng.com worked
+# until rate-limited.
 _SEARXNG_INSTANCES = (
     "https://s.trung.fun",
     "https://searxng.site",
     "https://opnxng.com",
     "https://paulgo.io",
-    "https://search.disroot.org",
-    "https://searx.be",
-    "https://search.inetol.net",
-    "https://priv.au",
-    "https://baresearch.org",
-    "https://searx.tiekoetter.com",
-    "https://search.rhscz.eu",
 )
 
-SEARXNG_MAX_WORKERS = 6  # instances are asked at the same time, up to this many
+SEARXNG_MAX_WORKERS = 4  # instances are asked at the same time, up to this many
 
 
 def _searxng_attempt(base: str, query: str, *, session, curl, headers):
@@ -298,15 +291,14 @@ def _searxng_attempt(base: str, query: str, *, session, curl, headers):
 
 
 def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = None) -> str:
-    """Fallback backend — SearXNG public instances. Free aggregator, no
-    CAPTCHA, server-rendered HTML. Replaces Google as the real second
-    choice after DDG (Google's page is JS-only — see module docstring).
-    Live calls go through curl_cffi (plain requests gets empty shells from
-    several instances); injected sessions (tests) keep plain requests.
+    """Second and last backend after DDG — SearXNG public instances. Free
+    aggregator, no CAPTCHA, server-rendered HTML. Live calls go through
+    curl_cffi (plain requests gets empty shells from several instances);
+    injected sessions (tests) keep plain requests.
 
     All instances are asked AT THE SAME TIME — a dead instance must not
     cost the others' wait — and the whole stage has one deadline
-    (GEM_DISCOVERY_TIME_LIMIT, default 20s): sequentially, 11 instances x
+    (GEM_DISCOVERY_TIME_LIMIT, default 20s): sequentially, four instances x
     up to 15s could stall a run for minutes. First instance with parseable
     links wins; on deadline the best answer so far is used."""
     headers = {"Accept-Language": "en-IN,en;q=0.9"}
@@ -356,20 +348,8 @@ def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = Non
     return "<html><body><!-- searxng: no parseable results --></body></html>"
 
 
-def _fetch_google_html(query: str, *, session: Optional[requests.Session] = None) -> str:
-    """Fallback backend. Live-tested as JS-only/empty from this machine
-    (see module docstring) — kept in case Google serves real HTML again or
-    DDG is the one that's down."""
-    sess = session or requests.Session()
-    url = f"https://www.google.com/search?q={quote_plus(query)}&num={GOOGLE_RESULTS_PER_QUERY}&hl=en&gl=in"
-    headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-IN,en;q=0.9"}
-    resp = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-    resp.raise_for_status()
-    return resp.text
-
-
-# Backends tried per query, in order: DDG (curl_cffi live) → SearXNG → Google.
-_FETCHERS = (_fetch_ddg_html, _fetch_searxng_html, _fetch_google_html)
+# Backends tried per query, in order: DDG (curl_cffi live) → SearXNG.
+_FETCHERS = (_fetch_ddg_html, _fetch_searxng_html)
 
 _BLOCK_PHRASES = [
     "detected unusual traffic", "/sorry/index", "our systems have detected",
