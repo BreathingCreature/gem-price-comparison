@@ -471,6 +471,42 @@ def test_a3_search_direct_and_dedup_use_same_key():
     assert discover_calls[-1] == ["reliancedigital.in"]  # retry: Indian suggestion kept, bestbuy dropped
 
 
+# --- merging lane results when GEM_PARALLEL=1 has each lane check its own listings -------
+
+def _decision(url, price):
+    return {"candidate_url": url, "source_domain": "shop.example", "is_match": True, "confidence": 0.9,
+            "reason": "same", "price_used": price, "extraction_source": "scraper"}
+
+
+def test_merge_lane_results_keeps_the_first_copy_of_a_listing():
+    first = _decision("https://shop.example/p/1", 100.0)
+    second = _decision("https://shop.example/p/1", 555.0)
+    merged = pipeline._merge_match_results([
+        MatchBatchResult(all_decisions=[first], confirmed_matches=[first]),
+        MatchBatchResult(all_decisions=[second], confirmed_matches=[second]),
+    ])
+    assert merged.all_decisions == [first]
+    assert merged.confirmed_matches == [first]
+
+
+def test_merge_lane_results_sorts_matches_by_price():
+    dear = _decision("https://shop.example/p/1", 900.0)
+    cheap = _decision("https://shop.example/p/2", 90.0)
+    merged = pipeline._merge_match_results([
+        MatchBatchResult(all_decisions=[dear], confirmed_matches=[dear]),
+        MatchBatchResult(all_decisions=[cheap], confirmed_matches=[cheap]),
+    ])
+    assert [m["price_used"] for m in merged.confirmed_matches] == [90.0, 900.0]
+
+
+def test_merge_lane_results_unions_skipped_without_repeats():
+    merged = pipeline._merge_match_results([
+        MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=["https://shop.example/x"]),
+        MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=["https://shop.example/x", "https://shop.example/y"]),
+    ])
+    assert merged.skipped == ["https://shop.example/x", "https://shop.example/y"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0

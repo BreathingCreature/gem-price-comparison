@@ -9,6 +9,11 @@ exists to support: GeM URL in, price comparison out. Sequence:
   matches: expand_search (2) -> retry direct searches + discovery + generic
   once, re-match -> cache + trace -> return.
 
+  With GEM_PARALLEL=1 the first pass becomes three lanes — Flipkart, Amazon
+  and discovery+generic — running at the same time, each checking its own
+  listings as soon as its search returns; the lanes' match batches are then
+  merged back into one (first copy of a listing wins, cheapest first).
+
 Every external collaborator (extract_fn, normalize_fn, the two search
 functions, discover_fn, generic_scrape_fn, match_fn, expand_search_fn) is
 an overridable keyword argument defaulting to the real implementation.
@@ -46,7 +51,7 @@ from urllib.parse import parse_qs, urlparse
 from core import events
 from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACE_MAX_FILES, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
 from core.config import PARALLEL_SEARCH
-from core.parallel import run_pair
+from core.parallel import run_many, run_pair
 from core.config import RETRY_ENABLED
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
@@ -349,6 +354,93 @@ def _run_discovery_and_generic_scrape(
     return discovery_results, generic_candidates
 
 
+def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: str):
+    """One lane's own listings, checked the moment they arrive (GEM_PARALLEL=1).
+    An empty lane never reaches the matcher — there is nothing to check."""
+    usable = [c for c in candidates if _usable(c)]
+    if not usable:
+        return matcher.MatchBatchResult()
+    events.emit("stage", name=f"match_{name}", label=f"Checking {label}")
+    events.emit("candidates_total", count=len(usable))
+    return match_fn(normalized, usable)
+
+
+def _run_first_pass_lanes(
+    flipkart_search_fn,
+    amazon_search_fn,
+    queries: list[str],
+    *,
+    discover_fn,
+    generic_scrape_fn,
+    normalized,
+    match_fn,
+) -> list:
+    """GEM_PARALLEL=1 first pass: three lanes — Flipkart, Amazon and
+    discovery+generic — run at the same time, and each lane verifies its own
+    candidates as soon as its search returns, so the LLM work of a fast lane
+    overlaps the slow Flipkart lane instead of waiting for every search to
+    finish. Returns one (results, candidates, match_result) tuple per lane,
+    in that order."""
+    events.emit("stage", name="search_both", label="Searching Flipkart, Amazon and other shops at the same time")
+    events.emit("stage", name="discovery", label="Looking for other shops")
+
+    def flipkart_lane():
+        results, candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
+        return results, candidates, _verify_lane(normalized, candidates, match_fn, name="flipkart", label="the Flipkart listings")
+
+    def amazon_lane():
+        results, candidates = _search_direct(amazon_search_fn, queries, label="amazon")
+        return results, candidates, _verify_lane(normalized, candidates, match_fn, name="amazon", label="the Amazon listings")
+
+    def other_shops_lane():
+        results, candidates = _run_discovery_and_generic_scrape(
+            queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
+        )
+        return results, candidates, _verify_lane(normalized, candidates, match_fn, name="other_shops", label="other shops' listings")
+
+    return run_many([flipkart_lane, amazon_lane, other_shops_lane], workers=3)
+
+
+def _merge_match_results(lane_results: list):
+    """Merge the per-lane match batches (GEM_PARALLEL=1). The same listing can
+    be checked by two lanes (a Flipkart URL arriving from both the direct
+    search and discovery), so decisions are deduped by _listing_key — the
+    first lane's copy wins. Confirmed matches are re-sorted cheapest first,
+    like the matcher does within one batch."""
+    kept: list = []
+    kept_ids: set = set()
+    seen_keys: set = set()
+    skipped: list[str] = []
+    seen_skipped: set = set()
+    for lane in lane_results:
+        decisions = lane.get("all_decisions") if isinstance(lane, dict) else getattr(lane, "all_decisions", None)
+        for d in decisions or []:
+            key = _listing_key(d.get("candidate_url")) or f"__noid_{len(kept)}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            kept.append(d)
+            kept_ids.add(id(d))
+        lane_skipped = lane.get("skipped") if isinstance(lane, dict) else getattr(lane, "skipped", None)
+        for u in lane_skipped or []:
+            key = _listing_key(u) or f"__noid_skip_{len(skipped)}"
+            if key in seen_skipped:
+                continue
+            seen_skipped.add(key)
+            skipped.append(u)
+
+    confirmed: list = []
+    for lane in lane_results:
+        matches = lane.get("confirmed_matches") if isinstance(lane, dict) else getattr(lane, "confirmed_matches", None)
+        # A lane's confirmed entry is the SAME dict object as its all_decisions
+        # entry — a duplicate dropped above must not reappear here.
+        for d in matches or []:
+            if id(d) in kept_ids:
+                confirmed.append(d)
+    confirmed.sort(key=lambda d: d.get("price_used") if d.get("price_used") is not None else float("inf"))
+    return matcher.MatchBatchResult(all_decisions=kept, confirmed_matches=confirmed, skipped=skipped)
+
+
 # --- main entry point --------------------------------------------------------------
 
 def _run_pipeline(
@@ -420,9 +512,24 @@ def _run_pipeline(
         # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
         # Every normalized query is eligible (early-exit once one query has
         # enough candidates), not just queries[0].
-        flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
-            flipkart_search_fn, amazon_search_fn, queries
-        )
+        if PARALLEL_SEARCH:
+            # GEM_PARALLEL=1: three lanes — Flipkart, Amazon and discovery+generic
+            # — search at the same time, each checking its own listings the moment
+            # they arrive (so a fast lane's LLM work overlaps the slow Flipkart lane).
+            (
+                (flipkart_results, flipkart_candidates, flipkart_match),
+                (amazon_results, amazon_candidates, amazon_match),
+                (discovery_results, generic_candidates, other_shops_match),
+            ) = _run_first_pass_lanes(
+                flipkart_search_fn, amazon_search_fn, queries,
+                discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn,
+                normalized=normalized, match_fn=match_fn,
+            )
+        else:
+            flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
+                flipkart_search_fn, amazon_search_fn, queries
+            )
+            discovery_results = generic_candidates = None
         trace["stages"]["flipkart_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in flipkart_results]
         trace["stages"]["amazon_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in amazon_results]
 
@@ -433,10 +540,11 @@ def _run_pipeline(
             _record_search_health(r, tried_domains, search_issues)
 
         # --- stage 3/4 first pass: open discovery + generic scrape for everything else ---
-        events.emit("stage", name="discovery", label="Looking for other shops")
-        discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
-            queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
-        )
+        if not PARALLEL_SEARCH:
+            events.emit("stage", name="discovery", label="Looking for other shops")
+            discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
+                queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
+            )
         trace["stages"]["discovery"] = [d.to_dict() if hasattr(d, "to_dict") else d for d in discovery_results]
         trace["stages"]["generic_scrapes"] = [c.to_dict() if hasattr(c, "to_dict") else c for c in generic_candidates]
 
@@ -458,9 +566,14 @@ def _run_pipeline(
         )
 
         # --- stage 5: match ---------------------------------------------------------------
-        events.emit("stage", name="match", label="Checking which listings are the same product")
-        events.emit("candidates_total", count=len(all_candidates))
-        match_result = match_fn(normalized, all_candidates)
+        if PARALLEL_SEARCH:
+            # Each lane already checked its own listings (and emitted its own
+            # match stage); merging keeps one row per listing, first lane wins.
+            match_result = _merge_match_results([flipkart_match, amazon_match, other_shops_match])
+        else:
+            events.emit("stage", name="match", label="Checking which listings are the same product")
+            events.emit("candidates_total", count=len(all_candidates))
+            match_result = match_fn(normalized, all_candidates)
         final_match_result = match_result
         trace["stages"]["matching"] = match_result.to_dict() if hasattr(match_result, "to_dict") else match_result
 
