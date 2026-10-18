@@ -104,6 +104,25 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
     return driver.page_source
 
 
+# EMI text on a card ("No Cost EMI from ₹99/month") is not the product price.
+# Order matters: remove the EMI phrase WITH its /month amount first. An amount
+# without /month or "per month" after it is never touched, so "EMI starts
+# ₹1,299" keeps its 1299.
+_AMOUNT = r"₹\s*\d[\d,]*(?:\.\d+)?"
+_PER_MONTH = r"(?:/\s*(?:month|mo)\b|\s*per\s*month)"
+_EMI_PHRASE = re.compile(r"(?:no\s*cost\s*)?emi\s*(?:from|starts?(?:\s*(?:at|from))?|@)?\s*" + _AMOUNT + r"\s*" + _PER_MONTH, re.I)
+_MONTHLY_AMOUNT = re.compile(_AMOUNT + r"\s*" + _PER_MONTH, re.I)
+_EMI_WORD = re.compile(r"\bemi\b", re.I)
+
+
+def strip_emi_text(text: str) -> str:
+    """Card text without EMI phrases and per-month amounts."""
+    text = _EMI_PHRASE.sub(" ", text)
+    text = _MONTHLY_AMOUNT.sub(" ", text)
+    return _EMI_WORD.sub(" ", text)
+
+
+
 def parse_cards_from_html(html: str) -> list[dict]:
     """Pure function, no browser — this is what's actually testable without
     Selenium/Chrome installed. Current Flipkart layout: card container
@@ -134,13 +153,9 @@ def parse_cards_from_html(html: str) -> list[dict]:
             # became "149900" (100x inflation) and ranges concatenated both ends.
             price = parse_indian_price(price_el.get_text(" ", strip=True))
         if not price:
-            # Strip EMI lines first so "₹99/month" or "No Cost EMI from ₹99/month"
-            # don't get picked as the product price.
-            card_text = card.get_text(" ", strip=True)
-            card_text = re.sub(r"₹\s*\d[\d,]*(?:\.\d+)?\s*/\s*month", "", card_text)
-            card_text = re.sub(r"₹\s*\d[\d,]*(?:\.\d+)?\s*per\s*month", "", card_text, flags=re.I)
-            card_text = re.sub(r"No\s*Cost\s*EMI\s*from\s*₹\s*\d[\d,]*(?:\.\d+)?", "", card_text, flags=re.I)
-            card_text = re.sub(r"EMI", "", card_text, flags=re.I)
+            # Remove the EMI phrases first (whole phrase, amount included), so
+            # "No Cost EMI from ₹99/month ₹1,299 ₹2,499" gives 1299, not 2499.
+            card_text = strip_emi_text(card.get_text(" ", strip=True))
             price = parse_indian_price(card_text)
 
         link_el = card.select_one('a[href*="/p/"]')
