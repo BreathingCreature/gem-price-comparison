@@ -435,3 +435,36 @@ def test_prefilter_applies_inside_the_lanes_too(monkeypatch):
     trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))
     dropped = trace["stages"]["prefilter"]["dropped"]
     assert [d["url"] for d in dropped] == ["https://www.flipkart.com/bad/p/itm2"]
+
+
+# --- lane isolation: one crashing lane must not kill the run --------------------
+
+def _crash(*args, **kwargs):
+    raise RuntimeError("chrome died")
+
+
+def test_a_crashing_lane_does_not_kill_the_other_lanes(monkeypatch):
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    result, seen = _run(
+        flipkart_search_fn=_crash,
+        amazon_search_fn=_search("amazon.in", [_cand("amazon.in", "https://www.amazon.in/dp/B0ABCDEFGH", 950.0)]),
+        match_fn=_all_matches,
+    )
+    assert [m["candidate_url"] for m in result["matches"]] == ["https://www.amazon.in/dp/B0ABCDEFGH"]
+    assert any("flipkart: RuntimeError: chrome died" in issue for issue in result["search_issues"])
+    assert [e["lane"] for e in seen if e["type"] == "lane_failed"] == ["flipkart"]
+
+
+def test_when_every_lane_crashes_the_error_is_raised(monkeypatch):
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+
+    def boom_discovery(queries, domains):
+        raise RuntimeError("discovery down")
+
+    with pytest.raises(RuntimeError):
+        _run(flipkart_search_fn=_crash, amazon_search_fn=_crash, discover_fn=boom_discovery)
+
+
+def test_sequential_mode_still_raises_a_search_crash():
+    with pytest.raises(RuntimeError, match="chrome died"):
+        _run(flipkart_search_fn=_crash)
