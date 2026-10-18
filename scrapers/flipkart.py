@@ -27,6 +27,7 @@ from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
 
+from core import prefilter
 from core.config import CACHE_DIR, FLIPKART_LIGHT, logger
 from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
 
@@ -166,19 +167,27 @@ def parse_cards_from_html(html: str) -> list[dict]:
     return uniq
 
 
-def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
+def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
     """One search on an already-open driver — the whole search() body. Split
     out so a run can reuse one Chrome (FlipkartBrowser) instead of starting
-    a new one per query."""
+    a new one per query.
+
+    product, when given, is the reference product's words (C6): the page loop
+    stops early once page 1 holds enough relevant cards, instead of always
+    chasing the 15-card target through pages 2 and 3."""
     candidates: list[CandidateResult] = []
     seen: set[tuple] = set()
     blocked = False
     pages_scraped = 0
     error: str | None = None
+    relevant = 0
+
+    def _enough() -> bool:
+        return len(candidates) >= max_results or (product is not None and relevant >= prefilter.ENOUGH_RELEVANT)
 
     try:
         for page in range(1, max_pages + 1):
-            if len(candidates) >= max_results:
+            if _enough():
                 break
             html = _load_search_page(driver, query, page)
             if html is None:
@@ -240,9 +249,11 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
                         raw_page_text=c["card_text"],
                     )
                 )
+                if product is not None and prefilter.relevant_title(c["name"], product):
+                    relevant += 1
             # The pause between pages only exists to be polite to Flipkart —
             # no point taking it after the last page (or once we have enough).
-            if page < max_pages and len(candidates) < max_results:
+            if page < max_pages and not _enough():
                 time.sleep(random.uniform(1.0, 2.0))
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
@@ -258,13 +269,13 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
     )
 
 
-def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
+def search(query: str, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
     """One-off search: builds its own Chrome and quits it afterwards (the
     tools and older callers use this). A whole run uses FlipkartBrowser
     instead, so one Chrome serves every query and the retry."""
     driver = build_stealth_driver(light=FLIPKART_LIGHT)
     try:
-        return _search_with_driver(driver, query, max_results=max_results, max_pages=max_pages)
+        return _search_with_driver(driver, query, max_results=max_results, max_pages=max_pages, product=product)
     finally:
         try:
             driver.quit()
@@ -311,12 +322,12 @@ class FlipkartBrowser:
         finally:
             self._ready.set()
 
-    def search(self, query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
+    def search(self, query: str, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
         self.start()
         self._ready.wait()
         if self._start_error is not None:
             raise self._start_error
-        return _search_with_driver(self._driver, query, max_results=max_results, max_pages=max_pages)
+        return _search_with_driver(self._driver, query, max_results=max_results, max_pages=max_pages, product=product)
 
     def close(self) -> None:
         if self._closed:

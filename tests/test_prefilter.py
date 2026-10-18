@@ -62,6 +62,21 @@ def test_filter_off_keeps_everything():
     assert dropped == []
 
 
+# --- C6/C7: the relevance gate the page/query early-exits use ---------------------------
+
+def test_relevant_title_separates_a_match_from_a_pad():
+    product = prefilter.product_tokens(PRODUCT)
+    assert prefilter.relevant_title("Logitech M650 Wireless Mouse Silent", product) is True
+    assert prefilter.relevant_title("Mouse Pad XL for Desk", product) is False
+
+
+def test_relevant_candidate_compares_titles_and_keeps_untitled():
+    product = prefilter.product_tokens(PRODUCT)
+    assert prefilter.relevant_candidate(_cand("flipkart.com", "u1", "Logitech M650 Wireless Mouse"), product) is True
+    assert prefilter.relevant_candidate(_cand("flipkart.com", "u2", "Mouse Pad XL for Desk"), product) is False
+    assert prefilter.relevant_candidate(_cand("flipkart.com", "u3", None), product) is True
+
+
 def test_shops_are_ranked_separately():
     fk_good = _cand("flipkart.com", "f1", "Logitech M650 Wireless Mouse")
     fk_bad = _cand("flipkart.com", "f2", "Mouse Pad XL for Desk")

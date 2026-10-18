@@ -69,9 +69,10 @@ from scrapers import generic as generic_scraper
 import re
 
 MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped per run
-# A direct search is "enough" once it has this many candidates — stop trying
-# further normalized queries so a 3-query normalize doesn't cost 3 Selenium
-# runs when the first query already returned a full page of results.
+# A direct search is "enough" once it has this many RELEVANT candidates —
+# stop trying further normalized queries so a 3-query normalize doesn't cost
+# 3 Selenium runs when the first query already returned a full page of
+# results, while junk from query 1 no longer ends the loop (C7).
 DIRECT_SEARCH_MIN_CANDIDATES = 5
 # Trace files are ~100-200KB each and grow forever otherwise.
 TRACE_MAX_FILES = 200
@@ -257,9 +258,9 @@ def _write_trace(trace: dict) -> str:
 
 # --- helpers ------------------------------------------------------------------------
 
-def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIRECT_SEARCH_MIN_CANDIDATES, label: str = ""):
+def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIRECT_SEARCH_MIN_CANDIDATES, label: str = "", normalized=None):
     """Run a direct marketplace search over normalized queries until one
-    returns >= min_candidates (or queries run out).
+    returns >= min_candidates RELEVANT candidates (or queries run out).
 
     Previously only queries[0] ever reached Amazon/Flipkart — secondary
     normalized queries fed discovery only, and the retry used
@@ -269,11 +270,19 @@ def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIREC
     normalize from costing 3 Selenium runs when query 1 already returned
     a full page.
 
+    C7: the count is of RELEVANT candidates (titles that overlap the
+    product's words, core/prefilter.py) when a normalized product is given —
+    5 junk results used to end the loop while the right product was only
+    found by query 2's phrasing. Without a normalized product every
+    candidate counts, exactly as before.
+
     Returns (results, all_candidates): one SearchScrapeResult per query
     actually run, and the cross-query URL-deduped candidate list."""
     results = []
     seen: set[str] = set()
     all_candidates = []
+    product = prefilter.product_tokens(normalized) if normalized else None
+    relevant = 0
     for q in queries:
         events.emit("search_started", marketplace=label, query=q)
         r = search_fn(q)
@@ -296,30 +305,73 @@ def _search_direct(search_fn, queries: list[str], *, min_candidates: int = DIREC
             if key:
                 seen.add(key)
             all_candidates.append(c)
-        if len(all_candidates) >= min_candidates:
+            if product is None or prefilter.relevant_candidate(d, product):
+                relevant += 1
+        if relevant >= min_candidates:
             break
     return results, all_candidates
 
 
-def _search_marketplaces(flipkart_search_fn, amazon_search_fn, queries: list[str], *, again: bool = False):
+def _search_marketplaces(
+    flipkart_search_fn,
+    amazon_search_fn,
+    queries: list[str],
+    *,
+    again: bool = False,
+    normalized=None,
+    skip_flipkart: bool = False,
+    skip_amazon: bool = False,
+):
     """Search Flipkart and Amazon. With GEM_PARALLEL=1 both run at the same
     time, otherwise one after the other (Flipkart first), as before.
+
+    A11: a shop blocked in the first pass can be skipped on the retry — the
+    retry would only repeat the block; the healthy lanes still run. At most
+    one lane is left in that case, so there is nothing to parallelize.
     Returns (flipkart_results, flipkart_candidates, amazon_results, amazon_candidates)."""
     kind = "retry" if again else "search"
     suffix = " again" if again else ""
-    if PARALLEL_SEARCH:
+    if skip_flipkart or skip_amazon:
+        lanes = (("flipkart", flipkart_search_fn, skip_flipkart), ("amazon", amazon_search_fn, skip_amazon))
+        out: dict = {}
+        for name, fn, skip in lanes:
+            if skip:
+                events.emit("stage", name=f"{kind}_{name}_skipped", label=f"{name.title()} was blocked — not asking again")
+                out[name] = ([], [])
+            else:
+                events.emit("stage", name=f"{kind}_{name}", label=f"Searching {name.title()}{suffix}")
+                out[name] = _search_direct(fn, queries, label=name, normalized=normalized)
+        f_results, f_candidates = out["flipkart"]
+        a_results, a_candidates = out["amazon"]
+    elif PARALLEL_SEARCH:
         events.emit("stage", name=f"{kind}_both", label=f"Searching Flipkart and Amazon at the same time{suffix}")
         (f_results, f_candidates), (a_results, a_candidates) = run_pair(
-            lambda: _search_direct(flipkart_search_fn, queries, label="flipkart"),
-            lambda: _search_direct(amazon_search_fn, queries, label="amazon"),
+            lambda: _search_direct(flipkart_search_fn, queries, label="flipkart", normalized=normalized),
+            lambda: _search_direct(amazon_search_fn, queries, label="amazon", normalized=normalized),
             parallel=True,
         )
     else:
         events.emit("stage", name=f"{kind}_flipkart", label=f"Searching Flipkart{suffix}")
-        f_results, f_candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
+        f_results, f_candidates = _search_direct(flipkart_search_fn, queries, label="flipkart", normalized=normalized)
         events.emit("stage", name=f"{kind}_amazon", label=f"Searching Amazon{suffix}")
-        a_results, a_candidates = _search_direct(amazon_search_fn, queries, label="amazon")
+        a_results, a_candidates = _search_direct(amazon_search_fn, queries, label="amazon", normalized=normalized)
     return f_results, f_candidates, a_results, a_candidates
+
+
+def _only_blocks(results) -> bool:
+    """A11: did this shop answer the first pass with nothing but a block?
+    Any listing means it answered (a block mid-pagination is not a reason to
+    skip the retry), and no result at all is not a block either."""
+    blocked_any = False
+    for r in results:
+        d = r.to_dict() if hasattr(r, "to_dict") else r
+        if not isinstance(d, dict):
+            continue
+        if d.get("candidates"):
+            return False
+        if d.get("blocked"):
+            blocked_any = True
+    return blocked_any
 
 
 def _run_discovery_and_generic_scrape(
@@ -411,12 +463,12 @@ def _run_first_pass_lanes(
         events.emit("stage", name="discovery", label="Looking for other shops")
 
     def flipkart_lane():
-        results, candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
+        results, candidates = _search_direct(flipkart_search_fn, queries, label="flipkart", normalized=normalized)
         lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="flipkart", label="the Flipkart listings")
         return results, candidates, lane_match, dropped
 
     def amazon_lane():
-        results, candidates = _search_direct(amazon_search_fn, queries, label="amazon")
+        results, candidates = _search_direct(amazon_search_fn, queries, label="amazon", normalized=normalized)
         lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="amazon", label="the Amazon listings")
         return results, candidates, lane_match, dropped
 
@@ -551,6 +603,11 @@ def _run_pipeline(
             fallback = (normalized.get("canonical_name") or gem_product_dict.get("title") or "").strip()
             queries = [fallback] if fallback else [gem_product_dict.get("category_slug") or "product"]
 
+        if flipkart_browser is not None:
+            # C6: the Flipkart page loop stops early when page 1 already holds
+            # enough relevant cards — give it the product's words to judge by.
+            flipkart_search_fn = partial(flipkart_browser.search, product=prefilter.product_tokens(normalized))
+
         # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
         # Every normalized query is eligible (early-exit once one query has
         # enough candidates), not just queries[0].
@@ -573,7 +630,7 @@ def _run_pipeline(
                 trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
         else:
             flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
-                flipkart_search_fn, amazon_search_fn, queries
+                flipkart_search_fn, amazon_search_fn, queries, normalized=normalized
             )
             discovery_results = generic_candidates = None
         trace["stages"]["flipkart_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in flipkart_results]
@@ -661,12 +718,27 @@ def _run_pipeline(
                 # so a bad primary query on the working marketplaces was never
                 # retried with the LLM's better phrasing. All retry_queries are
                 # eligible, not just [0].
+                # A11: a shop blocked in the first pass is skipped — asking it
+                # again only repeats the block (1-4 min saved on bad runs).
+                skip_flipkart = _only_blocks(flipkart_results)
+                skip_amazon = _only_blocks(amazon_results)
                 (
                     retry_flipkart_results,
                     retry_flipkart_candidates,
                     retry_amazon_results,
                     retry_amazon_candidates,
-                ) = _search_marketplaces(flipkart_search_fn, amazon_search_fn, retry_queries, again=True)
+                ) = _search_marketplaces(
+                    flipkart_search_fn,
+                    amazon_search_fn,
+                    retry_queries,
+                    again=True,
+                    normalized=normalized,
+                    skip_flipkart=skip_flipkart,
+                    skip_amazon=skip_amazon,
+                )
+                retry_trace["blocked_first_pass"] = [
+                    name for name, skipped in (("flipkart", skip_flipkart), ("amazon", skip_amazon)) if skipped
+                ]
                 trace["stages"]["flipkart_search_retry"] = [
                     r.to_dict() if hasattr(r, "to_dict") else r for r in retry_flipkart_results
                 ]

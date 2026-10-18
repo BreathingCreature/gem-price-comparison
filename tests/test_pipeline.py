@@ -217,6 +217,61 @@ def test_retry_skipped_when_expand_search_has_no_new_queries():
     assert "amazon.in" in result["not_found_on"]
 
 
+def test_a_blocked_shop_is_not_asked_again_on_the_retry():
+    # A11: a shop that answered the first pass with nothing but a block gets
+    # the same block on the retry (the Flipkart CAPTCHA survives a fresh page
+    # load) — skip it and let the healthy lanes retry.
+    url = "https://mkp.gem.gov.in/test/blocked-not-retried/p-13-13-cat.html"
+    fk_calls, az_calls = [], []
+    seen_events = []
+
+    def fk(q):
+        fk_calls.append(q)
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[], blocked=True)
+
+    def az(q):
+        az_calls.append(q)
+        return SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[])
+
+    pipeline.run_pipeline(
+        url, refresh=True, on_event=seen_events.append,
+        extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=fk, amazon_search_fn=az,
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": ["Logitech M650 buy"], "suggested_domains": [], "notes": ""},
+    )
+
+    assert fk_calls == ["Logitech M650 wireless mouse"]  # first pass only — no pointless retry
+    assert az_calls == ["Logitech M650 wireless mouse", "Logitech M650 buy"]  # the healthy shop is still retried
+    assert any(e.get("type") == "stage" and e.get("name") == "retry_flipkart_skipped" for e in seen_events)
+
+
+def test_a_shop_that_only_found_nothing_is_still_retried():
+    # "Blocked" is the only reason to skip — a clean empty result may just be
+    # a bad query, and the retry's new phrasing may fix exactly that.
+    url = "https://mkp.gem.gov.in/test/empty-still-retried/p-14-14-cat.html"
+    fk_calls = []
+
+    def fk(q):
+        fk_calls.append(q)
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[])
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=fk,
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": ["Logitech M650 buy"], "suggested_domains": [], "notes": ""},
+    )
+
+    assert fk_calls == ["Logitech M650 wireless mouse", "Logitech M650 buy"]
+
+
 # --- honesty: skipped vs not_found ------------------------------------------------------
 
 def test_skipped_domain_not_reported_as_not_found():
@@ -319,7 +374,7 @@ def test_all_normalized_queries_reach_direct_scrapers():
 
 def test_direct_search_stops_once_enough_candidates():
     # Early-exit: a query that already returned >= DIRECT_SEARCH_MIN_CANDIDATES
-    # candidates must not trigger more (expensive) Selenium runs.
+    # RELEVANT candidates must not trigger more (expensive) Selenium runs (C7).
     url = "https://mkp.gem.gov.in/test/stop-early/p-11-11-cat.html"
     fk_calls = []
 
@@ -335,7 +390,7 @@ def test_direct_search_stops_once_enough_candidates():
                 source_domain="flipkart.com",
                 url=f"https://www.flipkart.com/item/p{i}",
                 scraper_used="flipkart",
-                structured_fields={"title": f"Item {i}", "price": 100.0 + i, "currency": "INR"},
+                structured_fields={"title": f"Logitech M650 Wireless Mouse variant {i}", "price": 100.0 + i, "currency": "INR"},
                 raw_page_text="",
             )
             for i in range(pipeline.DIRECT_SEARCH_MIN_CANDIDATES)
@@ -354,6 +409,79 @@ def test_direct_search_stops_once_enough_candidates():
     )
 
     assert fk_calls == ["q1"]  # enough after first query — q2/q3 never searched
+
+
+def test_direct_search_junk_results_do_not_end_the_queries():
+    # C7: five junk cards must not end the query loop — the right product is
+    # often only found by query 2's phrasing, and the junk gets rejected by
+    # the LLM anyway (at the cost of one call).
+    url = "https://mkp.gem.gov.in/test/junk-does-not-stop/p-12-12-cat.html"
+    fk_calls = []
+
+    def normalize_multi(gp):
+        n = _fake_normalized()
+        n["search_queries"] = ["q1", "q2", "q3"]
+        return n
+
+    def _cands(prefix, titles):
+        return [
+            CandidateResult(
+                source_domain="flipkart.com",
+                url=f"https://www.flipkart.com/{prefix}/p{i}",
+                scraper_used="flipkart",
+                structured_fields={"title": t, "price": 100.0, "currency": "INR"},
+                raw_page_text="",
+            )
+            for i, t in enumerate(titles)
+        ]
+
+    def fk(q):
+        fk_calls.append(q)
+        if q == "q1":
+            return SearchScrapeResult(
+                source_domain="flipkart.com", query=q,
+                candidates=_cands("junk", [f"Random Gadget {i}" for i in range(6)]),
+            )
+        return SearchScrapeResult(
+            source_domain="flipkart.com", query=q,
+            candidates=_cands("item", ["Logitech M650 Wireless Mouse"] * 5),
+        )
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=normalize_multi,
+        flipkart_search_fn=fk,
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=lambda q, d: [],
+        generic_scrape_fn=_boom,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert fk_calls == ["q1", "q2"]  # q1's junk did not count; q2's relevant cards did
+
+
+def test_direct_search_without_the_product_counts_every_candidate():
+    # Direct callers that pass no normalized product (older tools, small
+    # tests) keep the plain candidate count — their behaviour is unchanged.
+    calls = []
+
+    def search(q):
+        calls.append(q)
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[
+            CandidateResult(
+                source_domain="flipkart.com",
+                url=f"https://www.flipkart.com/x/p{i}",
+                scraper_used="flipkart",
+                structured_fields={"title": f"Item {i}", "price": 1.0},
+                raw_page_text="",
+            )
+            for i in range(pipeline.DIRECT_SEARCH_MIN_CANDIDATES)
+        ])
+
+    _, candidates = pipeline._search_direct(search, ["q1", "q2"])
+    assert calls == ["q1"]
+    assert len(candidates) == pipeline.DIRECT_SEARCH_MIN_CANDIDATES
 
 
 # --- dedup uses per-site key (asin/pid/itm or host+path) ----------------
@@ -597,14 +725,16 @@ def test_one_browser_runs_the_search_the_retry_and_is_closed():
     class FakeBrowser:
         def __init__(self):
             self.queries = []
+            self.products = []
             browsers.append(self)
             events.append("created")
 
         def start(self):
             events.append("started")
 
-        def search(self, query, max_results=15, max_pages=3):
+        def search(self, query, max_results=15, max_pages=3, product=None):
             self.queries.append(query)
+            self.products.append(product)
             events.append(f"search:{query}")
             return SearchScrapeResult(source_domain="flipkart.com", query=query, candidates=[])
 
@@ -629,6 +759,9 @@ def test_one_browser_runs_the_search_the_retry_and_is_closed():
     assert len(browsers) == 1
     assert events.index("started") < events.index("extract")
     assert browsers[0].queries == ["Logitech M650 wireless mouse", "better query"]
+    # C6: the pipeline hands the run's browser the product's words so its page
+    # loop can stop paging once page 1 already holds enough relevant cards.
+    assert browsers[0].products == [{"logitech", "m650"}, {"logitech", "m650"}]
     assert events.count("closed") == 1
     assert result["matches"] == []
 
