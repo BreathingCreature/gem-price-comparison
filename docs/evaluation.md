@@ -100,6 +100,12 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 | `LLM_CACHE_DIR` | `cache/llm` | Where the remembered answers live |
 | `LLM_PROVIDERS_FILE` | `llm_providers.json` | Which LLM endpoints are used |
 | `GEM_LLM_WORKERS` | `1` | How many listings are checked at once. Above 1 it uses the providers in parallel — keep each provider polite with `max_concurrent` and `daily_limit` in `llm_providers.json` (see docs/llm-providers.md) |
+| `GEM_PREFILTER_TOP` | `0` | Keep only the best N titled listings per shop before the LLM. `0` is off; the safe N comes from section 9 |
+| `GEM_PRICE_PREGATE` | `0` | `1` drops listings whose card price is already outside the band before the LLM call |
+| `GEM_REUSE_VERDICTS` | `0` | `1` keeps the first pass's verdicts on the retry instead of asking the LLM again |
+| `GEM_DISCOVERY` | `1` | `0` skips the other-shops discovery and the brand-site fetches |
+| `GEM_FLIPKART_LIGHT` | `0` | `1` makes Flipkart's browser skip images and stop loading early. For timing, not for accuracy runs |
+| `GEM_DISCOVERY_TIME_LIMIT` | `20.0` | Seconds the whole search-engine stage may take before giving up on the slow ones |
 
 Set them for one run only.
 
@@ -110,7 +116,7 @@ The settings used are written into the `.meta.json` of every run. If you set a v
 
 ## 6. The experiments
 
-Each experiment is one run with its own `--label`, then one `eval.score` command. Do them in this order.
+Each experiment is one run with its own `--label`, then one `eval.score` command. Do them in this order. Run the accuracy experiments from a recording (section 7) so day-to-day shop changes cannot skew the comparison; the two timing runs (`before`, `parallel-on`) must stay live.
 
 | Label | Settings | Answers the question |
 |---|---|---|
@@ -124,7 +130,7 @@ Each experiment is one run with its own `--label`, then one `eval.score` command
 
 One product takes about 20 to 30 LLM calls. Forty products is about 1,000 calls for one full run. The free plans allow roughly 1,000 calls a day per provider. Plan for it:
 
-- Use `LLM_CACHE=1` for `no-retry` and `no-gates`. Those switches change what happens **after** the LLM answered, so the saved answers can be reused and the run costs almost nothing. A run still uses the live shops, so the listings change a little between runs. Differences of one or two products are noise.
+- Use `LLM_CACHE=1` for `no-retry` and `no-gates`. Those switches change what happens **after** the LLM answered, so the saved answers can be reused and the run costs almost nothing. A run still uses the live shops, so the listings change a little between runs. Differences of one or two products are noise. Better: replay a recording (section 7), which removes the shop noise entirely.
 - **Never** use the cache for timing runs (`before` and `parallel-on`). A saved answer is instant, so the time would be fake.
 - **Never** share a cache folder between different models. The saved answer does not record which model gave it, so `single-llm` and `multi-llm` would silently reuse each other's answers. Give each its own `LLM_CACHE_DIR`.
 - Time and accuracy for the headline numbers: run `before` twice. The difference between the two runs shows how noisy the shops are. Quote both.
@@ -134,7 +140,58 @@ One product takes about 20 to 30 LLM calls. Forty products is about 1,000 calls 
 
 The runs record which model answered each call (`llm_models` in the results file). With several endpoints the models differ, which makes a result harder to repeat. For the headline `before` run, use **one** model and say which in the report.
 
-## 7. What to say in the report
+## 7. Comparing settings on the same listings (record and replay)
+
+The shops return slightly different results every day, so two live runs differ for reasons that have nothing to do with the switch you are testing. Record the shops once, then replay those exact answers for every accuracy experiment:
+
+```
+python -m eval.replay --key eval/answer_key.csv --record baseline
+python -m eval.replay --key eval/answer_key.csv --replay baseline --label parallel-on
+```
+
+The `--record` run is a live run (like section 2) that also saves every shop answer under `eval/recordings/baseline/`, one file per product. The `--replay` run never touches a shop: the same questions are answered from the recording, so only the switch under test changes.
+
+- `--record NAME` writes the usual results file (`NAME.jsonl`). `--replay NAME` writes `NAME-replay.jsonl` unless `--label` says otherwise.
+- Use `LLM_CACHE=1` for replays of the switches that only change what happens **after** the LLM answered (`GEM_PREFILTER_TOP`, `GEM_PRICE_PREGATE`, `GEM_REUSE_VERDICTS`, `GEM_GATES`): the saved answers are reused and the replay costs almost nothing. The model and router comparisons must not use the cache.
+- Do **not** replay to compare the speed of shop-facing switches (`GEM_PARALLEL`, `GEM_FLIPKART_LIGHT`): a replay answers instantly, so the time would be fake. Take accuracy from a replay, time from a live run.
+- If a replay stops with "replay divergence", the LLM produced a different search query than during the recording, so that product would have compared different listings. Use the same `LLM_CACHE_DIR` as the record run so the same query comes back, or record again.
+
+## 8. Where the time and the LLM calls went (profiler)
+
+```
+python tools/profile_runs.py --results eval/results/baseline.jsonl
+python tools/profile_runs.py --last 5
+```
+
+Every run leaves a trace in `traces/`. The profiler adds up, per run and in total: the wall time of each step (extract, normalize, the searches, discovery, match, retry), how many LLM calls happened inside the step, and tables of calls, failures and seconds per provider and per purpose. LLM seconds are exact even when steps run in parallel; with `GEM_PARALLEL=1` the step wall times overlap, so their sum can be larger than the run's total.
+
+## 9. Why a match was missed, and what prefilter N is safe
+
+```
+python -m eval.analyze_misses --key eval/answer_key.csv --results eval/results/baseline.jsonl
+```
+
+For every listing the key says is real but the results file does not report, this walks the run's trace and names the reason:
+
+- **never found**: no search ever returned the listing
+- **fetch failed**: it was returned, but its page would not load
+- **cut by filter**: the prefilter dropped it before the LLM saw it
+- **LLM said no**: the model judged it a different product
+- **safety gate**: the currency or price-band check hard-rejected it
+- **below confidence threshold**, **matched but no price**, **verify incomplete**: the verdict was not good enough to confirm
+
+When the reason is "cut by filter", the listing has a shop rank R and would have been kept whenever `GEM_PREFILTER_TOP` was at least R. The last table counts, for N = 5, 10, 15, 20, 30, 50, how many of the missed matches would have been put back in front of the LLM. Pick the smallest N that recovers what matters, then pay for it in `verify` calls: one extra call per recovered listing.
+
+### The prefilter experiment
+
+| Label | Settings | Answers the question |
+|---|---|---|
+| `prefilter-off` | `GEM_PREFILTER_TOP=0` | What does the prefilter cost in quality |
+| `prefilter-10` | `GEM_PREFILTER_TOP=10` | The middle ground the safe-N table suggests |
+
+Record once, replay both, score with `eval.score`, and read the LLM call counts from `tools/profile_runs.py`.
+
+## 10. What to say in the report
 
 - How many products, how many branded, how you made the key, and how many you dropped.
 - That the key was made by hand by the author (a single person), which is a limit.
