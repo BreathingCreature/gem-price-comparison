@@ -457,6 +457,106 @@ def test_amazon_fast_path_skips_the_sleep_once_it_has_enough():
     assert sleeps == []
 
 
+# --- B4 + E2: page fetches in parallel, one curl session per run -----------------------
+
+def test_amazon_fetches_page_1_and_page_2_at_the_same_time():
+    barrier = threading.Barrier(2, timeout=5.0)
+
+    def fake_fetch(query, page=1):
+        barrier.wait()  # both page fetches must be in flight together
+        return AMAZON_MOCK_HTML
+
+    with _patched(amazon, _fetch_curl_cffi_page=fake_fetch):
+        result = amazon._search_curl_cffi("logitech m650", max_results=15, max_pages=2)
+
+    assert result is not None
+    assert len(result.candidates) == 1
+    assert result.pages_scraped == 2  # the prefetched page 2 was used, not dropped
+
+
+def test_amazon_prefetched_pages_cost_no_politeness_sleep():
+    with _patched(amazon, _fetch_curl_cffi_page=lambda query, page=1: AMAZON_MOCK_HTML):
+        result, sleeps = _call_recording_sleeps(
+            amazon, amazon._search_curl_cffi, "logitech m650", max_results=15, max_pages=2
+        )
+    assert result is not None and result.pages_scraped == 2
+    assert sleeps == []  # both pages left together; there is no second request to pace
+
+
+class _FakeCurlResponse:
+    def __init__(self, text: str, status_code: int = 200):
+        self.text = text
+        self.status_code = status_code
+
+
+class _FakeCurlSession:
+    """Shaped like the parts of a curl_cffi Session that amazon.py uses."""
+    made: list = []          # every session built, in order
+    blocked_for: tuple = ()  # fingerprints whose requests come back blocked
+
+    def __init__(self, impersonate=None, **kwargs):
+        self.impersonate = impersonate
+        self.gets: list = []
+        _FakeCurlSession.made.append(self)
+
+    def get(self, url, **kwargs):
+        self.gets.append(url)
+        if self.impersonate in _FakeCurlSession.blocked_for:
+            return _FakeCurlResponse("<html>Sorry, we just need to make sure you're not a robot.</html>")
+        return _FakeCurlResponse(AMAZON_MOCK_HTML)
+
+
+def _forbidden_new_connection(*args, **kwargs):
+    raise AssertionError("a new connection was opened instead of reusing the curl session")
+
+
+@contextmanager
+def _stub_curl_cffi():
+    """Stand-in for the curl_cffi package the fetch function imports lazily."""
+    requests_stub = type(sys)("curl_cffi.requests")
+    requests_stub.Session = _FakeCurlSession
+    requests_stub.get = _forbidden_new_connection
+    package_stub = type(sys)("curl_cffi")
+    package_stub.requests = requests_stub
+    old = sys.modules.get("curl_cffi")
+    sys.modules["curl_cffi"] = package_stub
+    try:
+        yield
+    finally:
+        if old is None:
+            del sys.modules["curl_cffi"]
+        else:
+            sys.modules["curl_cffi"] = old
+
+
+def test_two_fetches_reuse_one_curl_session():
+    _FakeCurlSession.made = []
+    _FakeCurlSession.blocked_for = ()
+
+    with _patched(amazon, _sessions={}), _stub_curl_cffi():
+        first = amazon._fetch_curl_cffi_page("q1", 1)
+        second = amazon._fetch_curl_cffi_page("q2", 1)
+
+    assert first and second
+    assert len(_FakeCurlSession.made) == 1  # one session, not one connection per fetch
+    assert len(_FakeCurlSession.made[0].gets) == 2
+
+
+def test_a_blocked_fingerprint_falls_through_to_the_next_session():
+    _FakeCurlSession.made = []
+    _FakeCurlSession.blocked_for = ("chrome150",)
+    try:
+        with _patched(amazon, _sessions={}), _stub_curl_cffi():
+            first = amazon._fetch_curl_cffi_page("q1", 1)
+            second = amazon._fetch_curl_cffi_page("q2", 1)
+    finally:
+        _FakeCurlSession.blocked_for = ()
+
+    assert first and second
+    assert [s.impersonate for s in _FakeCurlSession.made] == ["chrome150", "chrome146"]
+    assert len(_FakeCurlSession.made[1].gets) == 2  # chrome146 served both fetches
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0
