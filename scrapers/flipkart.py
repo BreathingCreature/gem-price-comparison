@@ -26,7 +26,7 @@ from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
 
-from core.config import CACHE_DIR, logger
+from core.config import CACHE_DIR, FLIPKART_LIGHT, logger
 from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
 
 DEBUG_DIR = CACHE_DIR.parent / "debug_html"
@@ -35,6 +35,36 @@ DEBUG_DIR.mkdir(exist_ok=True)
 PRICE_RE = re.compile(r"₹\s?([\d,]+)")
 
 _BLOCK_PHRASES = ["flipkart recaptcha"]
+
+
+def _scroll_to_load_cards(driver, *, max_rounds: int = 8, stop_when_over: int = 50) -> None:
+    """Scroll to coax Flipkart's lazy-loaded result cards in. The old loop
+    always ran all 8 rounds: its '>50 links' exit almost never triggers
+    (result pages usually hold ~20-40 cards). Two rounds in a row that add
+    no new product links mean the page is done — stop there."""
+    from selenium.webdriver.common.by import By
+
+    previous = -1
+    stale_rounds = 0
+    for _ in range(max_rounds):
+        try:
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(random.uniform(1.0, 2.0))
+            count = len(driver.find_elements(By.XPATH, "//a[contains(@href, '/p/')]"))
+            if count > stop_when_over:
+                break
+            if count <= previous:
+                stale_rounds += 1
+                if stale_rounds >= 2:
+                    break
+            else:
+                stale_rounds = 0
+                previous = count
+            driver.execute_script("window.scrollBy(0, -600)")
+            time.sleep(random.uniform(0.5, 1.0))
+        except Exception as e:
+            logger.warning("flipkart scroll error: %s: %s", type(e).__name__, e)
+            break
 
 
 def _load_search_page(driver, query: str, page: int = 1) -> str | None:
@@ -68,17 +98,7 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
     if detect_block(driver, _BLOCK_PHRASES):
         return None
 
-    for _ in range(8):
-        try:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(random.uniform(1.0, 2.0))
-            if len(driver.find_elements(By.XPATH, "//a[contains(@href, '/p/')]")) > 50:
-                break
-            driver.execute_script("window.scrollBy(0, -600)")
-            time.sleep(random.uniform(0.5, 1.0))
-        except Exception as e:
-            logger.warning("flipkart scroll error: %s: %s", type(e).__name__, e)
-            break
+    _scroll_to_load_cards(driver)
     return driver.page_source
 
 
@@ -146,7 +166,7 @@ def parse_cards_from_html(html: str) -> list[dict]:
 
 
 def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
-    driver = build_stealth_driver()
+    driver = build_stealth_driver(light=FLIPKART_LIGHT)
     candidates: list[CandidateResult] = []
     seen: set[tuple] = set()
     blocked = False
@@ -217,7 +237,10 @@ def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrap
                         raw_page_text=c["card_text"],
                     )
                 )
-            time.sleep(random.uniform(1.0, 2.0))
+            # The pause between pages only exists to be polite to Flipkart —
+            # no point taking it after the last page (or once we have enough).
+            if page < max_pages and len(candidates) < max_results:
+                time.sleep(random.uniform(1.0, 2.0))
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         logger.error("Flipkart search failed for %r: %s", query, error)

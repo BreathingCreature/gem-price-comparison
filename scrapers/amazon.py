@@ -267,7 +267,9 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
             break
 
         _collect_cards(cards, candidates, seen, max_results)
-        if page < max_pages:
+        # Politeness pause between pages only — pointless after the last
+        # page or once enough candidates are gathered.
+        if page < max_pages and len(candidates) < max_results:
             time.sleep(random.uniform(1.2, 2.5))  # polite: don't hammer Amazon
 
     if pages_scraped == 0:
@@ -328,7 +330,10 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
                 break
 
             _collect_cards(cards, candidates, seen, max_results)
-            time.sleep(random.uniform(1.5, 2.5))
+            # Same trim as the fast path: no point pausing after the last
+            # page (or once we have enough candidates).
+            if page < max_pages and len(candidates) < max_results:
+                time.sleep(random.uniform(1.5, 2.5))
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         logger.error("Amazon search failed for %r: %s", query, error)

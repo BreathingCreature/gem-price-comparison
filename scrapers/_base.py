@@ -119,7 +119,27 @@ UA = (
 _USE_UC = False if os.getenv("GEM_USE_UC", "0") != "1" else None
 
 
-def build_stealth_driver():
+def _plain_chrome_options(light: bool = False):
+    """Plain-Selenium Chrome options. light=True (GEM_FLIPKART_LIGHT) skips
+    images and returns as soon as the DOM is ready instead of waiting for
+    every subresource — the result cards are in the HTML by then."""
+    from selenium.webdriver.chrome.options import Options
+
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--window-size=1366,2000")
+    opts.add_argument(f"user-agent={UA}")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    if light:
+        opts.add_argument("--blink-settings=imagesEnabled=false")
+        opts.page_load_strategy = "eager"
+    return opts
+
+
+def build_stealth_driver(light: bool = False):
     """Headless Chrome with the automation tells masked. Not a CAPTCHA
     bypass — just stops the driver announcing itself as a bot before a
     CAPTCHA is even triggered. If a site still blocks it, detect_block()
@@ -128,7 +148,10 @@ def build_stealth_driver():
     Primary path: undetected-chromedriver (free, the standard open-source
     answer to Amazon's soft bot-walls — patches the chromedriver binary so
     Chrome doesn't announce automation). Fallback: plain Selenium with CDP
-    webdriver-mask, which is what always worked for Flipkart."""
+    webdriver-mask, which is what always worked for Flipkart.
+
+    light=True (GEM_FLIPKART_LIGHT) skips images and stops at the DOM —
+    opt-in because an eager page load changes what detect_block() can see."""
     global _USE_UC
     if _USE_UC is not False:
         try:
@@ -145,6 +168,9 @@ def build_stealth_driver():
                 o.add_argument("--disable-gpu")
                 o.add_argument("--window-size=1366,2000")
                 o.add_argument(f"user-agent={UA}")
+                if light:
+                    o.add_argument("--blink-settings=imagesEnabled=false")
+                    o.page_load_strategy = "eager"
                 return o
 
             try:
@@ -168,17 +194,8 @@ def build_stealth_driver():
             _USE_UC = False
 
     from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
 
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--window-size=1366,2000")
-    opts.add_argument(f"user-agent={UA}")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    driver = webdriver.Chrome(options=opts)
+    driver = webdriver.Chrome(options=_plain_chrome_options(light=light))
     driver.set_page_load_timeout(60)  # Amazon regularly exceeds 45s from here
     driver.set_script_timeout(30)
     driver.execute_cdp_cmd(

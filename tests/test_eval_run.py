@@ -63,7 +63,8 @@ def test_settings_snapshot_lists_only_what_is_set(monkeypatch):
 def test_meta_records_the_speed_switches_too():
     # every switch that can change a run must show up in the .meta.json
     for name in ("GEM_LLM_WORKERS", "GEM_PREFILTER_TOP", "GEM_PRICE_PREGATE",
-                 "GEM_REUSE_VERDICTS", "GEM_DISCOVERY"):
+                 "GEM_REUSE_VERDICTS", "GEM_DISCOVERY", "GEM_FLIPKART_LIGHT",
+                 "GEM_DISCOVERY_TIME_LIMIT"):
         assert name in run_eval.SETTING_NAMES
 
 

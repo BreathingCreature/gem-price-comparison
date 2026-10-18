@@ -11,6 +11,7 @@ tests don't collide through the real on-disk cache.
 """
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -505,6 +506,66 @@ def test_merge_lane_results_unions_skipped_without_repeats():
         MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=["https://shop.example/x", "https://shop.example/y"]),
     ])
     assert merged.skipped == ["https://shop.example/x", "https://shop.example/y"]
+
+
+# --- generic pages are fetched at the same time ---------------------------------------
+
+def _discovery_two_urls(url_a, url_b):
+    def discover_fn(queries, allowed_domains):
+        return [{"query": queries[0], "raw_urls": [url_a, url_b], "filtered_urls": [url_a, url_b],
+                 "blocked": False, "error": None}]
+
+    return discover_fn
+
+
+def test_generic_pages_are_fetched_at_the_same_time():
+    url = "https://mkp.gem.gov.in/test/parallel-generic/p-13-13-cat.html"
+    gate = threading.Barrier(2, timeout=2)
+    fetched = []
+
+    def generic_scrape_fn(u):
+        gate.wait()
+        fetched.append(u)
+        return {"source_domain": u.split("/")[2], "url": u, "scraper_used": "generic",
+                "structured_fields": {"title": "Logitech M650", "price": 1100.0}, "raw_page_text": "x"}
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=lambda q: SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[]),
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=_discovery_two_urls("https://a.example/p/1", "https://b.example/p/2"),
+        generic_scrape_fn=generic_scrape_fn,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert sorted(fetched) == ["https://a.example/p/1", "https://b.example/p/2"]
+
+
+def test_a_broken_generic_page_does_not_stop_the_others():
+    url = "https://mkp.gem.gov.in/test/parallel-generic-broken/p-14-14-cat.html"
+    scraped = []
+
+    def generic_scrape_fn(u):
+        if "a.example" in u:
+            raise RuntimeError("page exploded")
+        scraped.append(u)
+        return {"source_domain": u.split("/")[2], "url": u, "scraper_used": "generic",
+                "structured_fields": {"title": "Logitech M650", "price": 1100.0}, "raw_page_text": "x"}
+
+    pipeline.run_pipeline(
+        url, refresh=True,
+        extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+        flipkart_search_fn=lambda q: SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[]),
+        amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+        discover_fn=_discovery_two_urls("https://a.example/p/1", "https://b.example/p/2"),
+        generic_scrape_fn=generic_scrape_fn,
+        match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+        expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+    )
+
+    assert scraped == ["https://b.example/p/2"]
 
 
 if __name__ == "__main__":
