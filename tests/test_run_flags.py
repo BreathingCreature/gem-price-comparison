@@ -1,4 +1,5 @@
-"""The on/off switches: parallel search, retry, and the two gates."""
+"""The on/off switches: parallel search, retry, and the gates."""
+import json
 import threading
 
 import pytest
@@ -21,9 +22,9 @@ def _normalized(_gem):
             "search_queries": ["demo wireless mouse"], "gem_price": 1000.0}
 
 
-def _cand(domain, url, price):
+def _cand(domain, url, price, title="Demo Mouse"):
     return CandidateResult(source_domain=domain, url=url, scraper_used=domain.split(".")[0],
-                           structured_fields={"title": "Demo Mouse", "price": price, "currency": "INR"}, raw_page_text="")
+                           structured_fields={"title": title, "price": price, "currency": "INR"}, raw_page_text="")
 
 
 def _search(domain, candidates, hook=None):
@@ -81,8 +82,8 @@ def test_flag_parsing(monkeypatch, raw, expected):
 
 def test_flag_empty_means_default(monkeypatch):
     monkeypatch.setenv("SOME_FLAG", "")
-    assert config._flag("SOME_FLAG", True) is True  # empty → default True
-    assert config._flag("SOME_FLAG", False) is False  # empty → default False
+    assert config._flag("SOME_FLAG", True) is True  # empty â†’ default True
+    assert config._flag("SOME_FLAG", False) is False  # empty â†’ default False
 
 
 def test_flag_default_when_unset(monkeypatch):
@@ -123,7 +124,7 @@ def test_parallel_search_runs_both_at_once_and_events_survive(monkeypatch):
 
 def test_parallel_search_gives_the_same_answer_as_sequential(monkeypatch):
     # Real matching checks every candidate on its own, so the fake does the
-    # same in both modes — lanes must not change the answer.
+    # same in both modes â€” lanes must not change the answer.
     sequential, _ = _run(match_fn=_all_matches)
     monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
     parallel, _ = _run(match_fn=_all_matches)
@@ -148,7 +149,7 @@ def test_three_lanes_run_at_the_same_time(monkeypatch):
 
 
 def test_each_lane_checks_its_listings_right_away(monkeypatch):
-    # Amazon answers while Flipkart is still searching — the Amazon lane
+    # Amazon answers while Flipkart is still searching â€” the Amazon lane
     # must verify its own listings during that wait, not after every search.
     monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
     amazon_checked = threading.Event()
@@ -168,7 +169,7 @@ def test_each_lane_checks_its_listings_right_away(monkeypatch):
 
 
 def test_one_listing_found_by_two_lanes_is_counted_once(monkeypatch):
-    # The same Flipkart URL can arrive from the direct search AND discovery —
+    # The same Flipkart URL can arrive from the direct search AND discovery â€”
     # the merge must keep one row: the first lane's copy.
     monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
     url = "https://www.flipkart.com/m650/p/itm42"
@@ -246,3 +247,189 @@ def test_currency_gate_can_be_switched_off(monkeypatch):
     assert matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict("USD")]).confirmed_matches == []
     monkeypatch.setattr(matcher, "GATES_ENABLED", False)
     assert len(matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict("USD")]).confirmed_matches) == 1
+
+
+def test_price_pre_gate_skips_the_llm_for_a_price_far_outside_the_band(monkeypatch):
+    monkeypatch.setattr(matcher, "PRICE_PREGATE", True)
+    calls = []
+    monkeypatch.setattr(matcher, "verify_or_extract", lambda *a, **k: calls.append(1))
+    out = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])  # 39 vs 1000 â€” far below 0.15x
+    assert calls == []  # the LLM was never asked
+    assert out.confirmed_matches == []
+    assert len(out.all_decisions) == 1 and out.all_decisions[0]["is_match"] is False
+
+
+def test_price_pre_gate_is_off_by_default(monkeypatch):
+    calls = []
+
+    def fake(normalized, candidate, client=None):
+        calls.append(candidate["url"])
+        return {"candidate_url": candidate["url"], "source_domain": "shop.example", "is_match": True,
+                "confidence": 0.95, "reason": "same", "price_used": 1000.0, "extraction_source": "scraper"}
+
+    monkeypatch.setattr(matcher, "verify_or_extract", fake)
+    out = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
+    assert calls == ["https://shop.example/p/1"]
+    assert len(out.confirmed_matches) == 1
+
+
+def test_price_pre_gate_and_the_hard_gate_agree(monkeypatch):
+    monkeypatch.setattr(matcher, "verify_or_extract", _fake_verify(39.0))
+    without = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
+    monkeypatch.setattr(matcher, "PRICE_PREGATE", True)
+    with_pregate = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
+    assert with_pregate.confirmed_matches == without.confirmed_matches == []
+
+
+def test_price_pre_gate_respects_the_gates_switch(monkeypatch):
+    # The pre-gate is the hard gate's fast path â€” gates off means both off.
+    monkeypatch.setattr(matcher, "PRICE_PREGATE", True)
+    monkeypatch.setattr(matcher, "GATES_ENABLED", False)
+    monkeypatch.setattr(matcher, "verify_or_extract", _fake_verify(39.0))
+    out = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
+    assert len(out.confirmed_matches) == 1
+
+
+# --- retry verdict reuse -----------------------------------------------------------------
+
+def _retry_pair():
+    """A run where Flipkart finds listing A first, listing B on the retry, and
+    Amazon/discovery find nothing. Returns (match_fn, match_calls, result,
+    first_url, second_url)."""
+    seen = {"searches": 0}
+    match_calls = []
+    first_url, second_url = "https://www.flipkart.com/a", "https://www.flipkart.com/b"
+
+    def flipkart_search(q):
+        seen["searches"] += 1
+        url = first_url if seen["searches"] == 1 else second_url
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[_cand("flipkart.com", url, 900.0)])
+
+    def match_fn(normalized, candidates):
+        urls = [c.url for c in candidates]
+        match_calls.append(urls)
+        if len(match_calls) == 1:
+            decisions = [{"candidate_url": u, "source_domain": "flipkart.com", "is_match": False,
+                          "confidence": 0.2, "reason": "no", "price_used": None, "extraction_source": "scraper"} for u in urls]
+            return MatchBatchResult(all_decisions=decisions, confirmed_matches=[])
+        return _all_matches(normalized, candidates)
+
+    result, _ = _run(flipkart_search_fn=flipkart_search, amazon_search_fn=_search("amazon.in", []), match_fn=match_fn)
+    return match_fn, match_calls, result, first_url, second_url
+
+
+def test_retry_reuses_first_pass_verdicts_when_switched_on(monkeypatch):
+    monkeypatch.setattr(pipeline, "REUSE_VERDICTS", True)
+    _, match_calls, result, first_url, second_url = _retry_pair()
+    assert match_calls[0] == [first_url]
+    assert match_calls[1] == [second_url]  # only the new listing is asked about
+    assert [m["candidate_url"] for m in result["matches"]] == [second_url]
+
+
+def test_retry_without_reuse_asks_about_all_listings_again(monkeypatch):
+    _, match_calls, _, first_url, second_url = _retry_pair()
+    assert match_calls[1] == [first_url, second_url]
+
+
+def test_retry_reuse_asks_again_about_skipped_listings(monkeypatch):
+    monkeypatch.setattr(pipeline, "REUSE_VERDICTS", True)
+    seen = {"searches": 0}
+    match_calls = []
+    first_url, second_url = "https://www.flipkart.com/a", "https://www.flipkart.com/b"
+
+    def flipkart_search(q):
+        seen["searches"] += 1
+        url = first_url if seen["searches"] == 1 else second_url
+        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[_cand("flipkart.com", url, 900.0)])
+
+    def match_fn(normalized, candidates):
+        match_calls.append([c.url for c in candidates])
+        if len(match_calls) == 1:
+            return MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[first_url])
+        return _all_matches(normalized, candidates)
+
+    result, _ = _run(flipkart_search_fn=flipkart_search, amazon_search_fn=_search("amazon.in", []), match_fn=match_fn)
+    # a skipped listing never got a verdict, so the retry must ask again
+    assert match_calls[1] == [first_url, second_url]
+    assert result["matches"]
+
+
+# --- discovery switch --------------------------------------------------------------------
+
+def test_discovery_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(pipeline, "DISCOVERY_ENABLED", False)
+    calls = []
+
+    def discover_fn(queries, allowed_domains):
+        calls.append(1)
+        return []
+
+    result, seen = _run(discover_fn=discover_fn)
+    assert calls == []
+    names = [e["name"] for e in seen if e["type"] == "stage"]
+    assert "discovery" not in names
+    assert result["matches"]  # the direct shops still work
+
+
+def test_discovery_switch_applies_to_the_lanes_too(monkeypatch):
+    monkeypatch.setattr(pipeline, "DISCOVERY_ENABLED", False)
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    calls = []
+    result, _ = _run(discover_fn=lambda q, d: (calls.append(1), [])[1], match_fn=_all_matches)
+    assert calls == []
+    assert result["matches"]
+
+
+def test_discovery_stays_off_on_the_retry(monkeypatch):
+    monkeypatch.setattr(pipeline, "DISCOVERY_ENABLED", False)
+    calls = []
+
+    def discover_fn(queries, allowed_domains):
+        calls.append(1)
+        return []
+
+    result, _ = _run(discover_fn=discover_fn, match_fn=_nothing_matches)
+    assert calls == []
+    assert result["matches"] == []
+
+
+# --- prefilter switch --------------------------------------------------------------------
+
+def _two_flipkart_listings(q):
+    return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[
+        _cand("flipkart.com", "https://www.flipkart.com/good/p/itm1", 900.0, title="Demo Wireless Mouse"),
+        _cand("flipkart.com", "https://www.flipkart.com/bad/p/itm2", 880.0, title="Desk Mat Pad XL Large"),
+    ])
+
+
+def test_prefilter_drops_the_worst_listings_per_shop_and_records_them(monkeypatch):
+    monkeypatch.setattr(pipeline, "PREFILTER_TOP", 1)
+    checked = []
+
+    def match_fn(normalized, candidates):
+        checked.extend(c.url for c in candidates)
+        return _all_matches(normalized, candidates)
+
+    result, _ = _run(flipkart_search_fn=_two_flipkart_listings, match_fn=match_fn)
+    assert "https://www.flipkart.com/bad/p/itm2" not in checked  # never sent to the LLM
+    assert result["matches"]
+    trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))
+    dropped = trace["stages"]["prefilter"]["dropped"]
+    assert [d["url"] for d in dropped] == ["https://www.flipkart.com/bad/p/itm2"]
+
+
+def test_prefilter_applies_inside_the_lanes_too(monkeypatch):
+    monkeypatch.setattr(pipeline, "PREFILTER_TOP", 1)
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    checked = []
+
+    def match_fn(normalized, candidates):
+        checked.extend(c.url for c in candidates)
+        return _all_matches(normalized, candidates)
+
+    result, _ = _run(flipkart_search_fn=_two_flipkart_listings, match_fn=match_fn)
+    assert "https://www.flipkart.com/bad/p/itm2" not in checked
+    assert result["matches"]
+    trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))
+    dropped = trace["stages"]["prefilter"]["dropped"]
+    assert [d["url"] for d in dropped] == ["https://www.flipkart.com/bad/p/itm2"]
