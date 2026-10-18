@@ -157,6 +157,32 @@ def test_a1_cache_hits_only_is_not_error(tmp_path):
     assert rec["error"] is None
 
 
+# --- C1 (kit 20): the meta writer shared with eval/replay.py -------------
+
+def test_write_meta_helper_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
+    meta = tmp_path / "x.meta.json"
+    label = "x"
+    monkeypatch.setenv("GEM_PARALLEL", "0")
+    run_eval.write_meta(meta, label)
+    assert json.loads(meta.read_text(encoding="utf-8"))["settings"]["GEM_PARALLEL"] == "0"
+
+    monkeypatch.setenv("GEM_PARALLEL", "1")
+    run_eval.write_meta(meta, label)
+    out = capsys.readouterr().out
+    assert "settings changed" in out and "GEM_PARALLEL" in out
+    assert "Use a new --label" in out
+    # the old meta is kept so the label still describes the settings it ran with
+    assert json.loads(meta.read_text(encoding="utf-8"))["settings"]["GEM_PARALLEL"] == "0"
+
+
+def test_write_meta_helper_records_extra_sections(tmp_path):
+    meta = tmp_path / "x.meta.json"
+    run_eval.write_meta(meta, "baseline", extra={"replay": {"mode": "replay", "recording": "baseline"}})
+    saved = json.loads(meta.read_text(encoding="utf-8"))
+    assert saved["replay"] == {"mode": "replay", "recording": "baseline"}
+    assert "settings" in saved and "git_commit" in saved
+
+
 # --- A4: meta settings comparison on label reuse -------------------------
 
 def test_a4_meta_settings_changed_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
