@@ -8,10 +8,12 @@ groq/llama. Each endpoint keeps its own little record: when it was last
 used, whether it is cooling down after an error, how often it failed.
 
 For every call the router:
-  1. skips endpoints that are disabled or cooling down,
-  2. skips endpoints that were used too recently (their minimum gap),
-  3. picks one of the rest, and
-  4. if the call fails, puts that endpoint on a cooldown and tries the next.
+  1. skips endpoints that are disabled, cooling down, or over their
+     provider's daily_limit (see llm_providers.json),
+  2. waits a moment if the provider is already at its max_concurrent,
+  3. skips endpoints that were used too recently (their minimum gap),
+  4. picks one of the rest, and
+  5. if the call fails, puts that endpoint on a cooldown and tries the next.
 If everything is cooling down it waits (up to LLM_MAX_WAIT_SECONDS), then
 gives up with an error that says why.
 
@@ -25,6 +27,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -62,6 +65,11 @@ class Endpoint:
     # Per-provider request options merged into chat.completions.create().
     # Example: {"reasoning_effort": "low"} or {"extra_body": {...}}.
     request_options: Optional[dict] = None
+    # Per-provider guards for when several calls run at once (GEM_LLM_WORKERS):
+    # how many calls may be in flight at once, and how many calls the
+    # provider may get in one day. 0 means no limit (today's behaviour).
+    max_concurrent: int = 0
+    daily_limit: int = 0
     # live state, changes while the program runs
     cooldown_until: float = 0.0
     last_start: float = -1e9
@@ -93,6 +101,18 @@ def _default_providers() -> list[dict]:
     ]
 
 
+def _int_entry(path: Path, entry: dict, key: str) -> int:
+    """One of the per-provider number settings, with a clear error message."""
+    value = entry.get(key, 0)
+    try:
+        value = int(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError(f"{path}: provider {entry['name']!r} {key} must be a whole number, got {entry.get(key)!r}") from None
+    if value < 0:
+        raise ValueError(f"{path}: provider {entry['name']!r} {key} cannot be negative")
+    return value
+
+
 def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
     """Returns (endpoints in priority order, strategy)."""
     path = Path(path) if path else Path(LLM_PROVIDERS_FILE)
@@ -119,6 +139,8 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
         request_options = entry.get("request_options")
         if request_options is not None and not isinstance(request_options, dict):
             raise ValueError(f"{path}: provider {entry['name']!r} request_options must be an object")
+        max_concurrent = _int_entry(path, entry, "max_concurrent")
+        daily_limit = _int_entry(path, entry, "daily_limit")
         for model in entry["models"]:
             ep = Endpoint(
                 provider=entry["name"],
@@ -129,6 +151,8 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
                 min_gap=float(entry.get("min_seconds_between_calls", 0.0)),
                 timeout=float(entry.get("timeout_seconds", 60.0)),
                 request_options=request_options,
+                max_concurrent=max_concurrent,
+                daily_limit=daily_limit,
             )
             if not wanted:
                 ep.enabled, ep.disabled_reason = False, "turned off in the config file"
@@ -140,6 +164,10 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
 
 # --- the router -----------------------------------------------------------------
 
+def _today_iso() -> str:
+    return date.today().isoformat()
+
+
 class Router:
     def __init__(
         self,
@@ -150,6 +178,7 @@ class Router:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         client_factory: Optional[Callable[[Endpoint], object]] = None,
+        today: Optional[Callable[[], str]] = None,
     ):
         self.endpoints = endpoints
         self.strategy = strategy
@@ -159,6 +188,12 @@ class Router:
         self._factory = client_factory or self._make_client
         self._clients: dict = {}
         self._lock = threading.Lock()
+        # Per-provider live counters for the limits above (both keyed by
+        # provider name, so models of one provider share one quota).
+        self._today = today or _today_iso
+        self._day = self._today()
+        self._in_flight: dict = {}
+        self._calls_today: dict = {}
 
     # -- public ---------------------------------------------------------------
 
@@ -184,9 +219,12 @@ class Router:
         now = self.clock()
         out = []
         with self._lock:
+            self._roll_day()
             for e in self.endpoints:
                 if not e.enabled:
                     state = "disabled"
+                elif self._over_daily(e):
+                    state = "limit"
                 elif e.cooldown_until > now:
                     state = "cooling"
                 else:
@@ -197,42 +235,75 @@ class Router:
                         "provider": e.provider,
                         "model": e.model,
                         "state": state,
-                        "reason": e.disabled_reason if state == "disabled" else "",
+                        "reason": e.disabled_reason if state == "disabled" else ("daily limit reached" if state == "limit" else ""),
                         "cooldown_remaining": round(max(e.cooldown_until - now, 0.0), 1),
                         "calls": e.calls,
                         "errors": e.errors,
                         "avg_seconds": round(e.total_seconds / e.calls, 2) if e.calls else None,
                         "last_error": e.last_error,
+                        "calls_today": self._calls_today.get(e.provider, 0),
+                        "in_flight": self._in_flight.get(e.provider, 0),
+                        "max_concurrent": e.max_concurrent,
+                        "daily_limit": e.daily_limit,
                     }
                 )
         return out
 
     # -- internals ------------------------------------------------------------
 
+    def _roll_day(self) -> None:
+        """Forget yesterday's call counts. Call with the lock held."""
+        today = self._today()
+        if today != self._day:
+            self._day = today
+            self._calls_today.clear()
+
+    def _over_daily(self, endpoint: Endpoint) -> bool:
+        return endpoint.daily_limit > 0 and self._calls_today.get(endpoint.provider, 0) >= endpoint.daily_limit
+
+    def _release_slot(self, endpoint: Endpoint) -> None:
+        """One in-flight call for this provider just finished."""
+        with self._lock:
+            count = self._in_flight.get(endpoint.provider, 0)
+            self._in_flight[endpoint.provider] = max(count - 1, 0)
+
     def _pick(self) -> tuple[Optional[Endpoint], Optional[float]]:
         """(endpoint, 0) if one is ready now, (None, seconds) if one will be
         ready after that wait, (None, None) if none can ever be used."""
         with self._lock:
             now = self.clock()
+            self._roll_day()
             usable = [e for e in self.endpoints if e.enabled]
             if not usable:
                 return None, None
-            ready = [e for e in usable if e.cooldown_until <= now and now - e.last_start >= e.min_gap]
+            available = [e for e in usable if not self._over_daily(e)]
+            if not available:
+                return None, None  # daily limits are the only thing left
+            free = [e for e in available if e.max_concurrent <= 0 or self._in_flight.get(e.provider, 0) < e.max_concurrent]
+            ready = [e for e in free if e.cooldown_until <= now and now - e.last_start >= e.min_gap]
             if ready:
                 if self.strategy == "spread":
                     chosen = min(ready, key=lambda e: e.last_start)  # least recently used
                 else:
                     chosen = ready[0]  # config order is the priority order
                 chosen.last_start = now  # claim the slot before anyone else can
+                self._in_flight[chosen.provider] = self._in_flight.get(chosen.provider, 0) + 1
+                self._calls_today[chosen.provider] = self._calls_today.get(chosen.provider, 0) + 1
                 return chosen, 0.0
-            wait = min(max(e.cooldown_until, e.last_start + e.min_gap) - now for e in usable)
-            return None, max(wait, 0.05)
+            if free:
+                wait = min(max(e.cooldown_until, e.last_start + e.min_gap) - now for e in free)
+                return None, max(wait, 0.05)
+            # every available endpoint is at its provider's concurrency cap —
+            # an in-flight call frees one up shortly.
+            return None, 0.05
 
     def _why_unusable(self, include_cooling: bool = False) -> str:
         parts = []
         for e in self.endpoints:
             if not e.enabled:
                 parts.append(f"{e.name}: {e.disabled_reason}")
+            elif self._over_daily(e):
+                parts.append(f"{e.name}: daily limit reached ({self._calls_today.get(e.provider, 0)}/{e.daily_limit} calls today)")
             elif include_cooling and e.last_error:
                 parts.append(f"{e.name}: {e.last_error}")
         return "; ".join(parts) or "no endpoints configured"
@@ -251,6 +322,13 @@ class Router:
             return self._clients[key]
 
     def _call(self, endpoint: Endpoint, messages, max_tokens, purpose) -> Optional[str]:
+        """One call, then always free this provider's in-flight slot."""
+        try:
+            return self._call_endpoint(endpoint, messages, max_tokens, purpose)
+        finally:
+            self._release_slot(endpoint)
+
+    def _call_endpoint(self, endpoint: Endpoint, messages, max_tokens, purpose) -> Optional[str]:
         client = self._client_for(endpoint)
         started = self.clock()
         try:
