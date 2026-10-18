@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
@@ -40,6 +41,26 @@ def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) 
     return pipeline.run_pipeline(gem_url, refresh=refresh, on_event=on_event)
 
 
+def _warm_up() -> None:
+    """E8: pay the first-run costs at server start instead of inside the
+    user's first run — build the LLM router (reads llm_providers.json) and
+    resolve the Chrome driver once (Selenium Manager does its download
+    check on the very first call, 1-5 s). A broken environment is a warning
+    here, not a surprise mid-run crash."""
+    try:
+        from llm.router import get_router
+
+        get_router()
+    except Exception as exc:
+        logger.warning("LLM router warm-up failed: %s: %s", type(exc).__name__, exc)
+    try:
+        from scrapers._base import resolve_chromedriver
+
+        resolve_chromedriver()
+    except Exception as exc:
+        logger.warning("Chrome driver warm-up failed: %s: %s", type(exc).__name__, exc)
+
+
 def _looks_like_gem_url(url: str) -> bool:
     parts = urlparse(url.strip())
     host = (parts.hostname or "").lower()
@@ -48,9 +69,18 @@ def _looks_like_gem_url(url: str) -> bool:
     )
 
 
-def create_app(runner: Optional[Callable] = None, *, demo: Optional[bool] = None) -> FastAPI:
+def create_app(
+    runner: Optional[Callable] = None,
+    *,
+    demo: Optional[bool] = None,
+    warmup: Optional[bool] = None,
+) -> FastAPI:
     if demo is None:
         demo = os.getenv("GEM_DEMO") == "1"
+    if warmup is None:
+        # Only the real app warms up; demo mode and injected runners
+        # (the tests) must not touch the network or Chrome at startup.
+        warmup = runner is None and not demo
     if runner is None:
         if demo:
             from api.demo import demo_runner
@@ -60,7 +90,14 @@ def create_app(runner: Optional[Callable] = None, *, demo: Optional[bool] = None
             runner = _real_runner
 
     manager = JobManager(runner)
-    app = FastAPI(title="GeM Price Comparison API")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if warmup:
+            _warm_up()
+        yield
+
+    app = FastAPI(title="GeM Price Comparison API", lifespan=lifespan)
     app.state.manager = manager
 
     origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
