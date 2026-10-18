@@ -4,8 +4,10 @@ Loads .env once; every other module imports constants from here instead of
 reading os.environ / calling load_dotenv() itself.
 """
 import logging
+import math
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -35,16 +37,24 @@ def _flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _float_setting(name: str, default: float) -> float:
-    """Read a float env var, returning the default on any parse problem."""
+def _float_setting(name: str, default: float, minimum: Optional[float] = None, maximum: Optional[float] = None) -> float:
+    """Read a float env var. Returns the default (and logs a warning) when the
+    text is not a number, is NaN or infinite, or is outside minimum..maximum."""
     raw = os.getenv(name)
     if raw is None:
         return default
     try:
-        return float(raw.strip())
+        value = float(raw.strip())
     except (TypeError, ValueError):
         logger.warning("Invalid %s=%r, using default %r", name, raw, default)
         return default
+    if math.isnan(value) or math.isinf(value):
+        logger.warning("Invalid %s=%r (not a finite number), using default %r", name, raw, default)
+        return default
+    if (minimum is not None and value < minimum) or (maximum is not None and value > maximum):
+        logger.warning("Out-of-range %s=%r (allowed %r to %r), using default %r", name, raw, minimum, maximum, default)
+        return default
+    return value
 
 
 def _int_setting(name: str, default: int) -> int:
@@ -115,16 +125,16 @@ def log_startup_check() -> None:
 
 
 # --- pipeline behaviour ----------------------------------------------------
-CACHE_TTL_SECONDS = _float_setting("CACHE_TTL_SECONDS", 3600.0)
-MATCH_CONFIDENCE_THRESHOLD = _float_setting("MATCH_CONFIDENCE_THRESHOLD", 0.75)
+CACHE_TTL_SECONDS = _float_setting("CACHE_TTL_SECONDS", 3600.0, minimum=0.0)
+MATCH_CONFIDENCE_THRESHOLD = _float_setting("MATCH_CONFIDENCE_THRESHOLD", 0.75, minimum=0.0, maximum=1.0)
 # Hard price-sanity gate applied AFTER the LLM verdict: a "match" priced
 # outside [GeM * LOW, GeM * HIGH] is rejected regardless of confidence.
 # Rationale (live bug 2026-09): a logitech.com/en-us page listing $39.99
 # scraped as "39.99 INR" passed LLM verify at 95% and was crowned cheapest
 # vs a ₹2,725 GeM listing — prompt-level price-sanity instructions alone
 # are not enough.
-PRICE_SANITY_LOW_RATIO = _float_setting("PRICE_SANITY_LOW_RATIO", 0.15)   # below 15% of GeM price -> implausible
-PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0)   # above 5x GeM price -> implausible
+PRICE_SANITY_LOW_RATIO = _float_setting("PRICE_SANITY_LOW_RATIO", 0.15, minimum=0.0, maximum=1.0)   # below 15% of GeM price -> implausible
+PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0, minimum=1.0)   # above 5x GeM price -> implausible
 
 
 # On/off switches. The defaults are the normal behaviour. They exist so the
