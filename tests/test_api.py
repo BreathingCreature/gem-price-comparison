@@ -1,5 +1,6 @@
 """The HTTP layer: start a run, stream its events, read the result."""
 import json
+import threading
 import time
 
 import pytest
@@ -189,3 +190,50 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     seen, _ = read_stream(client, run_id)
     types = {e["type"] for e in seen}
     assert {"gem_product", "search_finished", "candidate_verdict", "llm_call", "llm_cooldown", "run_finished"} <= types
+
+
+# --- B9: GEM_JOBS lets several runs share the server ----------------------
+
+def test_gem_jobs_two_runs_really_run_at_the_same_time(monkeypatch):
+    monkeypatch.setenv("GEM_JOBS", "2")
+    barrier = threading.Barrier(2, timeout=5)
+
+    def overlapping_runner(gem_url, refresh, on_event):
+        # Only two jobs running together get past this; with one slot the
+        # first times out and fails, and the test sees it.
+        barrier.wait()
+        return {"matches": [], "from_cache": False}
+
+    client = TestClient(create_app(runner=overlapping_runner, demo=False))
+    run_ids = [client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"] for _ in range(2)]
+    for run_id in run_ids:
+        assert wait_until_finished(client, run_id, timeout=8.0)["status"] == "done"
+
+
+def test_without_gem_jobs_the_second_run_stays_queued(monkeypatch):
+    monkeypatch.delenv("GEM_JOBS", raising=False)
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_runner(gem_url, refresh, on_event):
+        started.set()
+        release.wait(5)
+        return {"matches": [], "from_cache": False}
+
+    client = TestClient(create_app(runner=blocking_runner, demo=False))
+    first = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+    assert started.wait(2)
+    second = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+
+    statuses = {r["id"]: r["status"] for r in client.get("/api/runs").json()["runs"]}
+    assert statuses[first] == "running"
+    assert statuses[second] == "queued"  # the one slot is held by the first run
+
+    release.set()
+    assert wait_until_finished(client, second)["status"] == "done"
+
+
+def test_a_bad_gem_jobs_value_is_a_warning_not_a_crash(monkeypatch):
+    monkeypatch.setenv("GEM_JOBS", "loads")
+    client = TestClient(create_app(runner=fake_runner, demo=False))
+    run_id = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+    assert wait_until_finished(client, run_id)["status"] == "done"

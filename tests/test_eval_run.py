@@ -1,5 +1,6 @@
 """The evaluation runner: one record per product, resumable, never stops on one failure."""
 import json
+import threading
 
 from eval import run_eval
 
@@ -232,3 +233,53 @@ def test_a4_meta_settings_same_no_warning(tmp_path, monkeypatch, capsys):
     run_eval.main(["--key", str(key_file), "--label", "before", "--dir", str(tmp_path)])
     captured = capsys.readouterr()
     assert "settings changed" not in captured.out
+
+
+# --- B9: several products at once (--workers) -----------------------------
+
+def test_workers_two_products_really_run_at_the_same_time(tmp_path):
+    barrier = threading.Barrier(2, timeout=5)
+
+    def overlapping_run(gem_url, refresh=False, on_event=None):
+        # Only two products running together get past this; a sequential
+        # runner times out and the BrokenBarrierError lands in the record.
+        barrier.wait()
+        return {"trace_id": "t", "matches": [], "not_found_on": [], "search_issues": []}
+
+    out = tmp_path / "r.jsonl"
+    assert run_eval.run_all(ROWS[:2], out, run_fn=overlapping_run, workers=2, log=lambda *_: None) == 2
+    lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+    assert sorted(r["id"] for r in lines) == ["P1", "P2"]
+    assert all(r["error"] is None for r in lines)
+
+
+def test_workers_keep_every_record_and_a_resume_still_retries_errors(tmp_path):
+    out = tmp_path / "r.jsonl"
+
+    def run(gem_url, refresh=False, on_event=None):
+        if gem_url.endswith("/b"):
+            raise RuntimeError("shop blocked us")
+        return {"trace_id": "t", "matches": [], "not_found_on": [], "search_issues": []}
+
+    run_eval.run_all(ROWS, out, run_fn=run, workers=2, log=lambda *_: None)
+    lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+    assert sorted(r["id"] for r in lines) == ["P1", "P2", "P3"]
+    assert [r for r in lines if r["id"] == "P2"][0]["error"] is not None
+
+    # P2 errored, so a resume runs only it — again with workers.
+    assert run_eval.run_all(ROWS, out, run_fn=run, workers=2, log=lambda *_: None) == 1
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 4
+
+
+def test_main_passes_the_workers_flag_through(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(run_eval, "run_all", lambda rows, out_path, **kw: captured.update(kw))
+    key = tmp_path / "key.csv"
+    key.write_text("id,gem_url\nP1,https://mkp.gem.gov.in/a\n", encoding="utf-8")
+
+    run_eval.main(["--key", str(key), "--label", "workers", "--dir", str(tmp_path), "--workers", "2"])
+    assert captured["workers"] == 2
+
+    captured.clear()
+    run_eval.main(["--key", str(key), "--label", "workers", "--dir", str(tmp_path)])
+    assert captured["workers"] == 1
