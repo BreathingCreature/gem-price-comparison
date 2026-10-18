@@ -39,6 +39,30 @@ def test_app_js_anchors_never_use_raw_candidate_url():
     assert "safeHref(m.candidate_url)" in SOURCE
 
 
+def test_app_js_knows_the_parallel_lane_steps():
+    # B1/B2: with GEM_PARALLEL=1 these stage names arrive from different
+    # lanes, in any order — the file must know they belong together.
+    assert "PHASE_STEPS" in SOURCE
+    for name in ("search_both", "match_flipkart", "match_amazon", "match_other_shops"):
+        assert name in SOURCE
+
+
+def test_entering_a_parallel_lane_step_does_not_finish_its_siblings():
+    # The old display kept ONE active step, so every lane's stage finished
+    # the previous one — parallel progress flickered (B1/B2 frontend note).
+    assert "state.activeSteps" in SOURCE
+    assert "finishActiveSteps" in SOURCE
+    assert "finishActiveStep(" not in SOURCE  # the old single-step version is gone
+    enter = SOURCE.split("function enterStep(", 1)[1].split("function ", 1)[0]
+    assert "PHASE_STEPS[name]" in enter
+    assert "finishActiveSteps(t)" in enter
+
+
+def test_a_normal_step_and_the_run_end_close_every_open_parallel_step():
+    assert "finishActiveSteps(e.t)" in SOURCE
+    assert "finishActiveSteps(e.t, true)" in SOURCE
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0
