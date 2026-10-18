@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from core import events
-from core.config import GATES_ENABLED, LLM_WORKERS, MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
+from core.config import GATES_ENABLED, LLM_WORKERS, MATCH_CONFIDENCE_THRESHOLD, PRICE_PREGATE, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
 from core.parallel import run_many
 from llm.client import verify_or_extract
 
@@ -54,6 +54,23 @@ def _emit_verdict(decision: dict) -> None:
     )
 
 
+def _price_number(value) -> float | None:
+    """structured_fields prices arrive as floats or as strings like
+    '1,299.00' — the price pre-gate needs a number, and anything it cannot
+    parse must NOT be treated as outside the band (never guess a number)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "").replace("₹", "").replace("Rs.", "").replace("Rs", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
 def match_candidates(normalized: dict, candidates: list, *, client=None) -> MatchBatchResult:
     """normalized: a NormalizedProduct dict (from llm_client.normalize_product).
     candidates: a list of CandidateResult objects or dicts (from any of the
@@ -67,6 +84,7 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
     skipped: list[str] = []
     outcomes: dict = {}  # position -> ("decision", dict) or ("skipped", (url, reason))
     to_verify: list = []  # (position, candidate_dict) — the ones that need the LLM
+    gem_price = normalized.get("gem_price") if isinstance(normalized, dict) else None
 
     for position, candidate in enumerate(candidates, start=1):
         candidate_dict = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
@@ -110,6 +128,29 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
                 },
             )
             continue
+        # Price pre-gate (GEM_PRICE_PREGATE): Amazon/Flipkart cards already
+        # carry the price — if it is outside the hard gate's band the LLM call
+        # would be thrown away anyway. Tied to GATES_ENABLED: with the gates
+        # off nothing would reject the listing, so nothing is skipped.
+        if PRICE_PREGATE and GATES_ENABLED and gem_price is not None:
+            price = _price_number(sf.get("price"))
+            if price is not None and (price < gem_price * PRICE_SANITY_LOW_RATIO or price > gem_price * PRICE_SANITY_HIGH_RATIO):
+                reason = f"[hard-rejected: price {price} outside {PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x GeM {gem_price}]"
+                events.emit("candidate_gate_rejected", url=url, reason=reason)
+                logger.warning("price pre-gate rejected %s: %s — not sending to the LLM.", url, reason)
+                outcomes[position] = (
+                    "decision",
+                    {
+                        "candidate_url": url,
+                        "source_domain": candidate_dict.get("source_domain"),
+                        "is_match": False,
+                        "confidence": 0.0,
+                        "reason": reason,
+                        "price_used": price,
+                        "extraction_source": "scraper",
+                    },
+                )
+                continue
         to_verify.append((position, candidate_dict))
 
     def _verify(item):
@@ -140,7 +181,6 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
     # wild price gaps, but it confirmed a $39.99-parsed-as-₹39.99 match at
     # 95% confidence live — so enforce the band mechanically here. A
     # decision already marked is_match=False is left untouched.
-    gem_price = normalized.get("gem_price") if isinstance(normalized, dict) else None
     if gem_price is not None and GATES_ENABLED:
         for d in all_decisions:
             if not d.get("is_match"):
