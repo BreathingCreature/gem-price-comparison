@@ -103,6 +103,7 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 | `GEM_PREFILTER_TOP` | `0` | Keep only the best N titled listings per shop before the LLM. `0` is off; the safe N comes from section 9 |
 | `GEM_PRICE_PREGATE` | `0` | `1` drops listings whose card price is already outside the band before the LLM call |
 | `GEM_REUSE_VERDICTS` | `0` | `1` keeps the first pass's verdicts on the retry instead of asking the LLM again |
+| `GEM_SLIM_REFERENCE` | `0` | `1` sends only the reference's identity fields (brand, model, canonical name, key identifiers, price) in verify calls instead of the full spec table and search queries |
 | `GEM_DISCOVERY` | `1` | `0` skips the other-shops discovery and the brand-site fetches |
 | `GEM_FLIPKART_LIGHT` | `0` | `1` makes Flipkart's browser skip images and stop loading early. For timing, not for accuracy runs |
 | `GEM_DISCOVERY_TIME_LIMIT` | `20.0` | Seconds the whole search-engine stage may take before giving up on the slow ones |

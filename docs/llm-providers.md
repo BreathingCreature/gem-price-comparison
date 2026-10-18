@@ -59,8 +59,8 @@ configuration error.
 ## Limits when several calls run at once
 
 With `GEM_LLM_WORKERS` above 1 (see docs/evaluation.md), several listings
-are verified at the same time and can reach one provider in parallel. Two
-optional numbers per provider keep that polite; both are off by default:
+are verified at the same time and can reach one provider in parallel. Three
+optional numbers per provider keep that polite; all are off by default:
 
 ```json
 {
@@ -69,7 +69,8 @@ optional numbers per provider keep that polite; both are off by default:
   "api_key_env": "GROQ_API_KEY",
   "models": ["openai/gpt-oss-120b"],
   "max_concurrent": 1,
-  "daily_limit": 1000
+  "daily_limit": 1000,
+  "tokens_per_minute": 6000
 }
 ```
 
@@ -80,6 +81,16 @@ optional numbers per provider keep that polite; both are off by default:
   (counted per provider, shared by its models). It is then skipped cleanly
   instead of answering 429 for the rest of the day. `0` or missing = no
   limit. The count starts fresh when the calendar day changes.
+- `tokens_per_minute`: the provider's token allowance per minute (free
+  plans announce this; it is the real 429 limit). The router keeps a 60 s
+  moving count per provider: a call is counted when it starts (estimated
+  from the prompt's size) and the count is replaced by the provider's real
+  reported usage once the call finishes. A provider whose next call would
+  go over is skipped in favour of one with room; if everyone is out of
+  tokens the call waits for the oldest use to age out of the window. A
+  provider that has sent nothing in the last minute always gets one call,
+  so a small value throttles it instead of bricking it. `0` or missing =
+  no limit.
 
 ## How it chooses
 
@@ -113,8 +124,9 @@ With no `llm_providers.json` at all, NVIDIA is used alone, built from the
 `GET /api/llm/status`, the Advanced tab of the web page, and the
 `llm_call` / `llm_cooldown` events all show which endpoint served each call,
 how long it took and why an endpoint was skipped. The status rows also show
-each provider's `calls_today`, `in_flight`, `max_concurrent` and
-`daily_limit`.
+each provider's `calls_today`, `in_flight`, `max_concurrent`, `daily_limit`
+and the token budget with the last minute's count (`tokens_per_minute`,
+`tokens_last_minute`).
 
 `python -m tools.probe_endpoints` sends one tiny message to every endpoint
 and prints OK with the round-trip time, or the real error (bad key, wrong

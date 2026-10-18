@@ -10,6 +10,7 @@ building, response-parsing, retry, and fallback-merging logic is correct.
 It does NOT prove the real model actually returns useful answers to these
 prompts — that needs a real key and a real run.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -574,6 +575,68 @@ def test_int_setting_invalid_uses_default(monkeypatch):
 
 
 # --- end B5 ---
+
+
+# --- checkpoint 22: slim reference (A5) and short answers (A6) ----------------
+
+def _verify_payload_from_last_call(fake):
+    user = fake.chat.completions.calls[0]["messages"][1]["content"]
+    head = user.split("\n\n" + llm_client._PAGE_START, 1)[0]
+    return json.loads(head)
+
+
+_FULL_REFERENCE = {
+    "canonical_name": "Logitech M650 — Wireless Mouse",
+    "brand": "Logitech",
+    "model": "M650",
+    "key_identifiers": ["M650", "Bluetooth"],
+    "search_queries": ["Logitech M650 wireless mouse"],
+    "specs": {"Connectivity": "Bluetooth + USB", "Battery": "24 months"},
+    "category_slug": "computer-mouse",
+    "gem_price": 1400.0,
+}
+
+_VERIFY_OK_ANSWER = (
+    '{"is_match": true, "confidence": 0.9, "reason": "same mouse", '
+    '"extracted_price": 1299, "extraction_source": "scraper"}'
+)
+
+_VERIFY_CANDIDATE = {
+    "url": "https://www.flipkart.com/logitech-m650/p/itm123",
+    "source_domain": "flipkart.com",
+    "structured_fields": {"title": "Logitech M650", "price": 1299.0},
+    "raw_page_text": "Logitech M650 ₹1,299",
+}
+
+
+def test_slim_reference_sends_only_the_identity_fields(monkeypatch):
+    monkeypatch.setattr(llm_client, "SLIM_REFERENCE", True)
+    fake = _FakeClient(_VERIFY_OK_ANSWER)
+
+    decision = llm_client.verify_or_extract(_FULL_REFERENCE, _VERIFY_CANDIDATE, client=fake)
+
+    assert decision["is_match"] is True
+    assert _verify_payload_from_last_call(fake)["reference_product"] == {
+        "canonical_name": "Logitech M650 — Wireless Mouse",
+        "brand": "Logitech",
+        "model": "M650",
+        "key_identifiers": ["M650", "Bluetooth"],
+        "gem_price": 1400.0,
+    }
+
+
+def test_without_the_switch_the_full_reference_goes_out(monkeypatch):
+    monkeypatch.setattr(llm_client, "SLIM_REFERENCE", False)
+    fake = _FakeClient(_VERIFY_OK_ANSWER)
+
+    llm_client.verify_or_extract(_FULL_REFERENCE, _VERIFY_CANDIDATE, client=fake)
+
+    assert _verify_payload_from_last_call(fake)["reference_product"] == _FULL_REFERENCE
+
+
+def test_the_verify_prompt_wants_a_short_reason_and_no_title():
+    assert "at most 8 words" in llm_client._VERIFY_SYSTEM
+    assert "extracted_title" not in llm_client._VERIFY_SYSTEM
 
 
 if __name__ == "__main__":

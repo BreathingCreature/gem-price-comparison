@@ -20,7 +20,8 @@
       "style": "plain",
       "request_options": {"reasoning_effort": "low"},
       "max_concurrent": 2,
-      "daily_limit": 1000
+      "daily_limit": 1000,
+      "tokens_per_minute": 6000
     }
   ]
 }
