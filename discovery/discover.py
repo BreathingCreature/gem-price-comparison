@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import parse_qs, quote_plus, urlparse
@@ -37,7 +39,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, logger
+from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, DISCOVERY_TIME_LIMIT_SECONDS, logger
 
 GOOGLE_RESULTS_PER_QUERY = 20
 QUERY_DELAY_RANGE = (1.5, 2.5)  # polite delay between queries in one discover_candidates call
@@ -223,9 +225,9 @@ def _fetch_ddg_html(query: str, *, session: Optional[requests.Session] = None) -
 # Public instances (HTML mode — parses via the same h3 > a shape as Google).
 # SearXNG instances rate-limit aggressively (200 + tiny empty shell after a
 # few queries), so keep a wide pool and try them all per query; empty /
-# unparseable responses just advance to the next one. Live-verified
-# 2026-09-24 via curl_cffi: s.trung.fun returned 43 h3 results; searxng.site
-# and opnxng.com worked until rate-limited.
+# unparseable responses just advance past them. Live-verified 2026-09-24 via
+# curl_cffi: s.trung.fun returned 43 h3 results; searxng.site and opnxng.com
+# worked until rate-limited.
 _SEARXNG_INSTANCES = (
     "https://s.trung.fun",
     "https://searxng.site",
@@ -240,13 +242,47 @@ _SEARXNG_INSTANCES = (
     "https://search.rhscz.eu",
 )
 
+SEARXNG_MAX_WORKERS = 6  # instances are asked at the same time, up to this many
+
+
+def _searxng_attempt(base: str, query: str, *, session, curl, headers):
+    """One instance fetch, off the main thread. Returns:
+      ("html", page)    — responded with parseable result links
+      ("blocked", None) — responded, but a CAPTCHA or an empty/rate-limits
+                          shell (it answered; just not usefully)
+      ("error", exc)    — the request itself failed (or HTTP 4xx/5xx)"""
+    url = f"{base}/search?q={quote_plus(query)}"
+    try:
+        if curl is not None:
+            resp = curl.get(url, impersonate="chrome150", timeout=REQUEST_TIMEOUT_SECONDS, headers=headers)
+        else:
+            sess = session or requests.Session()
+            resp = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+    except Exception as e:
+        return "error", e
+    if getattr(resp, "status_code", 200) >= 400:
+        return "error", Exception(f"HTTP {resp.status_code}")
+    html = resp.text
+    if _looks_blocked(html):
+        return "blocked", None
+    if _parse_result_urls(html):
+        return "html", html
+    return "blocked", None
+
 
 def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = None) -> str:
     """Fallback backend — SearXNG public instances. Free aggregator, no
     CAPTCHA, server-rendered HTML. Replaces Google as the real second
     choice after DDG (Google's page is JS-only — see module docstring).
     Live calls go through curl_cffi (plain requests gets empty shells from
-    several instances); injected sessions (tests) keep plain requests."""
+    several instances); injected sessions (tests) keep plain requests.
+
+    All instances are asked AT THE SAME TIME — a dead instance must not
+    cost the others' wait — and the whole stage has one deadline
+    (GEM_DISCOVERY_TIME_LIMIT, default 20s): sequentially, 11 instances x
+    up to 15s could stall a run for minutes. First instance with parseable
+    links wins; on deadline the best answer so far is used."""
     headers = {"Accept-Language": "en-IN,en;q=0.9"}
     curl = None
     if session is None:
@@ -257,30 +293,35 @@ def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = Non
             curl = None
         headers["User-Agent"] = USER_AGENT
 
+    pool = ThreadPoolExecutor(max_workers=min(len(_SEARXNG_INSTANCES), SEARXNG_MAX_WORKERS))
     last_exc: Exception | None = None
     got_any_response = False
-    for base in _SEARXNG_INSTANCES:
-        url = f"{base}/search?q={quote_plus(query)}"
+    try:
+        futures = [
+            pool.submit(_searxng_attempt, base, query, session=session, curl=curl, headers=headers)
+            for base in _SEARXNG_INSTANCES
+        ]
         try:
-            if curl is not None:
-                resp = curl.get(url, impersonate="chrome150", timeout=REQUEST_TIMEOUT_SECONDS, headers=headers)
-            else:
-                sess = session or requests.Session()
-                resp = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-                resp.raise_for_status()
-        except Exception as e:
-            last_exc = e
-            logger.debug("searxng %s failed for %r: %s: %s", base, query, type(e).__name__, str(e)[:120])
-            continue
-        if getattr(resp, "status_code", 200) >= 400:
-            last_exc = Exception(f"HTTP {resp.status_code}")
-            continue
-        got_any_response = True
-        html = resp.text
-        if _looks_blocked(html):
-            continue
-        if _parse_result_urls(html):
-            return html
+            for future in as_completed(futures, timeout=DISCOVERY_TIME_LIMIT_SECONDS):
+                kind, payload = future.result()
+                if kind == "html":
+                    return payload
+                if kind == "error":
+                    last_exc = payload
+                    logger.debug("searxng instance failed for %r: %s: %s",
+                                 query, type(payload).__name__, str(payload)[:120])
+                else:  # blocked / empty shell — it answered, just not usefully
+                    got_any_response = True
+        except FuturesTimeout:
+            logger.info(
+                "SearXNG search for %r hit the %.0fs time limit — using what came back so far.",
+                query, DISCOVERY_TIME_LIMIT_SECONDS,
+            )
+    finally:
+        # Do NOT wait for stragglers — the deadline is the point. Pending
+        # attempts are cancelled; running ones end at their current socket.
+        pool.shutdown(wait=False, cancel_futures=True)
+
     if not got_any_response and last_exc is not None:
         raise last_exc  # every instance failed at transport level (tests assert this)
     # Instances responded but yielded nothing parseable — honest error
