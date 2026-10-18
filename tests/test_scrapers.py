@@ -13,6 +13,8 @@ like it. Flipkart's shape came from tested code; Amazon's is unverified
 (see the warning at the top of scrapers/amazon.py).
 """
 import sys
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -324,6 +326,100 @@ def test_default_browser_options_are_unchanged():
     opts = _base._plain_chrome_options(light=False)
     assert "--blink-settings=imagesEnabled=false" not in opts.arguments
     assert opts.page_load_strategy == "normal"
+
+
+# --- one Chrome for a whole run (Flipkart Tier 2 items 1 and 2) ------------------------
+
+class _CountingDriver:
+    """A driver that only counts its quits — enough for lifecycle tests."""
+
+    def __init__(self):
+        self.quit_calls = 0
+
+    def quit(self):
+        self.quit_calls += 1
+
+
+def test_flipkart_browser_reuses_one_driver_for_every_query():
+    drivers = []
+
+    def factory():
+        driver = _CountingDriver()
+        drivers.append(driver)
+        return driver
+
+    browser = flipkart.FlipkartBrowser(build_driver=factory)
+    with _patched(flipkart, _load_search_page=lambda driver, query, page=1: FLIPKART_MOCK_HTML):
+        first = _call_silenced(flipkart, browser.search, "logitech m650", max_pages=1)
+        second = _call_silenced(flipkart, browser.search, "logitech wireless mouse", max_pages=1)
+        browser.close()
+        browser.close()
+    assert len(first.candidates) == 2 and len(second.candidates) == 2
+    assert len(drivers) == 1
+    assert drivers[0].quit_calls == 1
+
+
+def test_flipkart_browser_starts_building_before_the_first_search():
+    started = threading.Event()
+    release = threading.Event()
+
+    def factory():
+        started.set()
+        release.wait(5)
+        return _QuietDriver()
+
+    browser = flipkart.FlipkartBrowser(build_driver=factory)
+    browser.start()
+    assert started.wait(5)  # the build began without waiting for a search
+    release.set()
+    with _patched(flipkart, _load_search_page=lambda driver, query, page=1: FLIPKART_MOCK_HTML):
+        result = _call_silenced(flipkart, browser.search, "logitech m650", max_pages=1)
+    assert len(result.candidates) == 2
+    browser.close()
+
+
+def test_flipkart_browser_close_quits_even_a_slow_build():
+    driver = _CountingDriver()
+
+    def factory():
+        time.sleep(0.05)
+        return driver
+
+    browser = flipkart.FlipkartBrowser(build_driver=factory)
+    browser.start()
+    browser.close()
+    assert driver.quit_calls == 1
+
+
+def test_flipkart_browser_search_reports_a_failed_start():
+    def factory():
+        raise RuntimeError("no chrome today")
+
+    browser = flipkart.FlipkartBrowser(build_driver=factory)
+    browser.start()
+    try:
+        browser.search("logitech m650")
+    except RuntimeError as e:
+        assert "no chrome today" in str(e)
+    else:
+        raise AssertionError("search should raise the start error")
+    browser.close()  # nothing was built; must not raise
+
+
+def test_flipkart_module_search_still_builds_and_quits_its_own_driver():
+    drivers = []
+
+    def factory(*a, **k):
+        driver = _CountingDriver()
+        drivers.append(driver)
+        return driver
+
+    with _patched(flipkart, build_stealth_driver=factory,
+                  _load_search_page=lambda driver, query, page=1: FLIPKART_MOCK_HTML):
+        result = flipkart.search("logitech m650", max_pages=1)
+    assert len(result.candidates) == 2
+    assert len(drivers) == 1
+    assert drivers[0].quit_calls == 1
 
 
 # --- Amazon sleep trims ----------------------------------------------------------------

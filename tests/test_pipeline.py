@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -566,6 +567,127 @@ def test_a_broken_generic_page_does_not_stop_the_others():
     )
 
     assert scraped == ["https://b.example/p/2"]
+
+
+# --- one Chrome per run: started early, reused by the retry, closed -------------------
+
+@contextmanager
+def _patched_flipkart_browser(fake_class):
+    """Swaps FlipkartBrowser on the (imported) flipkart module, so the
+    pipeline picks the fake up without any real Chrome in the tests."""
+    from scrapers import flipkart as flipkart_scraper
+
+    had = hasattr(flipkart_scraper, "FlipkartBrowser")
+    old = getattr(flipkart_scraper, "FlipkartBrowser", None)
+    flipkart_scraper.FlipkartBrowser = fake_class
+    try:
+        yield
+    finally:
+        if had:
+            flipkart_scraper.FlipkartBrowser = old
+        else:
+            del flipkart_scraper.FlipkartBrowser
+
+
+def test_one_browser_runs_the_search_the_retry_and_is_closed():
+    url = "https://mkp.gem.gov.in/test/one-chrome/p-60-60-cat.html"
+    events = []
+    browsers = []
+
+    class FakeBrowser:
+        def __init__(self):
+            self.queries = []
+            browsers.append(self)
+            events.append("created")
+
+        def start(self):
+            events.append("started")
+
+        def search(self, query, max_results=15, max_pages=3):
+            self.queries.append(query)
+            events.append(f"search:{query}")
+            return SearchScrapeResult(source_domain="flipkart.com", query=query, candidates=[])
+
+        def close(self):
+            events.append("closed")
+
+    with _patched_flipkart_browser(FakeBrowser):
+        result = pipeline.run_pipeline(
+            url, refresh=True,
+            extract_fn=lambda u: (events.append("extract"), _fake_gem_product(u))[1],
+            normalize_fn=lambda gp: (events.append("normalize"), _fake_normalized())[1],
+            # No flipkart_search_fn on purpose: the pipeline itself must bring
+            # the run's one browser (None = "use the real scraper").
+            flipkart_search_fn=None,
+            amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+            discover_fn=lambda q, d: [],
+            generic_scrape_fn=_boom,
+            match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+            expand_search_fn=lambda n, tq, td: {"new_queries": ["better query"], "suggested_domains": [], "notes": ""},
+        )
+
+    assert len(browsers) == 1
+    assert events.index("started") < events.index("extract")
+    assert browsers[0].queries == ["Logitech M650 wireless mouse", "better query"]
+    assert events.count("closed") == 1
+    assert result["matches"] == []
+
+
+def test_injected_flipkart_search_function_means_no_browser_is_started():
+    url = "https://mkp.gem.gov.in/test/no-browser/p-61-61-cat.html"
+
+    class _NoBrowser:
+        def __init__(self):
+            raise AssertionError("a browser must not be created when a search function was injected")
+
+    with _patched_flipkart_browser(_NoBrowser):
+        result = pipeline.run_pipeline(
+            url, refresh=True,
+            extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
+            flipkart_search_fn=lambda q: SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[]),
+            amazon_search_fn=lambda q: SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[]),
+            discover_fn=lambda q, d: [],
+            generic_scrape_fn=_boom,
+            match_fn=lambda n, c: MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=[]),
+            expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
+        )
+    assert result["matches"] == []
+
+
+def test_the_browser_is_closed_when_a_stage_fails():
+    url = "https://mkp.gem.gov.in/test/chrome-close/p-62-62-cat.html"
+    events = []
+
+    class FakeBrowser:
+        def __init__(self):
+            events.append("created")
+
+        def start(self):
+            events.append("started")
+
+        def search(self, query, max_results=15, max_pages=3):
+            raise AssertionError("the search must not be reached")
+
+        def close(self):
+            events.append("closed")
+
+    def broken_extract(u):
+        raise RuntimeError("gem page exploded")
+
+    with _patched_flipkart_browser(FakeBrowser):
+        try:
+            pipeline.run_pipeline(
+                url, refresh=True,
+                extract_fn=broken_extract, normalize_fn=_boom,
+                flipkart_search_fn=None, amazon_search_fn=_boom,
+                discover_fn=_boom, generic_scrape_fn=_boom, match_fn=_boom, expand_search_fn=_boom,
+            )
+        except RuntimeError as e:
+            assert "gem page exploded" in str(e)
+        else:
+            raise AssertionError("the extract error must reach the caller")
+
+    assert events == ["created", "started", "closed"]
 
 
 if __name__ == "__main__":
