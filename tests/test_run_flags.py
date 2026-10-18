@@ -82,6 +82,10 @@ def test_normal_behaviour_is_the_default():
     # these tests assume the developer has not exported the switches
     assert config.RETRY_ENABLED is True and config.GATES_ENABLED is True
     assert config.PARALLEL_SEARCH is False and config.LLM_CACHE_ENABLED is False
+    # speed/cost switches: every one off (or 1 worker) keeps today's behaviour
+    assert config.LLM_WORKERS == 1 and config.PREFILTER_TOP == 0
+    assert config.PRICE_PREGATE is False and config.REUSE_VERDICTS is False
+    assert config.DISCOVERY_ENABLED is True
 
 
 # --- parallel search ------------------------------------------------------------
