@@ -20,6 +20,8 @@ copy .env.example .env
 python cli.py "https://mkp.gem.gov.in/.../p-12345-67890-cat.html"
 ```
 
+Speed options are off by default, see [docs/fast-profile.md](docs/fast-profile.md).
+
 ## Commands
 
 | Command | Description |
