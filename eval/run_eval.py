@@ -131,6 +131,31 @@ def settings_snapshot() -> dict:
     return {"settings": snap, "git_commit": commit or None, "started": datetime.now().isoformat(timespec="seconds")}
 
 
+def write_meta(meta: Path, label: str, *, extra: dict | None = None, log=print) -> None:
+    """Write <label>.meta.json, or warn (and keep the old file) when the label
+    already ran with different settings. Shared with eval/replay.py, which adds
+    its own "replay" section through extra."""
+    snapshot = settings_snapshot()
+    if extra:
+        snapshot.update(extra)
+    if meta.exists():
+        old_meta = json.loads(meta.read_text(encoding="utf-8"))
+        old_settings = old_meta.get("settings", {})
+        new_settings = snapshot.get("settings", {})
+        diff = {k: (old_settings.get(k), new_settings.get(k))
+                for k in set(old_settings) | set(new_settings)
+                if old_settings.get(k) != new_settings.get(k)}
+        if diff:
+            log(f"Warning: settings changed since last run with label '{label}':")
+            for k in sorted(diff):
+                old_v, new_v = diff[k]
+                log(f"  {k}: {old_v!r} -> {new_v!r}")
+            log("Use a new --label for a new setting.")
+    else:
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        meta.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--key", required=True)
@@ -143,23 +168,7 @@ def main(argv=None) -> int:
     out = Path(args.dir) / f"{args.label}.jsonl"
     meta = Path(args.dir) / f"{args.label}.meta.json"
     rows = load_key(args.key)
-    new_settings = settings_snapshot()
-    if meta.exists():
-        old_meta = json.loads(meta.read_text(encoding="utf-8"))
-        old_settings = old_meta.get("settings", {})
-        new_settings_dict = new_settings.get("settings", {})
-        diff = {k: (old_settings.get(k), new_settings_dict.get(k))
-                for k in set(old_settings) | set(new_settings_dict)
-                if old_settings.get(k) != new_settings_dict.get(k)}
-        if diff:
-            print(f"Warning: settings changed since last run with label '{args.label}':")
-            for k in sorted(diff):
-                old_v, new_v = diff[k]
-                print(f"  {k}: {old_v!r} -> {new_v!r}")
-            print("Use a new --label for a new setting.")
-    else:
-        meta.parent.mkdir(parents=True, exist_ok=True)
-        meta.write_text(json.dumps(new_settings, indent=2), encoding="utf-8")
+    write_meta(meta, args.label)
     only = set(args.only.split(",")) if args.only else None
     run_all(rows, out, limit=args.limit, only=only)
     print(f"results: {out}\nscore them with: python -m eval.score --key {args.key} --results {out}")
