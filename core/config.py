@@ -147,6 +147,7 @@ LLM_WORKERS = max(1, _int_setting("GEM_LLM_WORKERS", 1))  # listings verified at
 PREFILTER_TOP = max(0, _int_setting("GEM_PREFILTER_TOP", 0))  # keep only the best N listings per shop before the LLM (0 = off)
 PRICE_PREGATE = _flag("GEM_PRICE_PREGATE", False)  # skip the LLM for listings whose price is already outside the band
 REUSE_VERDICTS = _flag("GEM_REUSE_VERDICTS", False)  # on a retry, keep the verdicts already given in the first pass
+SLIM_REFERENCE = _flag("GEM_SLIM_REFERENCE", False)  # verify calls send only the reference's identity fields, not the full spec table
 DISCOVERY_ENABLED = _flag("GEM_DISCOVERY", True)  # other-shops discovery and the generic scrape
 FLIPKART_LIGHT = _flag("GEM_FLIPKART_LIGHT", False)  # Flipkart's browser skips images and stops at the DOM
 DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 20.0)  # total budget for the SearXNG stage
