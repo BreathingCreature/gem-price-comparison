@@ -18,7 +18,9 @@
       "min_seconds_between_calls": 2.0,
       "timeout_seconds": 60,
       "style": "plain",
-      "request_options": {"reasoning_effort": "low"}
+      "request_options": {"reasoning_effort": "low"},
+      "max_concurrent": 2,
+      "daily_limit": 1000
     }
   ]
 }

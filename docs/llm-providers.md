@@ -56,6 +56,31 @@ If `request_options` contains an `extra_body` key, it is merged into the
 parameter. `request_options` must be a JSON object; anything else is a
 configuration error.
 
+## Limits when several calls run at once
+
+With `GEM_LLM_WORKERS` above 1 (see docs/evaluation.md), several listings
+are verified at the same time and can reach one provider in parallel. Two
+optional numbers per provider keep that polite; both are off by default:
+
+```json
+{
+  "name": "groq",
+  "base_url": "https://api.groq.com/openai/v1",
+  "api_key_env": "GROQ_API_KEY",
+  "models": ["openai/gpt-oss-120b"],
+  "max_concurrent": 1,
+  "daily_limit": 1000
+}
+```
+
+- `max_concurrent`: how many calls may be in flight at once for this
+  provider. A call that finds the provider at its cap waits for a free slot
+  instead of stacking up more requests. `0` or missing = no limit.
+- `daily_limit`: stop using the provider after this many calls in one day
+  (counted per provider, shared by its models). It is then skipped cleanly
+  instead of answering 429 for the rest of the day. `0` or missing = no
+  limit. The count starts fresh when the calendar day changes.
+
 ## How it chooses
 
 - `"strategy": "failover"` (default): the first endpoint in the file is used
@@ -87,4 +112,12 @@ With no `llm_providers.json` at all, NVIDIA is used alone, built from the
 
 `GET /api/llm/status`, the Advanced tab of the web page, and the
 `llm_call` / `llm_cooldown` events all show which endpoint served each call,
-how long it took and why an endpoint was skipped.
+how long it took and why an endpoint was skipped. The status rows also show
+each provider's `calls_today`, `in_flight`, `max_concurrent` and
+`daily_limit`.
+
+`python -m tools.probe_endpoints` sends one tiny message to every endpoint
+and prints OK with the round-trip time, or the real error (bad key, wrong
+model name, limit, empty answer) — the quickest way to find a broken
+provider before a run. Add `--json` for the rows as JSON; the exit code is 1
+when any enabled endpoint failed.
