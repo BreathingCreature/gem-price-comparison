@@ -3,11 +3,10 @@ Tests for discovery.py.
 
 Same approach as every other part: pure-function parsing logic tested
 against hand-built mock HTML via a fake requests session, no real network
-call. This proves discover_candidates()'s filtering/dedup/block-detection
-logic is correct. It does NOT prove Google's current results page still
-matches either of the two link shapes handled below — that's flagged as
-unverified in discovery.py's own docstring, and can only be confirmed by
-an actual run outside this sandbox.
+call. This proves discover_candidates()'s parsing/filtering/dedup/
+block-detection logic is correct. The mock pages below use the link shapes
+DuckDuckGo and SearXNG actually emit (the old Google shapes are kept where
+other engines share them).
 """
 import sys
 import time
@@ -155,6 +154,50 @@ def test_discover_candidates_always_excludes_google_domains():
     assert any("reliancedigital.in" in u for u in result.filtered_urls)
 
 
+def test_open_discovery_skips_non_shop_domains_from_the_blocklist():
+    # E4: .in news, classifieds and blog pages pass the Indian-retail rule
+    # but are never the actual seller.
+    html = """
+    <html><body>
+    <a href="https://www.olx.in/item/logitech-m650"><h3>M650 - OLX</h3></a>
+    <a href="https://www.indiatoday.in/technology/story/m650-deal">
+      <h3>M650 deal - India Today</h3>
+    </a>
+    <a href="https://somebrandstore.in/logitech-m650"><h3>M650 - brand store .in</h3></a>
+    </body></html>
+    """
+    result = discovery.discover_candidates("logitech m650", None, session=_FakeSession(html))
+    kept = " ".join(result.filtered_urls)
+    assert "somebrandstore.in" in kept
+    assert "olx.in" not in kept
+    assert "indiatoday.in" not in kept
+
+
+def test_open_discovery_skips_search_and_tag_listing_pages():
+    # E4: a /search or /tag page is a wall of links, never the product.
+    html = """
+    <html><body>
+    <a href="https://www.croma.com/product/logitech-m650/p/12345"><h3>M650 - Croma</h3></a>
+    <a href="https://www.croma.com/search?q=logitech+m650"><h3>Search results - Croma</h3></a>
+    <a href="https://www.reliancedigital.in/tag/mouse"><h3>Mouse tag page</h3></a>
+    <a href="https://www.snapdeal.com/search?keyword=m650"><h3>Snapdeal search</h3></a>
+    </body></html>
+    """
+    result = discovery.discover_candidates("logitech m650", None, session=_FakeSession(html))
+    assert result.filtered_urls == ["https://www.croma.com/product/logitech-m650/p/12345"]
+
+
+def test_strict_mode_also_skips_search_and_tag_listing_pages():
+    html = """
+    <html><body>
+    <a href="https://www.croma.com/search?q=logitech+m650"><h3>Search results - Croma</h3></a>
+    <a href="https://www.croma.com/product/logitech-m650/p/12345"><h3>M650 - Croma</h3></a>
+    </body></html>
+    """
+    result = discovery.discover_candidates("logitech m650", ["croma.com"], session=_FakeSession(html))
+    assert result.filtered_urls == ["https://www.croma.com/product/logitech-m650/p/12345"]
+
+
 def test_discover_candidates_strict_mode_skips_direct_scraper_domains():
     # E2: if the LLM suggests amazon.in / flipkart.com in strict mode, the
     # generic scraper would fetch them by hand (and get blocked). They have
@@ -232,8 +275,8 @@ SEARXNG_MOCK_HTML = """
 
 
 class _DdgDownCountingSession:
-    """DDG and Google are unreachable; SearXNG requests go through handler
-    while the session counts how many are in flight at once."""
+    """DDG is unreachable; SearXNG requests go through handler while the
+    session counts how many are in flight at once."""
 
     def __init__(self, handler):
         self.handler = handler
@@ -241,7 +284,7 @@ class _DdgDownCountingSession:
         self.max_active = 0
 
     def get(self, url, headers=None, timeout=None):
-        if "duckduckgo.com" in url or "google.com" in url:
+        if "duckduckgo.com" in url:
             raise ConnectionError("backend down")
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -280,6 +323,22 @@ def test_searxng_search_has_a_total_time_limit():
         elapsed = time.monotonic() - started
     assert elapsed < 0.9  # did not wait out the 1s fetches
     assert result.filtered_urls == []
+
+
+def test_google_is_not_a_discovery_backend_anymore():
+    # F: Google's page is JS-only from this machine (live-verified: HTTP
+    # 200, zero links) — the fallback only wasted one request per query.
+    assert not hasattr(discovery.discover, "_fetch_google_html")
+    assert discovery.discover._FETCHERS == (
+        discovery.discover._fetch_ddg_html,
+        discovery.discover._fetch_searxng_html,
+    )
+
+
+def test_only_four_searxng_instances_are_used():
+    # F: up to 11 public instances was too many random third parties per
+    # query — and every one of them gets rate-limited anyway.
+    assert len(discovery.discover._SEARXNG_INSTANCES) == 4
 
 
 if __name__ == "__main__":
