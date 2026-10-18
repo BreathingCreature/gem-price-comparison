@@ -56,6 +56,33 @@ def similarity(title: str, product: set[str]) -> float:
     return len(words & product) / len(words | product)
 
 
+# C6/C7 early-exit gates share one idea: a listing is "relevant" when its
+# title's word overlap with the product is at least this much. The example
+# above is the calibration — a pad lands near 0.1, the same mouse near 0.8.
+RELEVANT_MIN_SCORE = 0.3
+
+# C6: enough relevant cards on a page mean the next Flipkart page cannot add
+# much — stop paging there (10-30 s saved on easy products).
+ENOUGH_RELEVANT = 5
+
+
+def relevant_title(title: str, product: set[str]) -> bool:
+    """True when a listing title is close enough to the product to count
+    toward an early-exit (C6/C7). An empty title counts — there is nothing
+    to compare, the same rule filter_candidates uses."""
+    if not (title or "").strip():
+        return True
+    return similarity(title, product) >= RELEVANT_MIN_SCORE
+
+
+def relevant_candidate(candidate, product: set[str]) -> bool:
+    """relevant_title for a CandidateResult or its to_dict() form."""
+    d = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
+    fields = d.get("structured_fields")
+    title = str(fields.get("title") or "") if isinstance(fields, dict) else ""
+    return relevant_title(title, product)
+
+
 def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[list, list]:
     """Keep the best `top` titled listings per source_domain, ranked by
     title similarity; untitled listings are always kept. Returns
