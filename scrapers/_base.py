@@ -139,6 +139,15 @@ def _plain_chrome_options(light: bool = False):
     return opts
 
 
+def resolve_chromedriver() -> str:
+    """Where Selenium Manager keeps chromedriver — downloading it if this
+    machine has never run Chrome. E8: the API server calls this once at
+    startup, so the download check is not paid inside the first run."""
+    from selenium.webdriver.common.selenium_manager import SeleniumManager
+
+    return SeleniumManager().binary_paths(["--browser", "chrome"])["driver_path"]
+
+
 def build_stealth_driver(light: bool = False):
     """Headless Chrome with the automation tells masked. Not a CAPTCHA
     bypass — just stops the driver announcing itself as a bot before a
