@@ -29,6 +29,7 @@ scrape failures indistinguishable from genuinely absent results.
 from __future__ import annotations
 
 import random
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -63,6 +64,16 @@ _NON_RETAIL_BLOCKLIST = _ALWAYS_EXCLUDE | {
     # pipeline's 8-URL generic-scrape cap (seen live in DDG results).
     "amazon.com", "walmart.com", "bhphotovideo.com", "tomsguide.com",
     "manuals.plus", "ebay.com",
+    # E4: news, classifieds, blog, wiki-style, social and review-only pages.
+    # Most .com ones are already dropped by the Indian-retail rule; these are
+    # the ones (or .in equivalents) that otherwise slip through and burn a
+    # generic-scrape slot on a link wall instead of a product.
+    "olx.in", "quikr.com", "consumercomplaints.in",
+    "indiatoday.in", "aajtak.in", "businessinsider.in", "bgr.in",
+    "linkedin.com", "telegram.org", "t.me",
+    "medium.com", "wordpress.com", "blogspot.com", "wikihow.com", "fandom.com",
+    "trustpilot.com", "mouthshut.com", "gsmarena.com", "91mobiles.com",
+    "mysmartprice.com", "smartprix.com", "pricebaba.com",
 }
 # Domains with their own direct scrapers — discovery must not surface them
 # for generic re-scraping (that caused duplicate candidates + wasted 403
@@ -118,6 +129,21 @@ def _domain_of(url: str) -> str:
 
 def _domain_matches_set(domain: str, domain_set) -> bool:
     return any(domain == d or domain.endswith("." + d) for d in domain_set)
+
+
+# E4: paths like /search, /tag/... or query strings that are searches
+# (?q=..., ?keyword=...) are listings, never the product itself — opening
+# one wastes a generic-scrape slot on a wall of links.
+_LISTING_PATH_RE = re.compile(r"(?:^|/)(?:search|tags?|topics?)(?:/|$)", re.IGNORECASE)
+_SEARCH_QUERY_KEYS = {"q", "s", "search", "query", "keyword", "keywords"}
+
+
+def _looks_like_listing_url(url: str) -> bool:
+    parts = urlparse(url)
+    if _LISTING_PATH_RE.search(parts.path):
+        return True
+    keys = {k.lower() for k in parse_qs(parts.query)}
+    return bool(keys & _SEARCH_QUERY_KEYS)
 
 
 def _is_excluded(domain: str) -> bool:
@@ -468,6 +494,8 @@ def discover_candidates(
         domain = _domain_of(u)
         if not domain or _is_excluded(domain):
             continue
+        if _looks_like_listing_url(u):
+            continue  # E4: a search/tag page is a wall of links, not a product
         if allowed_domains:
             # Strict mode targets suggested domains, but Amazon/Flipkart
             # must not leak in even when the LLM suggests them: they have
