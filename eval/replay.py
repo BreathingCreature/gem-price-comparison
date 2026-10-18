@@ -180,10 +180,24 @@ def make_run_fn(rec_dir, mode: str, *, pipeline_fn=None, shops=None):
 
     def run_fn(gem_url, refresh=False, on_event=None):
         store = RecordingStore(rec_dir, gem_url)
-        wrapped = wrap_shops(store, mode, **base_shops)
+        run_shops = base_shops
+        browser = None
+        if mode == "record" and shops is None:
+            # A record run is a live run: it gets the same one-Chrome Flipkart
+            # as a normal run (core.pipeline's default), started before the GeM
+            # page is read. A caller that brought its own shops (tests) keeps
+            # them untouched, and a replay never touches a shop at all.
+            from scrapers import flipkart
+
+            browser = flipkart.FlipkartBrowser()
+            browser.start()
+            run_shops = dict(base_shops, flipkart_search_fn=browser.search)
+        wrapped = wrap_shops(store, mode, **run_shops)
         try:
             return pipeline(gem_url, refresh=refresh, on_event=on_event, **wrapped)
         finally:
+            if browser is not None:
+                browser.close()
             if mode == "record":
                 store.save()
 

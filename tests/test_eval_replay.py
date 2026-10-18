@@ -12,6 +12,7 @@ import pytest
 from core.pipeline import run_pipeline
 from eval import replay
 from llm.match import MatchBatchResult
+from scrapers import flipkart as flipkart_scraper
 from scrapers._base import CandidateResult, SearchScrapeResult
 
 GEM_URL = "https://mkp.gem.gov.in/p-1"
@@ -273,3 +274,71 @@ def test_a_replayed_run_through_the_real_pipeline_finds_the_same_matches(tmp_pat
     assert sorted(m["price_used"] for m in replayed["matches"]) == [1050.0, 1100.0, 1150.0]
     assert replayed["not_found_on"] == first["not_found_on"]
     assert replayed["comparison"] == first["comparison"]
+
+
+def test_record_run_gives_flipkart_one_browser_for_all_queries(tmp_path, monkeypatch):
+    events = []
+    browsers = []
+
+    class FakeBrowser:
+        def __init__(self):
+            self.queries = []
+            browsers.append(self)
+            events.append("created")
+
+        def start(self):
+            events.append("started")
+
+        def search(self, query, max_results=15, max_pages=3):
+            self.queries.append(query)
+            return _search_result(query)
+
+        def close(self):
+            events.append("closed")
+
+    monkeypatch.setattr(flipkart_scraper, "FlipkartBrowser", FakeBrowser, raising=False)
+    rec_dir = tmp_path / "rec"
+
+    def fake_pipeline(gem_url, refresh=False, on_event=None, **kwargs):
+        events.append("pipeline")
+        # The record run must bring its own browser before the pipeline runs —
+        # fail here (before any shop call) when that is not the case.
+        assert browsers, "the record run must start its browser first"
+        kwargs["flipkart_search_fn"]("query one")
+        kwargs["flipkart_search_fn"]("query two")
+        return {"matches": [], "trace_id": "t1"}
+
+    run_fn = replay.make_run_fn(rec_dir, "record", pipeline_fn=fake_pipeline)
+    out = run_fn(GEM_URL, refresh=True, on_event=None)
+
+    assert out["trace_id"] == "t1"
+    assert len(browsers) == 1
+    assert events.index("started") < events.index("pipeline")
+    assert browsers[0].queries == ["query one", "query two"]
+    assert events[-1] == "closed"
+    data = json.loads((rec_dir / f"{replay.product_slug(GEM_URL)}.json").read_text(encoding="utf-8"))
+    assert len(data["responses"]) == 2
+
+
+def test_replay_run_never_starts_a_browser(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "rec"
+    store = replay.RecordingStore(rec_dir, GEM_URL)
+    recording = replay.wrap_shops(store, "record", **_shops())
+    recording["flipkart_search_fn"]("query one")
+    recording["flipkart_search_fn"]("query two")
+    store.save()
+
+    class _NoBrowser:
+        def __init__(self):
+            raise AssertionError("a replay run must not start a browser")
+
+    monkeypatch.setattr(flipkart_scraper, "FlipkartBrowser", _NoBrowser, raising=False)
+
+    def fake_pipeline(gem_url, refresh=False, on_event=None, **kwargs):
+        kwargs["flipkart_search_fn"]("query one")
+        kwargs["flipkart_search_fn"]("query two")
+        return {"matches": [], "trace_id": "t1"}
+
+    run_fn = replay.make_run_fn(rec_dir, "replay", pipeline_fn=fake_pipeline)
+    out = run_fn(GEM_URL, refresh=True, on_event=None)
+    assert out["trace_id"] == "t1"

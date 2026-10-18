@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import random
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -165,8 +166,10 @@ def parse_cards_from_html(html: str) -> list[dict]:
     return uniq
 
 
-def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
-    driver = build_stealth_driver(light=FLIPKART_LIGHT)
+def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
+    """One search on an already-open driver — the whole search() body. Split
+    out so a run can reuse one Chrome (FlipkartBrowser) instead of starting
+    a new one per query."""
     candidates: list[CandidateResult] = []
     seen: set[tuple] = set()
     blocked = False
@@ -244,11 +247,6 @@ def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrap
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         logger.error("Flipkart search failed for %r: %s", query, error)
-    finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
 
     return SearchScrapeResult(
         source_domain="flipkart.com",
@@ -258,6 +256,81 @@ def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrap
         pages_scraped=pages_scraped,
         error=error,
     )
+
+
+def search(query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
+    """One-off search: builds its own Chrome and quits it afterwards (the
+    tools and older callers use this). A whole run uses FlipkartBrowser
+    instead, so one Chrome serves every query and the retry."""
+    driver = build_stealth_driver(light=FLIPKART_LIGHT)
+    try:
+        return _search_with_driver(driver, query, max_results=max_results, max_pages=max_pages)
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
+def _build_default_driver():
+    return build_stealth_driver(light=FLIPKART_LIGHT)
+
+
+class FlipkartBrowser:
+    """ONE Chrome for a whole run (Flipkart Tier 2, items 1 and 2).
+
+    start() begins building the driver in a background thread right away, so
+    the 3-8 s startup hides behind the GeM page fetch and the LLM normalize
+    instead of delaying the first search. Every search() after that reuses
+    the same driver — all normalized queries and the retry included —
+    instead of starting (and quitting) a new Chrome per query. close() quits
+    it exactly once, even when the run ends early while the build is still
+    running (a failed extract must not leak a Chrome process)."""
+
+    def __init__(self, build_driver=None):
+        self._build_driver = build_driver or _build_default_driver
+        self._driver = None
+        self._start_error: Exception | None = None
+        self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._closed = False
+
+    def start(self) -> None:
+        """Build the driver in the background. Calling it twice is harmless."""
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._build, name="flipkart-browser", daemon=True)
+        self._thread.start()
+
+    def _build(self) -> None:
+        try:
+            self._driver = self._build_driver()
+        except Exception as e:
+            self._start_error = e
+            logger.warning("Flipkart Chrome could not start: %s: %s", type(e).__name__, e)
+        finally:
+            self._ready.set()
+
+    def search(self, query: str, max_results: int = 15, max_pages: int = 3) -> SearchScrapeResult:
+        self.start()
+        self._ready.wait()
+        if self._start_error is not None:
+            raise self._start_error
+        return _search_with_driver(self._driver, query, max_results=max_results, max_pages=max_pages)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._thread is not None:
+            self._ready.wait()  # a half-built Chrome must not leak
+        driver = self._driver
+        if driver is None:
+            return
+        try:
+            driver.quit()
+        except Exception:
+            logger.warning("Flipkart Chrome did not close cleanly.", exc_info=True)
 
 
 if __name__ == "__main__":
