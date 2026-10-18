@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scrapers import flipkart, amazon, generic, _base  # noqa: E402
 from scrapers._base import parse_indian_price  # noqa: E402
+from core import prefilter  # noqa: E402
 
 
 # --- parse_indian_price (base) ------------------------------------------------------------
@@ -286,6 +287,80 @@ def test_flipkart_skips_the_sleep_once_it_has_enough():
     result, sleeps = _flipkart_search_without_browser(FLIPKART_MOCK_HTML, max_results=2, max_pages=3)
     assert len(result.candidates) == 2
     assert sleeps == []
+
+
+# --- C6: page 2/3 only when page 1 had too few relevant cards --------------------------
+
+
+def _flipkart_html(titles):
+    cards = "".join(
+        '<div class="nZIRY7"><a href="/p/itm{i}?pid=PID{i}">'
+        '<div class="RG5Slk">{t}</div><div class="hZ3P6w DeU9vF">₹{p}</div></a></div>'.format(
+            i=i, t=t, p=1500 + i
+        )
+        for i, t in enumerate(titles)
+    )
+    return f"<html><body>{cards}</body></html>"
+
+
+def _flipkart_search_with_pages(pages_html, **search_kwargs):
+    seen_pages = []
+
+    def loader(driver, query, page=1):
+        seen_pages.append(page)
+        return pages_html.get(page, "<html></html>")
+
+    with _patched(
+        flipkart,
+        build_stealth_driver=lambda *a, **k: _QuietDriver(),
+        _load_search_page=loader,
+    ):
+        result, sleeps = _call_recording_sleeps(flipkart, flipkart.search, "logitech m650", **search_kwargs)
+    return result, sleeps, seen_pages
+
+
+def _m650_product():
+    return prefilter.product_tokens(
+        {"canonical_name": "Logitech M650", "brand": "Logitech", "model": "M650", "key_identifiers": ["M650"]}
+    )
+
+
+def test_flipkart_stops_paging_once_page_1_has_enough_relevant_cards():
+    # C6: five cards that pass the relevance bar on page 1 mean pages 2/3
+    # cannot add much — skipping them saves 10-30 s on easy products.
+    pages = {
+        1: _flipkart_html([f"Logitech M650 Mouse variant {i}" for i in range(5)]),
+        2: _flipkart_html(["Logitech M650 Mouse extra"]),
+        3: _flipkart_html(["Logitech M650 Mouse more"]),
+    }
+    result, sleeps, seen = _flipkart_search_with_pages(pages, max_pages=3, product=_m650_product())
+    assert seen == [1]
+    assert sleeps == []
+    assert len(result.candidates) == 5
+
+
+def test_flipkart_keeps_paging_when_page_1_has_no_relevant_cards():
+    # Junk cards must not end the pagination: the real listing often sits on
+    # page 2 (the old loop counted any 15 cards toward "enough").
+    pages = {
+        1: _flipkart_html([f"Random Gadget {i}" for i in range(6)]),
+        2: _flipkart_html([f"Logitech M650 Mouse {i}" for i in range(5)]),
+        3: _flipkart_html(["Logitech M650 Mouse extra"]),
+    }
+    result, sleeps, seen = _flipkart_search_with_pages(pages, max_pages=3, product=_m650_product())
+    assert seen == [1, 2]
+    assert len(sleeps) == 1  # only between page 1 and page 2
+    assert len(result.candidates) == 11
+
+
+def test_flipkart_pages_as_before_without_the_product():
+    pages = {
+        1: _flipkart_html([f"Logitech M650 Mouse {i}" for i in range(6)]),
+        2: _flipkart_html(["Anything here"]),
+        3: _flipkart_html(["More things"]),
+    }
+    _, _, seen = _flipkart_search_with_pages(pages, max_pages=3)
+    assert seen == [1, 2, 3]
 
 
 # --- GEM_FLIPKART_LIGHT travels from config to the driver -----------------------------
