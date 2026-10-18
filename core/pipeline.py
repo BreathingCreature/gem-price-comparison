@@ -49,8 +49,10 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from core import events
+from core import prefilter
 from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACE_MAX_FILES, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
 from core.config import PARALLEL_SEARCH
+from core.config import DISCOVERY_ENABLED, PREFILTER_TOP, REUSE_VERDICTS
 from core.parallel import run_many, run_pair
 from core.config import RETRY_ENABLED
 from scrapers import gem as gem_extractor
@@ -354,15 +356,26 @@ def _run_discovery_and_generic_scrape(
     return discovery_results, generic_candidates
 
 
+def _prefilter_candidates(candidates: list, normalized) -> tuple[list, list]:
+    """GEM_PREFILTER_TOP: keep only the best N titled listings per shop before
+    spending LLM calls. Off (0, the default) returns the input untouched."""
+    if PREFILTER_TOP <= 0:
+        return candidates, []
+    return prefilter.filter_candidates(candidates, normalized, PREFILTER_TOP)
+
+
 def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: str):
     """One lane's own listings, checked the moment they arrive (GEM_PARALLEL=1).
-    An empty lane never reaches the matcher — there is nothing to check."""
+    The prefilter trims weak titles per shop first. An empty lane never
+    reaches the matcher — there is nothing to check. Returns
+    (match_result, dropped_by_prefilter)."""
     usable = [c for c in candidates if _usable(c)]
-    if not usable:
-        return matcher.MatchBatchResult()
+    kept, dropped = _prefilter_candidates(usable, normalized)
+    if not kept:
+        return matcher.MatchBatchResult(), dropped
     events.emit("stage", name=f"match_{name}", label=f"Checking {label}")
-    events.emit("candidates_total", count=len(usable))
-    return match_fn(normalized, usable)
+    events.emit("candidates_total", count=len(kept))
+    return match_fn(normalized, kept), dropped
 
 
 def _run_first_pass_lanes(
@@ -382,21 +395,27 @@ def _run_first_pass_lanes(
     finish. Returns one (results, candidates, match_result) tuple per lane,
     in that order."""
     events.emit("stage", name="search_both", label="Searching Flipkart, Amazon and other shops at the same time")
-    events.emit("stage", name="discovery", label="Looking for other shops")
+    if DISCOVERY_ENABLED:
+        events.emit("stage", name="discovery", label="Looking for other shops")
 
     def flipkart_lane():
         results, candidates = _search_direct(flipkart_search_fn, queries, label="flipkart")
-        return results, candidates, _verify_lane(normalized, candidates, match_fn, name="flipkart", label="the Flipkart listings")
+        lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="flipkart", label="the Flipkart listings")
+        return results, candidates, lane_match, dropped
 
     def amazon_lane():
         results, candidates = _search_direct(amazon_search_fn, queries, label="amazon")
-        return results, candidates, _verify_lane(normalized, candidates, match_fn, name="amazon", label="the Amazon listings")
+        lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="amazon", label="the Amazon listings")
+        return results, candidates, lane_match, dropped
 
     def other_shops_lane():
+        if not DISCOVERY_ENABLED:
+            return [], [], matcher.MatchBatchResult(), []
         results, candidates = _run_discovery_and_generic_scrape(
             queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
         )
-        return results, candidates, _verify_lane(normalized, candidates, match_fn, name="other_shops", label="other shops' listings")
+        lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="other_shops", label="other shops' listings")
+        return results, candidates, lane_match, dropped
 
     return run_many([flipkart_lane, amazon_lane, other_shops_lane], workers=3)
 
@@ -512,19 +531,23 @@ def _run_pipeline(
         # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
         # Every normalized query is eligible (early-exit once one query has
         # enough candidates), not just queries[0].
+        prefilter_dropped: list = []
         if PARALLEL_SEARCH:
             # GEM_PARALLEL=1: three lanes — Flipkart, Amazon and discovery+generic
             # — search at the same time, each checking its own listings the moment
             # they arrive (so a fast lane's LLM work overlaps the slow Flipkart lane).
             (
-                (flipkart_results, flipkart_candidates, flipkart_match),
-                (amazon_results, amazon_candidates, amazon_match),
-                (discovery_results, generic_candidates, other_shops_match),
+                (flipkart_results, flipkart_candidates, flipkart_match, flipkart_dropped),
+                (amazon_results, amazon_candidates, amazon_match, amazon_dropped),
+                (discovery_results, generic_candidates, other_shops_match, other_shops_dropped),
             ) = _run_first_pass_lanes(
                 flipkart_search_fn, amazon_search_fn, queries,
                 discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn,
                 normalized=normalized, match_fn=match_fn,
             )
+            prefilter_dropped = list(flipkart_dropped) + list(amazon_dropped) + list(other_shops_dropped)
+            if PREFILTER_TOP > 0:
+                trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
         else:
             flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
                 flipkart_search_fn, amazon_search_fn, queries
@@ -541,10 +564,13 @@ def _run_pipeline(
 
         # --- stage 3/4 first pass: open discovery + generic scrape for everything else ---
         if not PARALLEL_SEARCH:
-            events.emit("stage", name="discovery", label="Looking for other shops")
-            discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
-                queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
-            )
+            if DISCOVERY_ENABLED:
+                events.emit("stage", name="discovery", label="Looking for other shops")
+                discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
+                    queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
+                )
+            else:
+                discovery_results, generic_candidates = [], []
         trace["stages"]["discovery"] = [d.to_dict() if hasattr(d, "to_dict") else d for d in discovery_results]
         trace["stages"]["generic_scrapes"] = [c.to_dict() if hasattr(c, "to_dict") else c for c in generic_candidates]
 
@@ -572,8 +598,12 @@ def _run_pipeline(
             match_result = _merge_match_results([flipkart_match, amazon_match, other_shops_match])
         else:
             events.emit("stage", name="match", label="Checking which listings are the same product")
-            events.emit("candidates_total", count=len(all_candidates))
-            match_result = match_fn(normalized, all_candidates)
+            match_input, dropped_now = _prefilter_candidates(all_candidates, normalized)
+            prefilter_dropped.extend(dropped_now)
+            events.emit("candidates_total", count=len(match_input))
+            match_result = match_fn(normalized, match_input)
+            if PREFILTER_TOP > 0:
+                trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
         final_match_result = match_result
         trace["stages"]["matching"] = match_result.to_dict() if hasattr(match_result, "to_dict") else match_result
 
@@ -623,9 +653,12 @@ def _run_pipeline(
                 for r in retry_flipkart_results + retry_amazon_results:
                     _record_search_health(r, tried_domains, search_issues)
 
-                retry_discovery_results, retry_generic_candidates = _run_discovery_and_generic_scrape(
-                    retry_queries, retry_domains, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
-                )
+                if DISCOVERY_ENABLED:
+                    retry_discovery_results, retry_generic_candidates = _run_discovery_and_generic_scrape(
+                        retry_queries, retry_domains, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
+                    )
+                else:
+                    retry_discovery_results, retry_generic_candidates = [], []
                 retry_trace["discovery"] = [d.to_dict() if hasattr(d, "to_dict") else d for d in retry_discovery_results]
                 retry_trace["generic_scrapes"] = [c.to_dict() if hasattr(c, "to_dict") else c for c in retry_generic_candidates]
                 for gc in retry_generic_candidates:
@@ -643,8 +676,33 @@ def _run_pipeline(
                     [c for c in list(all_candidates) + list(retry_flipkart_candidates) + list(retry_amazon_candidates)
                      + retry_generic_candidates if _usable(c)]
                 )
+                retry_pool, dropped_now = _prefilter_candidates(retry_pool, normalized)
+                prefilter_dropped.extend(dropped_now)
+                if PREFILTER_TOP > 0:
+                    trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
+
+                # GEM_REUSE_VERDICTS: the first pass already asked the LLM about
+                # these listings and the answers will not change — only ask about
+                # what is genuinely new. A listing whose first check was SKIPPED
+                # never got a verdict, so it stays in the pool and is asked again.
+                reused_decisions: list = []
+                if REUSE_VERDICTS:
+                    reused_decisions = list(match_result.all_decisions) if hasattr(match_result, "all_decisions") else []
+                    decided_keys = {_listing_key(d.get("candidate_url")) for d in reused_decisions}
+                    retry_pool = [c for c in retry_pool if _listing_key(_cand_dict(c).get("url")) not in decided_keys]
+                    retry_trace["reused_verdicts"] = len(reused_decisions)
+
                 events.emit("stage", name="match_retry", label="Checking the new listings")
                 retry_match_result = match_fn(normalized, retry_pool)
+                if reused_decisions:
+                    # final all_decisions must still show what happened with the
+                    # reused listings — only the confirmed/skipped come from the
+                    # retry itself.
+                    retry_match_result = matcher.MatchBatchResult(
+                        all_decisions=reused_decisions + list(retry_match_result.all_decisions),
+                        confirmed_matches=list(retry_match_result.confirmed_matches),
+                        skipped=list(retry_match_result.skipped),
+                    )
                 final_match_result = retry_match_result
                 retry_trace["matching"] = retry_match_result.to_dict() if hasattr(retry_match_result, "to_dict") else retry_match_result
 
