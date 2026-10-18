@@ -4,7 +4,8 @@
 
 Then open http://localhost:8000 (the frontend/ folder is served from there).
 Set GEM_DEMO=1 to run a fake pipeline, handy for working on the frontend
-without scraping anything or spending LLM calls.
+without scraping anything or spending LLM calls. Set GEM_JOBS=2 to run two
+comparisons at the same time (queued beyond that)
 
 The contract (routes, event types) is written down in docs/api.md.
 """
@@ -89,7 +90,15 @@ def create_app(
         else:
             runner = _real_runner
 
-    manager = JobManager(runner)
+    # B9: one run at a time by default — two is the most Chrome and the
+    # shops tolerate together, and only when asked for (GEM_JOBS=2).
+    raw_jobs = os.getenv("GEM_JOBS", "1")
+    try:
+        max_parallel = max(1, int(raw_jobs.strip()))
+    except ValueError:
+        logger.warning("Invalid GEM_JOBS=%r, running one job at a time.", raw_jobs)
+        max_parallel = 1
+    manager = JobManager(runner, max_parallel=max_parallel)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
