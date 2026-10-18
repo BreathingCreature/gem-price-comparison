@@ -465,6 +465,7 @@ def _run_first_pass_lanes(
     generic_scrape_fn,
     normalized,
     match_fn,
+    lane_errors: Optional[list] = None,
 ) -> list:
     """GEM_PARALLEL=1 first pass: three lanes — Flipkart, Amazon and
     discovery+generic — run at the same time, and each lane verifies its own
@@ -495,7 +496,38 @@ def _run_first_pass_lanes(
         lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="other_shops", label="other shops' listings")
         return results, candidates, lane_match, dropped
 
-    return run_many([flipkart_lane, amazon_lane, other_shops_lane], workers=3)
+    # One lane crashing (for example Chrome dying) must not throw away the
+    # other lanes' good results. Each lane is wrapped: a crash becomes an
+    # event plus a line in lane_errors, and the lane counts as empty. Only
+    # when ALL lanes crashed is there nothing to continue with, and the first
+    # error is raised.
+    if lane_errors is None:
+        lane_errors = []
+    crashes: list = []
+
+    def guarded(lane_name, lane_function):
+        def run_lane():
+            try:
+                return lane_function()
+            except Exception as exc:  # noqa: BLE001 - any lane failure is isolated here
+                logger.warning("Lane %s failed: %s: %s", lane_name, type(exc).__name__, exc)
+                events.emit("lane_failed", lane=lane_name, error=f"{type(exc).__name__}: {exc}")
+                lane_errors.append(f"{lane_name}: {type(exc).__name__}: {exc}")
+                crashes.append(exc)
+                return [], [], matcher.MatchBatchResult(), []
+        return run_lane
+
+    lane_results = run_many(
+        [
+            guarded("flipkart", flipkart_lane),
+            guarded("amazon", amazon_lane),
+            guarded("other_shops", other_shops_lane),
+        ],
+        workers=3,
+    )
+    if len(crashes) >= 3:
+        raise crashes[0]
+    return lane_results
 
 
 def _merge_match_results(lane_results: list):
@@ -626,6 +658,7 @@ def _run_pipeline(
         # Every normalized query is eligible (early-exit once one query has
         # enough candidates), not just queries[0].
         prefilter_dropped: list = []
+        lane_errors: list = []  # filled only by the parallel lanes (see _run_first_pass_lanes)
         if PARALLEL_SEARCH:
             # GEM_PARALLEL=1: three lanes — Flipkart, Amazon and discovery+generic
             # — search at the same time, each checking its own listings the moment
@@ -638,6 +671,7 @@ def _run_pipeline(
                 flipkart_search_fn, amazon_search_fn, queries,
                 discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn,
                 normalized=normalized, match_fn=match_fn,
+                lane_errors=lane_errors,
             )
             prefilter_dropped = list(flipkart_dropped) + list(amazon_dropped) + list(other_shops_dropped)
             if PREFILTER_TOP > 0:
@@ -651,7 +685,7 @@ def _run_pipeline(
         trace["stages"]["amazon_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in amazon_results]
 
         # Search health decides who's honestly "searched" vs who failed to scrape.
-        search_issues: list[str] = []
+        search_issues: list[str] = list(lane_errors)
         tried_domains: set = set()
         for r in flipkart_results + amazon_results:
             _record_search_health(r, tried_domains, search_issues)
