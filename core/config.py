@@ -148,6 +148,8 @@ PREFILTER_TOP = max(0, _int_setting("GEM_PREFILTER_TOP", 0))  # keep only the be
 PRICE_PREGATE = _flag("GEM_PRICE_PREGATE", False)  # skip the LLM for listings whose price is already outside the band
 REUSE_VERDICTS = _flag("GEM_REUSE_VERDICTS", False)  # on a retry, keep the verdicts already given in the first pass
 DISCOVERY_ENABLED = _flag("GEM_DISCOVERY", True)  # other-shops discovery and the generic scrape
+FLIPKART_LIGHT = _flag("GEM_FLIPKART_LIGHT", False)  # Flipkart's browser skips images and stops at the DOM
+DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 20.0)  # total budget for the SearXNG stage
 
 # Max trace files to keep before rotation deletes oldest. Env-overrideable.
 TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)

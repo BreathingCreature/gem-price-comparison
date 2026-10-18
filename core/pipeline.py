@@ -44,6 +44,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
@@ -343,15 +344,23 @@ def _run_discovery_and_generic_scrape(
                 urls.append(u)
 
     events.emit("discovery_finished", queries=list(queries), urls=urls)
-    generic_candidates = []
-    for url in urls:
+
+    def _scrape_one(url: str):
         events.emit("scrape_started", url=url)
         try:
             scraped = generic_scrape_fn(url)
-            generic_candidates.append(scraped)
-            events.emit("scrape_finished", **_brief(scraped))
         except Exception as e:
             logger.warning("generic scrape raised for %s: %s: %s — skipping.", url, type(e).__name__, e)
+            return None
+        events.emit("scrape_finished", **_brief(scraped))
+        return scraped
+
+    # Plain HTTP, no browser — the (up to 8) brand-site pages are fetched at
+    # the same time instead of one after another. One bad page still only
+    # skips itself.
+    jobs = [partial(_scrape_one, u) for u in urls]
+    scraped_pages = run_many(jobs, workers=len(jobs)) if jobs else []
+    generic_candidates = [page for page in scraped_pages if page is not None]
 
     return discovery_results, generic_candidates
 
