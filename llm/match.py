@@ -13,9 +13,11 @@ as much a "decision made" as confirming it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 
 from core import events
-from core.config import GATES_ENABLED, MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
+from core.config import GATES_ENABLED, LLM_WORKERS, MATCH_CONFIDENCE_THRESHOLD, PRICE_SANITY_HIGH_RATIO, PRICE_SANITY_LOW_RATIO, logger
+from core.parallel import run_many
 from llm.client import verify_or_extract
 
 # Currencies that count as "same money as GeM". Empty/missing = unknown =
@@ -56,9 +58,15 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
     """normalized: a NormalizedProduct dict (from llm_client.normalize_product).
     candidates: a list of CandidateResult objects or dicts (from any of the
     Part 4 scrapers — flipkart.search()/amazon.search()'s .candidates, or
-    generic.scrape()'s single result wrapped in a list)."""
+    generic.scrape()'s single result wrapped in a list).
+
+    Listings are verified LLM_WORKERS at a time (GEM_LLM_WORKERS, default 1
+    = one after the other, today's behaviour). The decisions and the events
+    keep the candidate order either way."""
     all_decisions: list[dict] = []
     skipped: list[str] = []
+    outcomes: dict = {}  # position -> ("decision", dict) or ("skipped", (url, reason))
+    to_verify: list = []  # (position, candidate_dict) — the ones that need the LLM
 
     for position, candidate in enumerate(candidates, start=1):
         candidate_dict = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
@@ -80,8 +88,7 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
             "structured_fields"
         ):
             logger.info("skipping %s — fetch failed (%s), no evidence to verify against.", url, candidate_dict.get("fetch_error"))
-            skipped.append(url)
-            events.emit("candidate_skipped", url=url, reason=f"fetch failed: {candidate_dict.get('fetch_error')}")
+            outcomes[position] = ("skipped", (url, f"fetch failed: {candidate_dict.get('fetch_error')}"))
             continue
         # Currency hard-gate BEFORE burning an LLM call: explicit non-INR
         # (e.g. generic scrape of a .com page tagged USD) can never confirm,
@@ -90,7 +97,8 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
         currency = str(sf.get("currency") or "").strip().upper() if hasattr(sf, "get") else ""
         if GATES_ENABLED and currency not in _INR_CURRENCIES:
             logger.warning("currency gate rejected %s: %s is not INR — not sending to LLM.", url, currency)
-            all_decisions.append(
+            outcomes[position] = (
+                "decision",
                 {
                     "candidate_url": url,
                     "source_domain": candidate_dict.get("source_domain"),
@@ -99,19 +107,34 @@ def match_candidates(normalized: dict, candidates: list, *, client=None) -> Matc
                     "reason": f"[hard-rejected: currency {currency} is not INR]",
                     "price_used": None,
                     "extraction_source": "scraper",
-                }
+                },
             )
-            _emit_verdict(all_decisions[-1])
             continue
+        to_verify.append((position, candidate_dict))
+
+    def _verify(item):
+        position, candidate_dict = item
+        url = candidate_dict.get("url", "<unknown url>")
         try:
-            decision = verify_or_extract(normalized, candidate_dict, client=client)
+            return position, ("decision", verify_or_extract(normalized, candidate_dict, client=client))
         except Exception as e:
             logger.warning("verify_or_extract failed for %s: %s: %s — skipping this candidate.", url, type(e).__name__, e)
+            return position, ("skipped", (url, f"{type(e).__name__}: {e}"))
+
+    # Several listings at once when GEM_LLM_WORKERS > 1; run_many keeps the
+    # results in candidate order, so the report below reads the same either way.
+    for position, outcome in run_many([partial(_verify, item) for item in to_verify], workers=LLM_WORKERS):
+        outcomes[position] = outcome
+
+    for position in sorted(outcomes):
+        kind, payload = outcomes[position]
+        if kind == "skipped":
+            url, reason = payload
             skipped.append(url)
-            events.emit("candidate_skipped", url=url, reason=f"{type(e).__name__}: {e}")
-            continue
-        all_decisions.append(decision)
-        _emit_verdict(decision)
+            events.emit("candidate_skipped", url=url, reason=reason)
+        else:
+            all_decisions.append(payload)
+            _emit_verdict(payload)
 
     # Hard price-sanity gate. The verify prompt asks the LLM to distrust
     # wild price gaps, but it confirmed a $39.99-parsed-as-₹39.99 match at

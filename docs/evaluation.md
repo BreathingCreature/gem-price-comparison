@@ -99,6 +99,7 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 | `LLM_CACHE` | `0` | `1` remembers LLM answers on disk, see below |
 | `LLM_CACHE_DIR` | `cache/llm` | Where the remembered answers live |
 | `LLM_PROVIDERS_FILE` | `llm_providers.json` | Which LLM endpoints are used |
+| `GEM_LLM_WORKERS` | `1` | How many listings are checked at once. Above 1 it uses the providers in parallel — keep each provider polite with `max_concurrent` and `daily_limit` in `llm_providers.json` (see docs/llm-providers.md) |
 
 Set them for one run only.
 
