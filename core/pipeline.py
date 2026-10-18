@@ -16,7 +16,10 @@ exists to support: GeM URL in, price comparison out. Sequence:
 
 Every external collaborator (extract_fn, normalize_fn, the two search
 functions, discover_fn, generic_scrape_fn, match_fn, expand_search_fn) is
-an overridable keyword argument defaulting to the real implementation.
+an overridable keyword argument defaulting to the real implementation;
+flipkart_search_fn's default is None because the pipeline itself builds the
+run's one-Chrome browser and injects its search method (any injected search
+function takes over and no browser is started).
 That's not incidental — it's what makes this module's own orchestration
 logic (sequencing, the retry trigger, cache, trace shape, not_found_on
 computation) testable in isolation from whether the real scrapers/LLM
@@ -477,7 +480,7 @@ def _run_pipeline(
     *,
     extract_fn=gem_extractor.extract_gem_product,
     normalize_fn=llm_client.normalize_product,
-    flipkart_search_fn=flipkart_scraper.search,
+    flipkart_search_fn=None,  # None -> the run's own one-Chrome browser (see below)
     amazon_search_fn=amazon_scraper.search,
     discover_fn=discovery.discover_for_queries,
     generic_scrape_fn=generic_scraper.scrape,
@@ -502,7 +505,18 @@ def _run_pipeline(
         "stages": {},
     }
 
+    flipkart_browser = None
     try:
+        if flipkart_search_fn is None:
+            # One Chrome for the whole run — every query and the retry — and it
+            # starts building NOW, so the 3-8 s startup hides behind the GeM
+            # page fetch and the LLM normalize instead of delaying the first
+            # search. Tests and the replay tool pass their own search function,
+            # so no browser is ever started for them.
+            flipkart_browser = flipkart_scraper.FlipkartBrowser()
+            flipkart_browser.start()
+            flipkart_search_fn = flipkart_browser.search
+
         # --- stage 1: extract -----------------------------------------------------------
         events.emit("stage", name="extract", label="Reading the GeM product page")
         gem_product = extract_fn(gem_url)
@@ -793,6 +807,11 @@ def _run_pipeline(
         trace["events"] = events.snapshot()
         _write_trace(trace)
         raise
+    finally:
+        # The run owns its Chrome: every exit path (success, failure, early
+        # return) goes through here, so it is quit exactly once.
+        if flipkart_browser is not None:
+            flipkart_browser.close()
 
 
 def run_pipeline(gem_url: str, refresh: bool = False, *, on_event=None, **overrides) -> dict:
