@@ -22,11 +22,18 @@ Selectors (data-component-type="s-search-result", h2 title, a-price
 a-offscreen) are the long-stable documented Amazon search-card selectors.
 Price parsing goes through base.parse_indian_price so "₹1,199.00" stays
 "1199.00".
+
+2026-10 (B4 + E2): the page fetches of one query are fired together on a
+small shared pool instead of one per politeness pause, and every fetch
+goes through one reused curl_cffi Session per fingerprint — the TLS
+handshake is paid once per run, not once per fetch.
 """
 from __future__ import annotations
 
 import random
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin
 
@@ -177,6 +184,37 @@ def _collect_cards(cards: list[dict], candidates: list[CandidateResult], seen: s
 # chrome150 → HTTP 200 + 16 real cards on amazon.in from this machine.
 _CURL_IMPERSONATE = ("chrome150", "chrome146", "chrome142", "safari180")
 
+# One curl_cffi Session per fingerprint, reused for the whole run (E2): the
+# TLS handshake happens when a session is created, not on every fetch.
+# curl_cffi's Session keeps a separate curl handle per thread internally, so
+# the page-fetch pool workers can share one session safely.
+_sessions: dict = {}
+_sessions_lock = threading.Lock()
+
+
+def _curl_session(curl_requests, fingerprint: str):
+    with _sessions_lock:
+        session = _sessions.get(fingerprint)
+        if session is None:
+            session = curl_requests.Session(impersonate=fingerprint)
+            _sessions[fingerprint] = session
+        return session
+
+
+_fetch_pool: ThreadPoolExecutor | None = None
+_fetch_pool_lock = threading.Lock()
+
+
+def _page_fetch_pool() -> ThreadPoolExecutor:
+    """One long-lived pool for the page fetches (B4): the pages of a query
+    leave together, and the worker threads keep their TLS connections from
+    one query to the next."""
+    global _fetch_pool
+    with _fetch_pool_lock:
+        if _fetch_pool is None:
+            _fetch_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="amazon-fetch")
+        return _fetch_pool
+
 
 def _fetch_curl_cffi_page(query: str, page: int = 1) -> str | None:
     """Fetch one amazon.in SERP via TLS impersonation. Returns html, or None
@@ -193,7 +231,8 @@ def _fetch_curl_cffi_page(query: str, page: int = 1) -> str | None:
 
     for fp in _CURL_IMPERSONATE:
         try:
-            r = curl_requests.get(url, impersonate=fp, timeout=30, headers=headers, allow_redirects=True)
+            session = _curl_session(curl_requests, fp)
+            r = session.get(url, timeout=30, headers=headers, allow_redirects=True)
         except Exception as e:
             last_err = e
             logger.warning("curl_cffi %s failed for %r: %s: %s", fp, query, type(e).__name__, str(e)[:160])
@@ -227,11 +266,16 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
     seen: set = set()
     pages_scraped = 0
 
-    for page in range(1, max_pages + 1):
+    # B4: the page fetches of this query leave together instead of one per
+    # politeness pause — plain HTTP is cheap, and the pause was the serial cost.
+    pages = list(range(1, max_pages + 1))
+    fetched = {page: _page_fetch_pool().submit(_fetch_curl_cffi_page, query, page) for page in pages}
+
+    for page in pages:
         if len(candidates) >= max_results:
             break
 
-        html = _fetch_curl_cffi_page(query, page)
+        html = fetched[page].result()
         if html is None:
             if pages_scraped == 0:
                 return None  # never got a usable page → caller tries the browser
@@ -267,10 +311,6 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
             break
 
         _collect_cards(cards, candidates, seen, max_results)
-        # Politeness pause between pages only — pointless after the last
-        # page or once enough candidates are gathered.
-        if page < max_pages and len(candidates) < max_results:
-            time.sleep(random.uniform(1.2, 2.5))  # polite: don't hammer Amazon
 
     if pages_scraped == 0:
         return None
