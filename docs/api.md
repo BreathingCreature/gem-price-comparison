@@ -19,7 +19,7 @@ scraping, no LLM calls), which is the easy way to work on the frontend.
 | `GET /api/llm/status` | The LLM router's view: strategy and, per endpoint, state (`ready`, `cooling`, `disabled`), calls, errors, average seconds, last error. |
 | `GET /api/traces/{trace_id}` | The saved trace JSON of a finished run (it includes every event). |
 
-Only one run executes at a time. Others wait in `queued`.
+Only one run executes at a time by default (set `GEM_JOBS=2` to let two run together — Chrome and the shops tolerate that, not five). Others wait in `queued`.
 
 ## Events
 
