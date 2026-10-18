@@ -50,6 +50,13 @@ RATE_LIMIT_COOLDOWN = 30.0
 OTHER_ERROR_COOLDOWN = 10.0
 MAX_COOLDOWN = 300.0
 
+# The kinds of LLM calls in this project (llm/client.py). A provider can
+# declare in llm_providers.json which of them it wants ("purposes":
+# ["verify"]) — normalize and expand are rare and need a good model, verify
+# is ~90% of calls and an easy yes/no question that fast, high-rate-limit
+# providers handle well.
+KNOWN_PURPOSES = ("normalize", "verify", "expand")
+
 
 @dataclass
 class Endpoint:
@@ -70,6 +77,9 @@ class Endpoint:
     # provider may get in one day. 0 means no limit (today's behaviour).
     max_concurrent: int = 0
     daily_limit: int = 0
+    # Which call kinds this endpoint takes. None (not set in the file)
+    # means every purpose — that is today's behaviour.
+    purposes: Optional[tuple[str, ...]] = None
     # live state, changes while the program runs
     cooldown_until: float = 0.0
     last_start: float = -1e9
@@ -141,6 +151,14 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
             raise ValueError(f"{path}: provider {entry['name']!r} request_options must be an object")
         max_concurrent = _int_entry(path, entry, "max_concurrent")
         daily_limit = _int_entry(path, entry, "daily_limit")
+        purposes_raw = entry.get("purposes")
+        purposes: Optional[tuple[str, ...]] = None
+        if purposes_raw is not None:
+            if not isinstance(purposes_raw, list) or any(p not in KNOWN_PURPOSES for p in purposes_raw):
+                raise ValueError(
+                    f"{path}: provider {entry['name']!r} purposes must be a list of {KNOWN_PURPOSES}, got {purposes_raw!r}"
+                )
+            purposes = tuple(purposes_raw)
         for model in entry["models"]:
             ep = Endpoint(
                 provider=entry["name"],
@@ -153,6 +171,7 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
                 request_options=request_options,
                 max_concurrent=max_concurrent,
                 daily_limit=daily_limit,
+                purposes=purposes,
             )
             if not wanted:
                 ep.enabled, ep.disabled_reason = False, "turned off in the config file"
@@ -201,7 +220,7 @@ class Router:
         """Return the model's raw text. Raises RuntimeError if nobody can answer."""
         deadline = self.clock() + self.max_wait
         while True:
-            endpoint, wait = self._pick()
+            endpoint, wait = self._pick(purpose)
             if endpoint is None:
                 if wait is None:
                     raise RuntimeError("No LLM endpoint is usable: " + self._why_unusable())
@@ -245,6 +264,7 @@ class Router:
                         "in_flight": self._in_flight.get(e.provider, 0),
                         "max_concurrent": e.max_concurrent,
                         "daily_limit": e.daily_limit,
+                        "purposes": list(e.purposes) if e.purposes else None,
                     }
                 )
         return out
@@ -267,13 +287,28 @@ class Router:
             count = self._in_flight.get(endpoint.provider, 0)
             self._in_flight[endpoint.provider] = max(count - 1, 0)
 
-    def _pick(self) -> tuple[Optional[Endpoint], Optional[float]]:
+    def _pick(self, purpose: str = "") -> tuple[Optional[Endpoint], Optional[float]]:
         """(endpoint, 0) if one is ready now, (None, seconds) if one will be
         ready after that wait, (None, None) if none can ever be used."""
         with self._lock:
-            now = self.clock()
             self._roll_day()
-            usable = [e for e in self.endpoints if e.enabled]
+        now = self.clock()
+        chosen, wait = self._choose(purpose, now)
+        if chosen is not None or wait is not None:
+            return chosen, wait
+        # No endpoint advertises this purpose — anyone may answer, so a
+        # restrictive purposes setting can never break a run. (When nobody
+        # sets purposes at all, the first _choose already saw everything.)
+        return self._choose(None, now)
+
+    def _choose(self, purpose: Optional[str], now: float) -> tuple[Optional[Endpoint], Optional[float]]:
+        """Same pick as before, narrowed to endpoints that take this purpose.
+        purpose=None means no filter — every endpoint is a candidate."""
+        with self._lock:
+            usable = [
+                e for e in self.endpoints
+                if e.enabled and (e.purposes is None or purpose is None or purpose in e.purposes)
+            ]
             if not usable:
                 return None, None
             available = [e for e in usable if not self._over_daily(e)]
