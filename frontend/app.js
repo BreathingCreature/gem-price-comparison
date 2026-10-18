@@ -12,8 +12,12 @@
     normalize: "Working out what the product really is",
     search_flipkart: "Searching Flipkart",
     search_amazon: "Searching Amazon",
+    search_both: "Searching Flipkart, Amazon and other shops at the same time",
     discovery: "Looking for other shops",
     match: "Checking which listings are the same product",
+    match_flipkart: "Checking the Flipkart listings",
+    match_amazon: "Checking the Amazon listings",
+    match_other_shops: "Checking other shops' listings",
     retry: "Nothing matched yet, asking the LLM for better search words",
     retry_flipkart: "Searching Flipkart again",
     retry_amazon: "Searching Amazon again",
@@ -21,12 +25,24 @@
   };
   var EXPECTED = ["extract", "normalize", "search_flipkart", "search_amazon", "discovery", "match"];
 
+  // B1/B2 (GEM_PARALLEL=1): the first pass runs three lanes at the same
+  // time and their stage events arrive in any order. These steps must not
+  // finish each other on arrival — that was the flicker. They stay active
+  // together until a normal step (or the run itself) closes them all.
+  var PHASE_STEPS = {
+    search_both: true,
+    discovery: true,
+    match_flipkart: true,
+    match_amazon: true,
+    match_other_shops: true
+  };
+
   var state;
 
   function freshState() {
     return {
       runId: null, startedAt: null, finished: false, source: null, events: [],
-      steps: [], activeStep: null, lastEventAt: null, lastText: "Starting...",
+      steps: [], parallel: false, activeSteps: [], lastEventAt: null, lastText: "Starting...",
       llmCalls: [], checks: {}, searchRows: {}, timerId: null, finalElapsed: null, traceId: null
     };
   }
@@ -104,21 +120,34 @@
     return step;
   }
   function enterStep(name, label, t) {
-    finishActiveStep(t);
+    var opensPhase = name === "search_both";
+    if (opensPhase) {
+      // The parallel first pass replaces the one-shop steps entirely.
+      state.parallel = true;
+      dropPending(["search_flipkart", "search_amazon"]);
+    }
+    var soft = !opensPhase && state.parallel && PHASE_STEPS[name];
+    if (soft && name.indexOf("match_") === 0) dropPending(["match"]);
+    if (!soft) finishActiveSteps(t);
     var step = ensureStep(name);
     if (label) step.label = label;
     step.status = "active";
     step.start = t;
     step.secs = null;
-    state.activeStep = step;
+    state.activeSteps.push(step);
     renderTimeline();
   }
-  function finishActiveStep(t, failed) {
-    var step = state.activeStep;
-    if (!step) return;
-    step.status = failed ? "failed" : "done";
-    step.secs = Math.max(0, t - (step.start || 0));
-    state.activeStep = null;
+  function dropPending(names) {
+    state.steps = state.steps.filter(function (s) {
+      return !(s.status === "pending" && names.indexOf(s.name) >= 0);
+    });
+  }
+  function finishActiveSteps(t, failed) {
+    state.activeSteps.forEach(function (s) {
+      s.status = failed ? "failed" : "done";
+      s.secs = Math.max(0, t - (s.start || 0));
+    });
+    state.activeSteps = [];
   }
   function renderTimeline() {
     var ol = $("timeline");
@@ -380,14 +409,14 @@
       case "candidate_skipped": onSkipped(e); break;
       case "llm_call": state.llmCalls.push(e); renderLlmCalls(); break;
       case "run_finished":
-        finishActiveStep(e.t);
+        finishActiveSteps(e.t);
         state.traceId = e.trace_id || null;
         state.finalElapsed = e.t;
         state.lastText = "Done in " + mmss(e.t) + ".";
         renderTimeline();
         break;
       case "run_failed":
-        finishActiveStep(e.t, true);
+        finishActiveSteps(e.t, true);
         state.finalElapsed = e.t;
         state.lastText = "The run failed: " + e.error;
         renderTimeline();
