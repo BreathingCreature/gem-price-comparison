@@ -76,6 +76,9 @@ MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped
 DIRECT_SEARCH_MIN_CANDIDATES = 5
 # Trace files are ~100-200KB each and grow forever otherwise.
 TRACE_MAX_FILES = 200
+# E7: the rotation scan stats every trace file; running it every 25th write
+# keeps the folder within TRACE_MAX_FILES + 24 without paying that per run.
+TRACE_ROTATE_EVERY = 25
 
 
 # --- candidate helpers ----------------------------------------------------------
@@ -237,16 +240,27 @@ def _cache_set(gem_url: str, result: dict) -> None:
 
 # --- trace ------------------------------------------------------------------------
 
+_trace_writes_since_rotation = 0
+
+
 def _write_trace(trace: dict) -> str:
+    global _trace_writes_since_rotation
     trace_id = trace["trace_id"]
     path = TRACES_DIR / f"{trace_id}.json"
     try:
-        path.write_text(json.dumps(trace, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        # E7: compact JSON — nothing reads traces by eye (the API serves them
+        # parsed); indent=2 only added air to 100-200KB files.
+        path.write_text(json.dumps(trace, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
         logger.warning("Trace write failed for %s: %s — pipeline result is still valid, just unlogged.", trace_id, e)
         return trace_id
+    _trace_writes_since_rotation += 1
+    if _trace_writes_since_rotation < TRACE_ROTATE_EVERY:
+        return trace_id
+    _trace_writes_since_rotation = 0
     # Rotate: keep the newest TRACE_MAX_FILES traces, delete the rest.
-    # Unbounded growth was ~100-200KB per live run forever.
+    # Unbounded growth was ~100-200KB per live run forever; the scan runs
+    # every TRACE_ROTATE_EVERY-th write instead of on every single run.
     try:
         traces = sorted(TRACES_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         for old in traces[TRACE_MAX_FILES:]:
