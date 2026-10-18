@@ -8,8 +8,9 @@ groq/llama. Each endpoint keeps its own little record: when it was last
 used, whether it is cooling down after an error, how often it failed.
 
 For every call the router:
-  1. skips endpoints that are disabled, cooling down, or over their
-     provider's daily_limit (see llm_providers.json),
+  1. skips endpoints that are disabled, cooling down, over their
+     provider's daily_limit, or out of tokens for this minute
+     (see llm_providers.json),
   2. waits a moment if the provider is already at its max_concurrent,
   3. skips endpoints that were used too recently (their minimum gap),
   4. picks one of the rest, and
@@ -50,6 +51,9 @@ RATE_LIMIT_COOLDOWN = 30.0
 OTHER_ERROR_COOLDOWN = 10.0
 MAX_COOLDOWN = 300.0
 
+# How far back the per-provider tokens_per_minute count looks (D2).
+TOKEN_WINDOW_SECONDS = 60.0
+
 # The kinds of LLM calls in this project (llm/client.py). A provider can
 # declare in llm_providers.json which of them it wants ("purposes":
 # ["verify"]) — normalize and expand are rare and need a good model, verify
@@ -77,6 +81,11 @@ class Endpoint:
     # provider may get in one day. 0 means no limit (today's behaviour).
     max_concurrent: int = 0
     daily_limit: int = 0
+    # Tokens the provider allows per minute (free plans announce this; it is
+    # the real 429 limit). 0 = no limit. The router keeps a 60 s moving
+    # count per provider and skips it when the next call looks like it
+    # would go over.
+    tokens_per_minute: int = 0
     # Which call kinds this endpoint takes. None (not set in the file)
     # means every purpose — that is today's behaviour.
     purposes: Optional[tuple[str, ...]] = None
@@ -151,6 +160,7 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
             raise ValueError(f"{path}: provider {entry['name']!r} request_options must be an object")
         max_concurrent = _int_entry(path, entry, "max_concurrent")
         daily_limit = _int_entry(path, entry, "daily_limit")
+        tokens_per_minute = _int_entry(path, entry, "tokens_per_minute")
         purposes_raw = entry.get("purposes")
         purposes: Optional[tuple[str, ...]] = None
         if purposes_raw is not None:
@@ -171,6 +181,7 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
                 request_options=request_options,
                 max_concurrent=max_concurrent,
                 daily_limit=daily_limit,
+                tokens_per_minute=tokens_per_minute,
                 purposes=purposes,
             )
             if not wanted:
@@ -182,6 +193,17 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
 
 
 # --- the router -----------------------------------------------------------------
+
+def _estimate_call_tokens(messages: list[dict]) -> int:
+    """Roughly how many tokens a call will cost: about 4 characters per
+    token. Answers are short JSON, so the prompt is most of it — and once
+    a call finishes, the provider's real usage replaces this estimate."""
+    chars = 0
+    for m in messages or []:
+        if isinstance(m, dict):
+            chars += len(str(m.get("content") or ""))
+    return chars // 4
+
 
 def _today_iso() -> str:
     return date.today().isoformat()
@@ -213,14 +235,19 @@ class Router:
         self._day = self._today()
         self._in_flight: dict = {}
         self._calls_today: dict = {}
+        # Per-provider token count for the last TOKEN_WINDOW_SECONDS: a list
+        # of {"t": when a call started, "tokens": how many, "final": whether
+        # the number is the provider's real usage or still the estimate}.
+        self._token_uses: dict = {}
 
     # -- public ---------------------------------------------------------------
 
     def complete(self, messages: list[dict], max_tokens: int, purpose: str = "") -> str:
         """Return the model's raw text. Raises RuntimeError if nobody can answer."""
         deadline = self.clock() + self.max_wait
+        estimated = _estimate_call_tokens(messages)
         while True:
-            endpoint, wait = self._pick(purpose)
+            endpoint, wait = self._pick(purpose, estimated)
             if endpoint is None:
                 if wait is None:
                     raise RuntimeError("No LLM endpoint is usable: " + self._why_unusable())
@@ -264,6 +291,8 @@ class Router:
                         "in_flight": self._in_flight.get(e.provider, 0),
                         "max_concurrent": e.max_concurrent,
                         "daily_limit": e.daily_limit,
+                        "tokens_per_minute": e.tokens_per_minute,
+                        "tokens_last_minute": int(self._tokens_used(e.provider, now)),
                         "purposes": list(e.purposes) if e.purposes else None,
                     }
                 )
@@ -287,23 +316,25 @@ class Router:
             count = self._in_flight.get(endpoint.provider, 0)
             self._in_flight[endpoint.provider] = max(count - 1, 0)
 
-    def _pick(self, purpose: str = "") -> tuple[Optional[Endpoint], Optional[float]]:
+    def _pick(self, purpose: str = "", estimated: int = 0) -> tuple[Optional[Endpoint], Optional[float]]:
         """(endpoint, 0) if one is ready now, (None, seconds) if one will be
         ready after that wait, (None, None) if none can ever be used."""
         with self._lock:
             self._roll_day()
         now = self.clock()
-        chosen, wait = self._choose(purpose, now)
+        chosen, wait = self._choose(purpose, now, estimated)
         if chosen is not None or wait is not None:
             return chosen, wait
         # No endpoint advertises this purpose — anyone may answer, so a
         # restrictive purposes setting can never break a run. (When nobody
         # sets purposes at all, the first _choose already saw everything.)
-        return self._choose(None, now)
+        return self._choose(None, now, estimated)
 
-    def _choose(self, purpose: Optional[str], now: float) -> tuple[Optional[Endpoint], Optional[float]]:
+    def _choose(self, purpose: Optional[str], now: float, estimated: int = 0) -> tuple[Optional[Endpoint], Optional[float]]:
         """Same pick as before, narrowed to endpoints that take this purpose.
-        purpose=None means no filter — every endpoint is a candidate."""
+        purpose=None means no filter — every endpoint is a candidate.
+        estimated is the about-to-run call's token size: a provider whose
+        tokens_per_minute would be blown by it is skipped."""
         with self._lock:
             usable = [
                 e for e in self.endpoints
@@ -315,7 +346,11 @@ class Router:
             if not available:
                 return None, None  # daily limits are the only thing left
             free = [e for e in available if e.max_concurrent <= 0 or self._in_flight.get(e.provider, 0) < e.max_concurrent]
-            ready = [e for e in free if e.cooldown_until <= now and now - e.last_start >= e.min_gap]
+            ready = [
+                e for e in free
+                if e.cooldown_until <= now and now - e.last_start >= e.min_gap
+                and self._token_ready(e, estimated, now)
+            ]
             if ready:
                 if self.strategy == "spread":
                     chosen = min(ready, key=lambda e: e.last_start)  # least recently used
@@ -324,13 +359,72 @@ class Router:
                 chosen.last_start = now  # claim the slot before anyone else can
                 self._in_flight[chosen.provider] = self._in_flight.get(chosen.provider, 0) + 1
                 self._calls_today[chosen.provider] = self._calls_today.get(chosen.provider, 0) + 1
+                # Count the call against the provider before it runs, so
+                # parallel callers see each other's reservations.
+                self._reserve_tokens(chosen.provider, estimated, now)
                 return chosen, 0.0
             if free:
-                wait = min(max(e.cooldown_until, e.last_start + e.min_gap) - now for e in free)
-                return None, max(wait, 0.05)
+                waits = []
+                for e in free:
+                    wait = max(e.cooldown_until, e.last_start + e.min_gap) - now
+                    if not self._token_ready(e, estimated, now):
+                        wait = max(wait, self._token_wait(e, estimated, now))
+                    waits.append(wait)
+                return None, max(min(waits), 0.05)
             # every available endpoint is at its provider's concurrency cap —
             # an in-flight call frees one up shortly.
             return None, 0.05
+
+    # -- token budget helpers (call with the lock held) -------------------------
+
+    def _live_token_uses(self, provider: str, now: float) -> list[dict]:
+        uses = self._token_uses.get(provider)
+        if not uses:
+            return []
+        live = [u for u in uses if u["t"] > now - TOKEN_WINDOW_SECONDS]
+        self._token_uses[provider] = live
+        return live
+
+    def _tokens_used(self, provider: str, now: float) -> float:
+        return sum(u["tokens"] for u in self._live_token_uses(provider, now))
+
+    def _token_ready(self, endpoint: Endpoint, estimated: int, now: float) -> bool:
+        """False when this call would push the provider over its
+        tokens_per_minute. A provider that has sent nothing in the window
+        is always allowed one call, however big it looks — a tiny budget
+        must throttle the provider, never brick it."""
+        if endpoint.tokens_per_minute <= 0:
+            return True
+        used = self._tokens_used(endpoint.provider, now)
+        return used == 0 or used + estimated <= endpoint.tokens_per_minute
+
+    def _token_wait(self, endpoint: Endpoint, estimated: int, now: float) -> float:
+        """Seconds until this call would fit: enough old uses must age out
+        of the window. Only called when _token_ready said no, so there is
+        at least one use to drop."""
+        remaining = self._tokens_used(endpoint.provider, now)
+        for use in self._token_uses.get(endpoint.provider, []):
+            remaining -= use["tokens"]
+            if remaining == 0 or remaining + estimated <= endpoint.tokens_per_minute:
+                return max(use["t"] + TOKEN_WINDOW_SECONDS - now, 0.05)
+        return TOKEN_WINDOW_SECONDS  # unreachable: dropping every use fits
+
+    def _reserve_tokens(self, provider: str, estimated: int, now: float) -> None:
+        self._token_uses.setdefault(provider, []).append(
+            {"t": now, "tokens": float(estimated), "final": False}
+        )
+
+    def _finalize_tokens(self, endpoint: Endpoint, actual: Optional[float] = None) -> None:
+        """The call this reservation belonged to is over. The provider's
+        real usage replaces the estimate when it reported any; either way
+        the entry is final and simply ages out of the window."""
+        with self._lock:
+            for use in self._token_uses.get(endpoint.provider, []):
+                if not use["final"]:
+                    use["final"] = True
+                    if actual and actual > 0:
+                        use["tokens"] = float(actual)
+                    return
 
     def _why_unusable(self, include_cooling: bool = False) -> str:
         parts = []
@@ -384,6 +478,9 @@ class Router:
             reason_text = f"empty answer (finish_reason={finish_reason})" if finish_reason else "empty answer"
             self._record_failure(endpoint, RuntimeError(reason_text), seconds, purpose)
             return None
+        usage = getattr(resp, "usage", None)
+        actual = getattr(usage, "total_tokens", None) if usage is not None else None
+        self._finalize_tokens(endpoint, actual if isinstance(actual, (int, float)) else None)
         with self._lock:
             endpoint.calls += 1
             endpoint.total_seconds += seconds
@@ -412,6 +509,9 @@ class Router:
                 cooldown = retry_after if retry_after is not None else base * min(2 ** (endpoint.fail_streak - 1), 8)
                 cooldown = min(cooldown, MAX_COOLDOWN)
                 endpoint.cooldown_until = self.clock() + cooldown
+        # This call is over (failed or empty) — its reservation stops being
+        # "about to run"; with no real usage it just keeps the estimate.
+        self._finalize_tokens(endpoint)
         logger.warning("LLM endpoint %s failed (%s). %s", endpoint.name, text,
                        "Disabled." if cooldown == 0.0 else f"Resting it for {cooldown:.0f}s.")
         events.emit("llm_call", endpoint=endpoint.name, provider=endpoint.provider, model=endpoint.model,
