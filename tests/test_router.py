@@ -325,6 +325,117 @@ def test_request_options_merged_into_create_call(tmp_path, monkeypatch):
     assert kwargs.get("stream") is False
 
 
+# --- per-provider limits: max_concurrent and daily_limit ----------------------
+
+def _limit_router(clients, *, caps=None, limits=None, today="2026-01-01"):
+    """Like make_router, but every endpoint gets the given limits."""
+    clock = Clock()
+    caps = caps or {}
+    limits = limits or {}
+    endpoints = [
+        Endpoint(
+            provider=name,
+            model="m",
+            base_url=f"https://{name}.test/v1",
+            api_key_env="K",
+            max_concurrent=caps.get(name, 0),
+            daily_limit=limits.get(name, 0),
+        )
+        for name in clients
+    ]
+    router = Router(
+        endpoints, clock=clock, sleep=clock.sleep,
+        client_factory=lambda ep: clients[ep.provider], today=lambda: today,
+    )
+    return router, clock
+
+
+def test_max_concurrent_holds_a_provider_until_a_slot_frees_up():
+    ep = Endpoint(provider="a", model="m", base_url="https://a.test/v1", api_key_env="K", max_concurrent=1)
+    router = Router([ep])
+
+    first, wait = router._pick()
+    assert first is ep and wait == 0.0
+    second, wait = router._pick()  # the in-flight call has not finished yet
+    assert second is None and wait and wait > 0
+    router._release_slot(ep)  # what _call does when its call ends
+    third, _ = router._pick()
+    assert third is ep
+
+
+def test_no_limit_is_the_default_and_changes_nothing():
+    a, b = FakeClient(label="a"), FakeClient(label="b")
+    router, _ = _limit_router({"a": a, "b": b})
+    for _ in range(3):
+        assert router.complete(MESSAGES, 100) == "answer from a"
+    assert a.calls == 3
+
+
+def test_daily_limit_moves_to_the_next_provider_after_n_calls():
+    a, b = FakeClient(label="a"), FakeClient(label="b")
+    router, _ = _limit_router({"a": a, "b": b}, limits={"a": 2})
+
+    assert router.complete(MESSAGES, 100) == "answer from a"
+    assert router.complete(MESSAGES, 100) == "answer from a"
+    assert router.complete(MESSAGES, 100) == "answer from b"  # a is done for today
+    assert a.calls == 2
+
+
+def test_the_daily_count_starts_fresh_on_a_new_day():
+    day = ["2026-01-01"]
+    a = FakeClient(label="a")
+    router, _ = _limit_router({"a": a}, limits={"a": 1})
+    router._today = lambda: day[0]
+
+    assert router.complete(MESSAGES, 100) == "answer from a"
+    with pytest.raises(RuntimeError) as err:
+        router.complete(MESSAGES, 100)
+    assert "daily limit" in str(err.value)  # and it explains why
+    day[0] = "2026-01-02"
+    assert router.complete(MESSAGES, 100) == "answer from a"
+
+
+def test_status_shows_todays_calls_and_the_limits():
+    a, b = FakeClient(label="a"), FakeClient(label="b")
+    router, _ = _limit_router({"a": a, "b": b}, caps={"a": 2}, limits={"a": 50})
+    router.complete(MESSAGES, 100)
+
+    row = next(r for r in router.status() if r["provider"] == "a")
+    assert row["calls_today"] == 1 and row["daily_limit"] == 50
+    assert row["in_flight"] == 0 and row["max_concurrent"] == 2
+
+
+def test_the_limits_are_read_from_the_config_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_L", "real-key")
+    path = _write_config(tmp_path, [{
+        "name": "l", "base_url": "https://l.test/v1", "api_key_env": "KEY_L", "models": ["m"],
+        "max_concurrent": 3, "daily_limit": 900,
+    }])
+
+    endpoints, _ = load_endpoints(path)
+    assert endpoints[0].max_concurrent == 3 and endpoints[0].daily_limit == 900
+
+
+def test_without_the_keys_there_are_no_limits(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_L", "real-key")
+    path = _write_config(tmp_path, [{"name": "l", "base_url": "https://l.test/v1", "api_key_env": "KEY_L", "models": ["m"]}])
+
+    endpoints, _ = load_endpoints(path)
+    assert endpoints[0].max_concurrent == 0 and endpoints[0].daily_limit == 0
+
+
+def test_a_nonsense_limit_is_a_loud_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("KEY_L", "real-key")
+    path = _write_config(tmp_path, [{
+        "name": "l", "base_url": "https://l.test/v1", "api_key_env": "KEY_L", "models": ["m"],
+        "daily_limit": "lots",
+    }])
+
+    with pytest.raises(ValueError) as err:
+        load_endpoints(path)
+    assert "daily_limit" in str(err.value) and "l" in str(err.value)
+
+
 # --- B3: empty answer includes finish_reason ---------------------------------
 
 def test_empty_answer_includes_finish_reason():
