@@ -3,7 +3,11 @@
     python -m eval.run_eval --key eval/answer_key.csv --label before
     python -m eval.run_eval --key eval/answer_key.csv --label before --limit 3
     python -m eval.run_eval --key eval/answer_key.csv --label before --only P01,P07
+    python -m eval.run_eval --key eval/answer_key.csv --label before --workers 2
 
+With --workers 2 a couple of products run at the same time (most of a run is
+waiting on Chrome and the shops, so 2-3 helps and 10 does not). Records are
+still one line each; with workers they land in completion order.
 Writes eval/results/<label>.jsonl (one line per product) and
 eval/results/<label>.meta.json (the settings and the git commit used).
 Safe to stop and start again: products already in the file are skipped.
@@ -18,6 +22,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -83,7 +88,18 @@ def record_for(row: dict, run_fn) -> dict:
     }
 
 
-def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=None, log=print) -> int:
+def _append_record(out_path: Path, rec: dict, n: int, total: int, log) -> None:
+    """Append one finished product to the jsonl and say what happened.
+
+    Called from the main thread only, so parallel workers never interleave
+    a line."""
+    with out_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    state = "ERROR " + rec["error"][:80] if rec["error"] else f"{len(rec['matches'])} match(es)"
+    log(f"[{n}/{total}] {rec['id']}: {state} in {rec['seconds']}s")
+
+
+def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=None, workers: int = 1, log=print) -> int:
     run_fn = run_fn or _default_run
     out_path.parent.mkdir(parents=True, exist_ok=True)
     done = set()
@@ -99,12 +115,17 @@ def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=N
     if limit:
         todo = todo[:limit]
     log(f"{len(done)} already done, {len(todo)} to run")
-    for n, row in enumerate(todo, start=1):
-        rec = record_for(row, run_fn)
-        with out_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        state = "ERROR " + rec["error"][:80] if rec["error"] else f"{len(rec['matches'])} match(es)"
-        log(f"[{n}/{len(todo)}] {row['id']}: {state} in {rec['seconds']}s")
+    if workers <= 1 or len(todo) <= 1:
+        for n, row in enumerate(todo, start=1):
+            _append_record(out_path, record_for(row, run_fn), n, len(todo), log)
+        return len(todo)
+    # B9: each product is mostly waiting on Chrome and the shops, so a couple
+    # at a time cuts a whole key's wall time roughly in half.
+    log(f"running {workers} products at a time")
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="eval-product") as pool:
+        futures = {pool.submit(record_for, row, run_fn): row for row in todo}
+        for n, future in enumerate(as_completed(futures), start=1):
+            _append_record(out_path, future.result(), n, len(todo), log)
     return len(todo)
 
 
@@ -162,6 +183,8 @@ def main(argv=None) -> int:
     ap.add_argument("--label", required=True, help="a short name for this run, e.g. before or parallel-on")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--only", help="comma-separated product ids")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="products to evaluate at the same time (2-3 helps; Chrome and the shops are the limit)")
     ap.add_argument("--dir", default="eval/results")
     args = ap.parse_args(argv)
 
@@ -170,7 +193,7 @@ def main(argv=None) -> int:
     rows = load_key(args.key)
     write_meta(meta, args.label)
     only = set(args.only.split(",")) if args.only else None
-    run_all(rows, out, limit=args.limit, only=only)
+    run_all(rows, out, limit=args.limit, only=only, workers=args.workers)
     print(f"results: {out}\nscore them with: python -m eval.score --key {args.key} --results {out}")
     return 0
 
