@@ -10,6 +10,8 @@ unverified in discovery.py's own docstring, and can only be confirmed by
 an actual run outside this sandbox.
 """
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -202,6 +204,82 @@ def test_discover_for_queries_returns_one_result_per_query():
     assert results[0].query == "query one"
     assert results[1].query == "query two"
     assert all(r.filtered_urls for r in results)
+
+
+# --- SearXNG instances are asked at the same time, with a total time limit -----------
+
+
+@contextmanager
+def _patched(obj, **attrs):
+    """Temporary attribute swaps — works with and without pytest's fixture."""
+    old = {name: getattr(obj, name) for name in attrs}
+    for name, value in attrs.items():
+        setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        for name, value in old.items():
+            setattr(obj, name, value)
+
+
+SEARXNG_MOCK_HTML = """
+<html><body>
+<article class="result result-default">
+  <h3><a href="https://www.croma.com/logitech-m650">Logitech M650 - Croma</a></h3>
+</article>
+</body></html>
+"""
+
+
+class _DdgDownCountingSession:
+    """DDG and Google are unreachable; SearXNG requests go through handler
+    while the session counts how many are in flight at once."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.active = 0
+        self.max_active = 0
+
+    def get(self, url, headers=None, timeout=None):
+        if "duckduckgo.com" in url or "google.com" in url:
+            raise ConnectionError("backend down")
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            return self.handler(url)
+        finally:
+            self.active -= 1
+
+
+def test_searxng_instances_are_asked_at_the_same_time():
+    # Live pain: up to 11 instances tried one by one, each allowed 15s —
+    # one dead instance must not cost the others' wait.
+    def slow_response(url):
+        time.sleep(0.2)
+        return _FakeResponse(SEARXNG_MOCK_HTML)
+
+    session = _DdgDownCountingSession(slow_response)
+    result = discovery.discover_candidates("logitech m650", ["croma.com"], session=session)
+    assert result.filtered_urls == ["https://www.croma.com/logitech-m650"]
+    assert session.max_active >= 2
+
+
+def test_searxng_search_has_a_total_time_limit():
+    # Even in parallel, the stage needs a deadline — otherwise the slowest
+    # allowed attempt (15s) sets the floor for a run.
+    def dead_slow_response(url):
+        time.sleep(1.0)
+        return _FakeResponse(SEARXNG_MOCK_HTML)
+
+    session = _DdgDownCountingSession(dead_slow_response)
+    # patch the real module — the package re-exports only a few names
+    with _patched(discovery.discover, _SEARXNG_INSTANCES=("https://a.example", "https://b.example"),
+                  DISCOVERY_TIME_LIMIT_SECONDS=0.3):
+        started = time.monotonic()
+        result = discovery.discover_candidates("logitech m650", ["croma.com"], session=session)
+        elapsed = time.monotonic() - started
+    assert elapsed < 0.9  # did not wait out the 1s fetches
+    assert result.filtered_urls == []
 
 
 if __name__ == "__main__":

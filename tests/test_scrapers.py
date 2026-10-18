@@ -13,11 +13,12 @@ like it. Flipkart's shape came from tested code; Amazon's is unverified
 (see the warning at the top of scrapers/amazon.py).
 """
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scrapers import flipkart, amazon, generic  # noqa: E402
+from scrapers import flipkart, amazon, generic, _base  # noqa: E402
 from scrapers._base import parse_indian_price  # noqa: E402
 
 
@@ -181,6 +182,183 @@ def test_generic_scrape_domain_strips_single_www_prefix_only():
     # str.replace("www.", "") also strips mid-host: "awww.com" -> "a.com".
     result = generic.scrape("https://www.awww.com/x", session=_FakeSession(GENERIC_MOCK_HTML))
     assert result.source_domain == "awww.com"
+
+
+# --- Flipkart scroll loop (driver faked; no Chrome needed) --------------------------
+
+
+@contextmanager
+def _patched(obj, **attrs):
+    """Temporary attribute swaps — works with and without pytest's fixture."""
+    old = {name: getattr(obj, name) for name in attrs}
+    for name, value in attrs.items():
+        setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        for name, value in old.items():
+            setattr(obj, name, value)
+
+
+class _FakeScrollDriver:
+    """Enough of a Selenium driver for a scroll loop: every scrollTo()
+    moves to the next entry in link_counts, and find_elements reports that
+    many 'product links'."""
+
+    def __init__(self, link_counts):
+        self.link_counts = list(link_counts)
+        self.scrolls = 0
+
+    def execute_script(self, script):
+        if script.startswith("window.scrollTo"):
+            self.scrolls += 1
+
+    def find_elements(self, by, selector):
+        index = min(max(self.scrolls - 1, 0), len(self.link_counts) - 1)
+        return [object()] * self.link_counts[index]
+
+
+class _QuietDriver:
+    def quit(self):
+        pass
+
+
+def _call_silenced(module, fn, *args, **kwargs):
+    with _patched(module.time, sleep=lambda seconds: None):
+        return fn(*args, **kwargs)
+
+
+def _call_recording_sleeps(module, fn, *args, **kwargs):
+    sleeps = []
+    with _patched(module.time, sleep=lambda seconds: sleeps.append(seconds)):
+        result = fn(*args, **kwargs)
+    return result, sleeps
+
+
+def test_scroll_stops_after_two_rounds_without_new_cards():
+    # The old loop scrolled all 8 rounds whenever the card count stayed
+    # under 50 (almost always true) — two stale rounds mean the page is done.
+    driver = _FakeScrollDriver([10, 10, 10, 10, 10, 10, 10, 10])
+    _call_silenced(flipkart, flipkart._scroll_to_load_cards, driver)
+    assert driver.scrolls == 3
+
+
+def test_scroll_keeps_going_while_new_cards_keep_arriving():
+    driver = _FakeScrollDriver([10, 18, 26, 30, 30, 30, 30, 30])
+    _call_silenced(flipkart, flipkart._scroll_to_load_cards, driver)
+    assert driver.scrolls == 6
+
+
+def test_scroll_gives_up_quickly_when_the_page_is_already_full():
+    driver = _FakeScrollDriver([80, 80])
+    _call_silenced(flipkart, flipkart._scroll_to_load_cards, driver)
+    assert driver.scrolls == 1
+
+
+# --- no sleep after the last page -----------------------------------------------------
+
+def _flipkart_search_without_browser(html, **search_kwargs):
+    options = {"max_pages": 1}
+    options.update(search_kwargs)
+    with _patched(
+        flipkart,
+        build_stealth_driver=lambda *a, **k: _QuietDriver(),
+        _load_search_page=lambda driver, query, page=1: html,
+    ):
+        return _call_recording_sleeps(flipkart, flipkart.search, "logitech m650", **options)
+
+
+def test_flipkart_does_not_sleep_after_the_last_page():
+    result, sleeps = _flipkart_search_without_browser(FLIPKART_MOCK_HTML)
+    assert len(result.candidates) == 2
+    assert sleeps == []
+
+
+def test_flipkart_waits_between_pages():
+    result, sleeps = _flipkart_search_without_browser(FLIPKART_MOCK_HTML, max_pages=2)
+    assert len(result.candidates) == 2  # page 2 was all duplicates
+    assert len(sleeps) == 1
+
+
+def test_flipkart_skips_the_sleep_once_it_has_enough():
+    result, sleeps = _flipkart_search_without_browser(FLIPKART_MOCK_HTML, max_results=2, max_pages=3)
+    assert len(result.candidates) == 2
+    assert sleeps == []
+
+
+# --- GEM_FLIPKART_LIGHT travels from config to the driver -----------------------------
+
+def test_flipkart_light_switch_reaches_the_driver():
+    seen = {}
+
+    def capture(*, light=False):
+        seen["light"] = light
+        return _QuietDriver()
+
+    with _patched(flipkart, build_stealth_driver=capture, FLIPKART_LIGHT=True,
+                  _load_search_page=lambda driver, query, page=1: "<html></html>"):
+        flipkart.search("logitech m650", max_pages=1)
+    assert seen["light"] is True
+
+
+def test_flipkart_is_not_light_by_default():
+    seen = {}
+
+    def capture(*, light=False):
+        seen["light"] = light
+        return _QuietDriver()
+
+    with _patched(flipkart, build_stealth_driver=capture,
+                  _load_search_page=lambda driver, query, page=1: "<html></html>"):
+        flipkart.search("logitech m650", max_pages=1)
+    assert seen["light"] is False
+
+
+def test_light_browser_options_disable_images_and_stop_at_the_dom():
+    opts = _base._plain_chrome_options(light=True)
+    assert "--blink-settings=imagesEnabled=false" in opts.arguments
+    assert opts.page_load_strategy == "eager"
+
+
+def test_default_browser_options_are_unchanged():
+    opts = _base._plain_chrome_options(light=False)
+    assert "--blink-settings=imagesEnabled=false" not in opts.arguments
+    assert opts.page_load_strategy == "normal"
+
+
+# --- Amazon sleep trims ----------------------------------------------------------------
+
+def _amazon_browser_search(html, **search_kwargs):
+    options = {"max_pages": 1}
+    options.update(search_kwargs)
+    with _patched(
+        amazon,
+        _search_curl_cffi=lambda query, max_results, max_pages: None,
+        build_stealth_driver=lambda *a, **k: _QuietDriver(),
+        _load_search_page=lambda driver, query, page=1: html,
+    ):
+        return _call_recording_sleeps(amazon, amazon.search, "logitech m650", **options)
+
+
+def test_amazon_does_not_sleep_after_the_last_page():
+    result, sleeps = _amazon_browser_search(AMAZON_MOCK_HTML)
+    assert len(result.candidates) == 1
+    assert sleeps == []
+
+
+def test_amazon_waits_between_pages():
+    result, sleeps = _amazon_browser_search(AMAZON_MOCK_HTML, max_pages=2)
+    assert len(result.candidates) == 1  # page 2 was all duplicates
+    assert len(sleeps) == 1
+
+
+def test_amazon_fast_path_skips_the_sleep_once_it_has_enough():
+    with _patched(amazon, _fetch_curl_cffi_page=lambda query, page=1: AMAZON_MOCK_HTML):
+        result, sleeps = _call_recording_sleeps(
+            amazon, amazon._search_curl_cffi, "logitech m650", max_results=1, max_pages=3
+        )
+    assert result is not None and len(result.candidates) == 1
+    assert sleeps == []
 
 
 if __name__ == "__main__":
