@@ -648,6 +648,17 @@ def test_resolve_chromedriver_asks_selenium_manager_once():
     assert seen["args"] == ["--browser", "chrome"]
 
 
+def test_undetected_chromedriver_is_an_optional_dependency():
+    # F: uc fails on this machine (Chrome 151 headless dies) and is already
+    # opt-in behind GEM_USE_UC=1 — it must not sit in requirements.txt.
+    requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(encoding="utf-8")
+    active = [
+        line for line in requirements.splitlines()
+        if line.strip().startswith("undetected-chromedriver")
+    ]
+    assert not active
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0

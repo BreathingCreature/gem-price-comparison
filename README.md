@@ -44,7 +44,7 @@ cli.py (entry)
   │   ├── flipkart.py     # Flipkart (Selenium only)
   │   └── generic.py      # Any URL: og: tags + raw text
   ├── discovery/          # URL finding (search engines)
-  │   └── discover.py     # DDG → SearXNG → Google chain
+  │   └── discover.py     # DDG → SearXNG chain
   └── llm/                # LLM intelligence + gates
       ├── client.py       # NVIDIA API, retries, prompts
       └── match.py        # Sanity gates (currency, confidence, price)

@@ -4,8 +4,8 @@ lxml==6.1.3
 selenium==4.49.0
 python-dotenv==1.2.3
 openai==3.19.0
-undetected-chromedriver==3.5.5
-setuptools>=70.0  # provides distutils shim on Python 3.12+ (undetected-chromedriver needs it)
+# undetected-chromedriver==3.5.5  # optional (GEM_USE_UC=1) — fails on this machine's Chrome
+setuptools>=70.0  # distutils shim on Python 3.12+ (for the optional undetected-chromedriver path)
 curl_cffi==0.16.3  # TLS/JA3 impersonation — primary Amazon path, no browser
 fastapi>=0.110
 uvicorn>=0.30
