@@ -101,13 +101,19 @@ def test_cache_key_changes_with_llm_cache_tag(monkeypatch):
     monkeypatch.setenv("LLM_CACHE_TAG", "exp-a")
     importlib.reload(config_mod)
     importlib.reload(cache)
-    key2 = cache.key_for(msgs, 100, "verify")
+    try:
+        key2 = cache.key_for(msgs, 100, "verify")
 
-    assert key1 != key2
+        assert key1 != key2
 
-    # Same tag gives same key
-    key3 = cache.key_for(msgs, 100, "verify")
-    assert key2 == key3
+        # Same tag gives same key
+        key3 = cache.key_for(msgs, 100, "verify")
+        assert key2 == key3
+    finally:
+        # Do not leave the tagged cache key (or its config) behind for other tests.
+        monkeypatch.delenv("LLM_CACHE_TAG", raising=False)
+        importlib.reload(config_mod)
+        importlib.reload(cache)
 
 
 def test_put_stores_model_name(tmp_path, monkeypatch):

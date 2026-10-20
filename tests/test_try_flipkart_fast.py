@@ -5,9 +5,19 @@ plus scroll rounds). This tool tries curl_cffi TLS impersonation against the
 search URL and reports which fingerprint — if any — returns real result
 cards. `_make_get` is the seam these tests fake; nothing touches the network.
 """
-from types import SimpleNamespace
-
 from tools import try_flipkart_fast
+
+
+class _FakeCurlResponse:
+    """curl_cffi responses expose .text read-only, so this fake does too."""
+
+    def __init__(self, html: str, status: int = 200):
+        self._text = html
+        self.status_code = status
+
+    @property
+    def text(self) -> str:
+        return self._text
 
 
 FLIPKART_HTML_WITH_CARDS = """
@@ -22,7 +32,7 @@ FLIPKART_HTML_WITH_CARDS = """
 
 def _get_returning(html, status=200):
     def fake_get(url, impersonate=None, timeout=None):
-        return SimpleNamespace(status_code=status, text=html)
+        return _FakeCurlResponse(html, status)
 
     return fake_get
 
@@ -42,7 +52,7 @@ def test_a_failing_fingerprint_moves_on_to_the_next(monkeypatch, capsys):
         calls.append(impersonate)
         if len(calls) == 1:
             raise ConnectionError("TLS reset")
-        return SimpleNamespace(status_code=200, text=FLIPKART_HTML_WITH_CARDS)
+        return _FakeCurlResponse(FLIPKART_HTML_WITH_CARDS)
 
     monkeypatch.setattr(try_flipkart_fast, "_make_get", lambda: flaky_get)
     assert try_flipkart_fast.main(["logitech m650"]) == 0
