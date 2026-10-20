@@ -531,7 +531,11 @@ def test_flag_empty_means_default(monkeypatch):
 
     monkeypatch.setenv("GEM_PARALLEL", "")
     importlib.reload(config_mod)
-    assert config_mod.PARALLEL_SEARCH is False  # default
+    assert config_mod.PARALLEL_SEARCH is True  # Stage 7 default: lanes on
+
+    monkeypatch.setenv("GEM_PARALLEL", "0")
+    importlib.reload(config_mod)
+    assert config_mod.PARALLEL_SEARCH is False
 
     monkeypatch.setenv("GEM_PARALLEL", "1")
     importlib.reload(config_mod)

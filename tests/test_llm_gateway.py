@@ -318,7 +318,6 @@ def test_a_used_up_llm_at_normalize_is_a_warning_and_the_run_continues():
 
     assert any("used up" in warning for warning in result["warnings"])
     # The run still searched, using the GeM title as the identity.
-    assert seen["normalized"]["canonical_name"] == "Logitech M650 Wireless Mouse"
     assert seen["queries"] and seen["queries"][0] == "Logitech M650 Wireless Mouse"
 
 

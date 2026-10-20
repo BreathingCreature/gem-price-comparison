@@ -94,7 +94,9 @@ def test_flag_default_when_unset(monkeypatch):
 def test_normal_behaviour_is_the_default():
     # these tests assume the developer has not exported the switches
     assert config.RETRY_ENABLED is True and config.GATES_ENABLED is True
-    assert config.PARALLEL_SEARCH is False and config.LLM_CACHE_ENABLED is False
+    # Stage 7: lanes are the default; GEM_PARALLEL=0 restores the old path.
+    assert config.PARALLEL_SEARCH is True and config.LLM_CACHE_ENABLED is False
+    assert config.RESULT_VERSION == 2 and config.LANE_TIME_LIMIT_SECONDS == 150.0
     # Stage 6 defaults: the filter and the pre-gate are ON, verdicts are
     # reused, and the verifier runs four listings at a time.
     assert config.LLM_WORKERS == 4 and config.PREFILTER_TOP == 10
@@ -107,7 +109,9 @@ def test_normal_behaviour_is_the_default():
 
 # --- parallel search ------------------------------------------------------------
 
-def test_sequential_search_keeps_the_old_stage_names():
+def test_sequential_search_keeps_the_old_stage_names(monkeypatch):
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", False)
+    monkeypatch.setattr(pipeline, "STRICT_MODE", False)
     _, seen = _run()
     assert [e["name"] for e in seen if e["type"] == "stage"][2:4] == ["search_flipkart", "search_amazon"]
 
@@ -484,7 +488,8 @@ def test_when_every_lane_crashes_the_error_is_raised(monkeypatch):
         _run(flipkart_search_fn=_crash, amazon_search_fn=_crash, discover_fn=boom_discovery)
 
 
-def test_sequential_mode_still_raises_a_search_crash():
+def test_sequential_mode_still_raises_a_search_crash(monkeypatch):
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", False)
     with pytest.raises(RuntimeError, match="chrome died"):
         _run(flipkart_search_fn=_crash)
 
