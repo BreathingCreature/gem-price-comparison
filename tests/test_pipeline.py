@@ -570,8 +570,9 @@ def test_a3_search_direct_and_dedup_use_same_key():
     assert len(all_candidates) == 3, f"expected 3, got {len(all_candidates)}"
 
 
-    # LLM prompt asks for Indian domains but doesn't enforce it —
-    # bestbuy.com must not reopen open-mode .com discovery.
+def test_retry_suggested_domains_keep_indian_shops_only():
+    """LLM prompt asks for Indian domains but doesn't enforce it —
+    bestbuy.com must not reopen open-mode .com discovery."""
     url = "https://mkp.gem.gov.in/test/retry-indian-filter/p-12-12-cat.html"
     discover_calls = []
 

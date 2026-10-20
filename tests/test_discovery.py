@@ -15,16 +15,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
+
 import discovery  # noqa: E402
 from discovery import discover_candidates, discover_for_queries  # noqa: E402
 
-discovery.QUERY_DELAY_RANGE = (0.0, 0.0)  # no reason to actually wait in tests
+
+@pytest.fixture(autouse=True)
+def _no_query_delay(monkeypatch):
+    """No reason to actually wait in tests, and the change must not leak."""
+    monkeypatch.setattr(discovery.discover, "QUERY_DELAY_RANGE", (0.0, 0.0))
 
 
 class _FakeResponse:
+    """Real Response.text is read-only, so the fake is read-only too."""
+
     def __init__(self, text: str, status: int = 200):
-        self.text = text
+        self._text = text
         self.status_code = status
+
+    @property
+    def text(self) -> str:
+        return self._text
 
     def raise_for_status(self):
         if self.status_code >= 400:

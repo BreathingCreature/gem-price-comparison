@@ -137,8 +137,14 @@ MOCK_PRODUCT_HTML = """
 
 
 class _FakeResponse:
+    """Read-only .text, like a real requests.Response."""
+
     def __init__(self, text: str):
-        self.text = text
+        self._text = text
+
+    @property
+    def text(self) -> str:
+        return self._text
 
     def raise_for_status(self):
         pass
@@ -217,7 +223,11 @@ def test_extract_gem_product_title_without_price_still_works():
 class _ScriptedResponse:
     def __init__(self, status: int, text: str = ""):
         self.status_code = status
-        self.text = text
+        self._text = text
+
+    @property
+    def text(self) -> str:
+        return self._text
 
     def raise_for_status(self):
         if self.status_code >= 400:

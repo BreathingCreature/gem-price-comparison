@@ -137,9 +137,15 @@ GENERIC_MOCK_HTML = """
 
 
 class _FakeResponse:
+    """Read-only .text, like a real requests.Response."""
+
     def __init__(self, text: str, status: int = 200):
-        self.text = text
+        self._text = text
         self.status_code = status
+
+    @property
+    def text(self) -> str:
+        return self._text
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -560,8 +566,12 @@ def test_amazon_prefetched_pages_cost_no_politeness_sleep():
 
 class _FakeCurlResponse:
     def __init__(self, text: str, status_code: int = 200):
-        self.text = text
+        self._text = text
         self.status_code = status_code
+
+    @property
+    def text(self) -> str:
+        return self._text
 
 
 class _FakeCurlSession:

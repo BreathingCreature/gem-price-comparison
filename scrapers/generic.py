@@ -64,10 +64,12 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
             fetch_error=f"{type(e).__name__}: {e}",
         )
 
-    # Limit raw text before parsing to avoid blowing memory on huge pages
-    resp.text = resp.text[:RAW_TEXT_CHAR_CAP]
-
-    soup = BeautifulSoup(resp.text, "lxml")
+    # Limit raw text before parsing to avoid blowing memory on huge pages.
+    # resp.text is read-only on a real requests.Response, so the shortened
+    # copy lives in our own variable. Assigning to resp.text raised
+    # AttributeError on every live page (SCRP-01).
+    html = resp.text[:RAW_TEXT_CHAR_CAP]
+    soup = BeautifulSoup(html, "lxml")
 
     title = _meta_content(soup, "og:title") or (soup.title.get_text(strip=True) if soup.title else "")
     price_text = (
