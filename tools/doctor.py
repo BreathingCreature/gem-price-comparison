@@ -126,9 +126,15 @@ def check_live_llm():
     results = []
     for endpoint in [e for e in endpoints if e.enabled]:
         single = Router([dataclasses.replace(endpoint)], max_wait=1.0)
+        if not single.endpoints[0].enabled:
+            # A 404 remembered from an earlier run; not a new problem.
+            results.append((WARN, f"{endpoint.name} skipped: {single.endpoints[0].disabled_reason}"))
+            continue
         started = time.monotonic()
         try:
-            reply = single.complete([{"role": "user", "content": 'Reply with exactly: {"ok": true}'}], 50, purpose="doctor")
+            # 256, not 50: a reasoning model spends most of a small budget
+            # thinking and then answers with empty content.
+            reply = single.complete([{"role": "user", "content": 'Reply with exactly: {"ok": true}'}], 256, purpose="doctor")
             results.append((PASS, f"{endpoint.name} answered in {time.monotonic() - started:.1f}s: {reply[:60]!r}"))
         except Exception as exc:
             results.append((FAIL, f"{endpoint.name} failed: {exc}"))

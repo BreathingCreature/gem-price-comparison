@@ -402,9 +402,11 @@ def test_complete_raises_after_all_transient_attempts_exhausted():
     orig_errors = llm_client._endpoint_errors
     orig_backoff = llm_client.ENDPOINT_RETRY_BACKOFF
     orig_attempts = llm_client.ENDPOINT_RETRY_ATTEMPTS
+    orig_models = llm_client.NVIDIA_MODELS
     llm_client._endpoint_errors = lambda: (_AlwaysDown,)
     llm_client.ENDPOINT_RETRY_BACKOFF = (0.0, 0.0)
     llm_client.ENDPOINT_RETRY_ATTEMPTS = 2
+    llm_client.NVIDIA_MODELS = ["fake/model"]
     try:
         client = _DeadClient()
         try:
@@ -417,48 +419,7 @@ def test_complete_raises_after_all_transient_attempts_exhausted():
         llm_client._endpoint_errors = orig_errors
         llm_client.ENDPOINT_RETRY_BACKOFF = orig_backoff
         llm_client.ENDPOINT_RETRY_ATTEMPTS = orig_attempts
-
-
-# --- B1: confidence parsing ------------------------------------------------
-
-def test_complete_raises_after_all_transient_attempts_exhausted():
-    class _AlwaysDown(Exception):
-        pass
-
-    class _DeadCompletions:
-        def __init__(self):
-            self.n = 0
-
-        def create(self, **kwargs):
-            self.n += 1
-            raise _AlwaysDown("503 forever")
-
-    class _DeadChat:
-        def __init__(self):
-            self.completions = _DeadCompletions()
-
-    class _DeadClient:
-        def __init__(self):
-            self.chat = _DeadChat()
-
-    orig_errors = llm_client._endpoint_errors
-    orig_backoff = llm_client.ENDPOINT_RETRY_BACKOFF
-    orig_attempts = llm_client.ENDPOINT_RETRY_ATTEMPTS
-    llm_client._endpoint_errors = lambda: (_AlwaysDown,)
-    llm_client.ENDPOINT_RETRY_BACKOFF = (0.0, 0.0)
-    llm_client.ENDPOINT_RETRY_ATTEMPTS = 2
-    try:
-        client = _DeadClient()
-        try:
-            llm_client._call_llm("system", "user", client=client)
-            assert False, "expected RuntimeError"
-        except RuntimeError as e:
-            assert "All LLM models failed" in str(e)
-        assert client.chat.completions.n == 2  # exactly the configured attempts, then give up
-    finally:
-        llm_client._endpoint_errors = orig_errors
-        llm_client.ENDPOINT_RETRY_BACKOFF = orig_backoff
-        llm_client.ENDPOINT_RETRY_ATTEMPTS = orig_attempts
+        llm_client.NVIDIA_MODELS = orig_models
 
 
 # --- B1: confidence parsing ------------------------------------------------

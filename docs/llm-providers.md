@@ -109,8 +109,19 @@ straight away:
 | 5xx, timeout, network | rests 10 s |
 | same endpoint failing again | rest doubles each time, up to 5 minutes |
 | 401 (key rejected) | every endpoint of that provider is switched off |
-| 404 (model not found) | that endpoint is switched off |
+| 404 (model not found) | that model is switched off, remembered on disk, and the next model is used |
 | empty answer | counts as a failure |
+
+A 404 is saved in `cache/llm_state.json`, so a restart goes straight to the
+next model instead of spending a call on the dead one. After
+`GEM_RETIRED_RECHECK_DAYS` (7 by default) the model is tried once more, in
+case the provider brought it back; a working answer deletes the note. The
+status rows show `"retired": true` for those models.
+
+Free model names change often. When a run starts saying "model not found",
+run `python tools/check_models.py` to see which names answer right now, then
+`python tools/check_models.py --write` to put the good ones (fastest first)
+into the NVIDIA entry of `llm_providers.json`.
 
 If every endpoint is resting, the call waits for the first one to return, up
 to `LLM_MAX_WAIT_SECONDS` (45 by default), then fails with a message that
@@ -123,10 +134,13 @@ With no `llm_providers.json` at all, NVIDIA is used alone, built from the
 
 `GET /api/llm/status`, the Advanced tab of the web page, and the
 `llm_call` / `llm_cooldown` events all show which endpoint served each call,
-how long it took and why an endpoint was skipped. The status rows also show
-each provider's `calls_today`, `in_flight`, `max_concurrent`, `daily_limit`
-and the token budget with the last minute's count (`tokens_per_minute`,
-`tokens_last_minute`).
+how long it took and why an endpoint was skipped. States are `ready`, `failing`
+(its last call failed within 15 minutes — it will be retried, but it is not
+"ready"), `cooling` (resting; `reason` names the remaining seconds and the
+error), `limit` (allowance gone until the reset) and `disabled`. The status rows
+also show each provider's `calls_today`, `in_flight`, `max_concurrent`,
+`daily_limit`, `last_status` / `last_failure_ago` and the token budget with the
+last minute's count (`tokens_per_minute`, `tokens_last_minute`).
 
 `python -m tools.probe_endpoints` sends one tiny message to every endpoint
 and prints OK with the round-trip time, or the real error (bad key, wrong

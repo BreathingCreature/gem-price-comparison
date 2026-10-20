@@ -35,7 +35,10 @@ selectors. That is a layout change, not a block.
 
 The router remembers when an endpoint used up its allowance for the day and
 skips it until tomorrow (`GET /api/llm/status` shows `limit`). It also cools an
-endpoint after errors.
+endpoint after errors: `cooling` carries the remaining seconds and the error,
+and `failing` means its last call failed within the last 15 minutes (the router
+will retry it, but it is not "ready"). A 5xx such as Gemini's "currently
+experiencing high demand" is rested for a minute, not ten seconds.
 
 - `python tools/probe_endpoints.py` prints one line per endpoint, including the
   finish reason and the *names* of rate-limit headers.
@@ -44,6 +47,22 @@ endpoint after errors.
   `tokens_per_minute` on the provider.
 - Strict mode costs many more calls; use normal mode while an allowance is
   tight.
+
+## "model not found (404)" / the model stopped working
+
+NVIDIA adds and removes free models often; nothing in the project changed.
+The router already handled it: that one model is switched off, the note is
+saved in `cache/llm_state.json`, and the next model in the list answers.
+
+- `python tools/check_models.py` asks every candidate two small JSON questions
+  and prints who answered, how fast, and whether the answers were right.
+- `python tools/check_models.py --write` puts the good models (fastest first)
+  into the NVIDIA entry of `llm_providers.json` and forgets their 404 notes.
+- The retired models show as `disabled` with `"retired": true` in
+  `GET /api/llm/status`. After `GEM_RETIRED_RECHECK_DAYS` (7) one is tried
+  again by itself.
+- If every NVIDIA model is gone, the other providers in `llm_providers.json`
+  keep working; add one there if you have a second key.
 
 ## Chrome not found
 

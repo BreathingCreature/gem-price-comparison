@@ -12,12 +12,13 @@ An empty value means "use the default".
 |---|---|---|---|
 | `NVIDIA_API_KEY` | (empty) | Key for NVIDIA's OpenAI-compatible API | Without it no LLM call can run; the page still reads the GeM product |
 | `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | NVIDIA endpoint | Change only if NVIDIA moves it |
-| `NVIDIA_MODELS` | `nvidia/nemotron-3-super-120b-a12b` | Comma-separated model list | A wrong name gives a clear 404/400 |
+| `NVIDIA_MODELS` | `nvidia/nemotron-3-ultra-550b-a55b,nvidia/nemotron-3.5-super-vl-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b,openai/gpt-oss-20b` | Comma-separated model list; the first is used first, the rest are fallbacks | A wrong or retired name gives a clear 404/400 |
 | `NVIDIA_MAX_TOKENS` | `2000` | Answer budget per call | Too low cuts JSON answers; a reasoning model needs more |
 | `NVIDIA_MIN_SECONDS_BETWEEN_CALLS` | `1.6` | Politeness gap for the old single-provider path | Lower may get 429s |
 | `NVIDIA_TIMEOUT_SECONDS` | `90.0` | One HTTP call timeout | Too low = timeouts on a slow free tier |
 | `LLM_PROVIDERS_FILE` | `llm_providers.json` | Provider list | Missing file = NVIDIA only |
 | `LLM_MAX_WAIT_SECONDS` | `45.0` | Longest a call waits for a busy endpoint | Higher = slower, fewer skipped calls |
+| `GEM_RETIRED_RECHECK_DAYS` | `7.0` | Days before a model that answered 404 is tried once more | `0` probes retired models on every start |
 | `LOG_LEVEL` | `INFO` | Log verbosity | `DEBUG` is noisy and may include page text |
 
 ## LLM cache

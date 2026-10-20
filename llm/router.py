@@ -60,7 +60,16 @@ from llm import client as _client
 # Repeated failures double the wait, up to MAX_COOLDOWN.
 RATE_LIMIT_COOLDOWN = 30.0
 OTHER_ERROR_COOLDOWN = 10.0
+# A 5xx is the provider saying "not now" (Gemini's "high demand" 503), not a
+# bad request — rest it longer so a busy model does not eat a call every 10s.
+SERVER_ERROR_COOLDOWN = 60.0
 MAX_COOLDOWN = 300.0
+
+# How long "its last attempt failed" keeps a status row out of "ready". The
+# router will retry at any moment, but the Advanced tab used to show "ready"
+# for a model whose last answer was HTTP 503 "currently experiencing high
+# demand" — that is the opposite of useful.
+FAILING_WINDOW = 900.0
 
 # How far back the per-provider tokens_per_minute count looks (D2).
 TOKEN_WINDOW_SECONDS = 60.0
@@ -99,6 +108,8 @@ STATE_FILE_NAME = "llm_state.json"
 _QUOTA_MARKERS = (
     "daily limit",
     "daily quota",
+    "daily token limit",
+    "tokens per day",
     "quota exceeded",
     "exceeded your quota",
     "quota exhausted",
@@ -120,32 +131,62 @@ def _state_path() -> Path:
     return Path(_config.CACHE_DIR) / STATE_FILE_NAME
 
 
-def _read_used_up() -> dict[str, float]:
-    """{endpoint name: epoch seconds until it is worth trying again}."""
+def _read_state() -> dict:
     try:
         data = json.loads(_state_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    used = data.get("used_up") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+def _normalize_name(name: str) -> str:
+    """"nvidia/nvidia/nemotron-x" (older state files) -> "nvidia/nemotron-x"."""
+    parts = str(name).split("/")
+    if len(parts) > 2 and parts[0] == parts[1]:
+        return "/".join(parts[1:])
+    return str(name)
+
+
+def _read_used_up() -> dict[str, float]:
+    """{endpoint name: epoch seconds until it is worth trying again}."""
+    used = _read_state().get("used_up")
     if not isinstance(used, dict):
         return {}
     out: dict[str, float] = {}
     for name, until in used.items():
         try:
-            out[str(name)] = float(until)
+            out[_normalize_name(name)] = float(until)
         except (TypeError, ValueError):
             continue
     return out
 
 
-def _write_used_up(used: dict[str, float]) -> None:
+def _read_retired() -> dict[str, dict]:
+    """{endpoint name: {"at": epoch, "reason": text}} for models the provider
+    answered 404 for. Kept so a restart does not spend a call on a dead model."""
+    raw = _read_state().get("retired")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for name, info in raw.items():
+        if not isinstance(info, dict):
+            continue
+        try:
+            at = float(info.get("at"))
+        except (TypeError, ValueError):
+            continue
+        out[_normalize_name(name)] = {"at": at, "reason": str(info.get("reason", ""))[:200]}
+    return out
+
+
+def _write_state(used_up: dict[str, float], retired: dict[str, dict]) -> None:
     """One piece or nothing: temp file next to the target, then os.replace."""
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, tmp = tempfile.mkstemp(prefix=".llm_state_", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            json.dump({"used_up": used}, fh, indent=2, sort_keys=True)
+            json.dump({"used_up": used_up, "retired": retired}, fh, indent=2, sort_keys=True)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -153,6 +194,9 @@ def _write_used_up(used: dict[str, float]) -> None:
         except OSError:
             pass
         raise
+
+
+
 
 
 def _is_quota_error(status, text: str) -> bool:
@@ -185,6 +229,15 @@ def _next_local_midnight(now: float) -> float:
 
 def _clock_text(until: float) -> str:
     return datetime.fromtimestamp(until).strftime("%H:%M")
+
+
+def _ago_text(seconds: float) -> str:
+    seconds = max(int(seconds), 0)
+    if seconds < 90:
+        return f"{seconds}s ago"
+    if seconds < 5400:
+        return f"{round(seconds / 60)}m ago"
+    return f"{round(seconds / 3600)}h ago"
 
 
 @dataclass
@@ -222,9 +275,15 @@ class Endpoint:
     errors: int = 0
     total_seconds: float = 0.0
     last_error: str = ""
+    last_failure_at: float = 0.0  # router.clock() when the last failure happened
+    last_status: Optional[int] = None  # HTTP status of that failure, if it had one
 
     @property
     def name(self) -> str:
+        # Many model names already start with the provider ("nvidia/nemotron-..."),
+        # so avoid "nvidia/nvidia/nemotron-...".
+        if self.model.startswith(self.provider + "/"):
+            return self.model
         return f"{self.provider}/{self.model}"
 
 
@@ -358,6 +417,10 @@ class Router:
         self._used_up: dict[str, float] = {
             name: until for name, until in _read_used_up().items() if until > self.wall_clock()
         }
+        # Models the provider said are gone (404). Remembered on disk; a stale
+        # entry (older than RETIRED_RECHECK_DAYS) is tried once more.
+        self._retired: dict[str, dict] = _read_retired()
+        self._apply_retired()
         self._factory = client_factory or self._make_client
         self._clients: dict = {}
         self._lock = threading.Lock()
@@ -422,6 +485,12 @@ class Router:
                     reason = f"used up until {_clock_text(self._used_up_until(e))}"
                 elif e.cooldown_until > now:
                     state = "cooling"
+                    reason = f"resting {e.cooldown_until - now:.0f}s after: {e.last_error[:120]}"
+                elif e.fail_streak > 0 and now - e.last_failure_at <= FAILING_WINDOW:
+                    # Eligible for another try, but its last answer was a
+                    # failure — "ready" would claim a health we have not seen.
+                    state = "failing"
+                    reason = f"last attempt failed {_ago_text(now - e.last_failure_at)}: {e.last_error[:120]}"
                 else:
                     state = "ready"
                 out.append(
@@ -436,6 +505,10 @@ class Router:
                         "errors": e.errors,
                         "avg_seconds": round(e.total_seconds / e.calls, 2) if e.calls else None,
                         "last_error": e.last_error,
+                        "last_status": e.last_status,
+                        "last_failure_ago": (
+                            round(now - e.last_failure_at, 1) if e.last_failure_at else None
+                        ),
                         "calls_today": self._calls_today.get(e.provider, 0),
                         "in_flight": self._in_flight.get(e.provider, 0),
                         "max_concurrent": e.max_concurrent,
@@ -443,6 +516,7 @@ class Router:
                         "tokens_per_minute": e.tokens_per_minute,
                         "tokens_last_minute": int(self._tokens_used(e.provider, now)),
                         "purposes": list(e.purposes) if e.purposes else None,
+                        "retired": e.name in self._retired,
                     }
                 )
         return out
@@ -472,9 +546,37 @@ class Router:
         self._used_up[endpoint.name] = until
         self._used_up = {name: end for name, end in self._used_up.items() if end > self.wall_clock()}
         try:
-            _write_used_up(self._used_up)
+            _write_state(self._used_up, self._retired)
         except OSError as exc:
             logger.warning("could not save the used-up LLM endpoints (%s); a restart may retry them.", exc)
+
+    def _apply_retired(self) -> None:
+        """Turn off the models the provider removed, so a restart goes straight
+        to the next model. Call with no lock held (constructed once)."""
+        window = _config.RETIRED_RECHECK_DAYS * 86400
+        now = self.wall_clock()
+        for endpoint in self.endpoints:
+            info = self._retired.get(endpoint.name)
+            if not info or not endpoint.enabled:
+                continue
+            if window and now - info["at"] >= window:
+                continue  # old news: let it be tried once more
+            endpoint.enabled = False
+            endpoint.disabled_reason = (
+                "model not found (404) on " + datetime.fromtimestamp(info["at"]).strftime("%Y-%m-%d")
+            )
+
+    def _retire(self, endpoint: Endpoint) -> None:
+        """Save a 404 on disk (call with the lock held). Only the fact is
+        stored, not the error text: that can name the account."""
+        self._retired[endpoint.name] = {"at": self.wall_clock(), "reason": "model not found (404)"}
+        endpoint.disabled_reason = (
+            "model not found (404) on " + datetime.fromtimestamp(self.wall_clock()).strftime("%Y-%m-%d")
+        )
+        try:
+            _write_state(self._used_up, self._retired)
+        except OSError as exc:
+            logger.warning("could not save the retired LLM model (%s); a restart may retry it.", exc)
 
     def _unusable_error(self) -> GatewayError:
         """Busy or used-up? The pipeline acts differently: busy is retried,
@@ -671,6 +773,11 @@ class Router:
             endpoint.calls += 1
             endpoint.total_seconds += seconds
             endpoint.fail_streak = 0
+            if self._retired.pop(endpoint.name, None) is not None:
+                try:  # the provider brought the model back
+                    _write_state(self._used_up, self._retired)
+                except OSError:
+                    pass
         events.emit("llm_call", endpoint=endpoint.name, provider=endpoint.provider, model=endpoint.model,
                     purpose=purpose, seconds=round(seconds, 2), ok=True)
         return raw
@@ -683,12 +790,16 @@ class Router:
             endpoint.errors += 1
             endpoint.fail_streak += 1
             endpoint.last_error = text
+            endpoint.last_failure_at = self.clock()
+            endpoint.last_status = status
             if status in (401, 404):
                 # A wrong key or a wrong model name will not fix itself.
                 targets = [e for e in self.endpoints if e.provider == endpoint.provider] if status == 401 else [endpoint]
                 reason = "the API key was rejected (401)" if status == 401 else "model not found (404)"
                 for e in targets:
                     e.enabled, e.disabled_reason = False, reason
+                if status == 404:
+                    self._retire(endpoint)
                 cooldown = 0.0
             elif _is_quota_error(status, str(exc)):
                 # Not "slow down" — the allowance is gone. Nothing to wait
@@ -697,7 +808,12 @@ class Router:
                 self._mark_used_up(endpoint, used_up_until)
                 cooldown = 0.0
             else:
-                base = RATE_LIMIT_COOLDOWN if status == 429 else OTHER_ERROR_COOLDOWN
+                if status is not None and status >= 500:
+                    base = SERVER_ERROR_COOLDOWN
+                elif status == 429:
+                    base = RATE_LIMIT_COOLDOWN
+                else:
+                    base = OTHER_ERROR_COOLDOWN
                 retry_after = _retry_after(exc)
                 cooldown = retry_after if retry_after is not None else base * min(2 ** (endpoint.fail_streak - 1), 8)
                 cooldown = min(cooldown, MAX_COOLDOWN)
@@ -710,7 +826,8 @@ class Router:
                            endpoint.name, text, _clock_text(used_up_until))
         else:
             logger.warning("LLM endpoint %s failed (%s). %s", endpoint.name, text,
-                           "Disabled." if cooldown == 0.0 else f"Resting it for {cooldown:.0f}s.")
+                           "Retired; the next model will be used." if status == 404 else
+                           ("Disabled." if cooldown == 0.0 else f"Resting it for {cooldown:.0f}s."))
         events.emit("llm_call", endpoint=endpoint.name, provider=endpoint.provider, model=endpoint.model,
                     purpose=purpose, seconds=round(seconds, 2), ok=False, status=status, error=text)
         if used_up_until is not None:

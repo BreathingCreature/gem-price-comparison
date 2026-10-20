@@ -125,6 +125,68 @@ def test_repeated_failures_rest_the_endpoint_longer():
     assert waits[0] < waits[1] < waits[2]
 
 
+def test_a_5xx_is_rested_like_a_server_problem_not_a_bad_request():
+    a = FakeClient([FakeHTTPError(503)], label="a")
+    b = FakeClient(label="b")
+    router, _ = make_router({"a": a, "b": b})
+
+    router.complete(MESSAGES, 100)
+    row = next(r for r in router.status() if r["provider"] == "a")
+    assert row["state"] == "cooling"
+    assert row["cooldown_remaining"] >= router_module.SERVER_ERROR_COOLDOWN - 1
+
+
+def test_a_model_whose_last_call_failed_is_failing_not_ready():
+    # Live-ish: Gemini answered 503 "currently experiencing high demand", and
+    # the Advanced tab showed "ready" ten seconds later.
+    a = FakeClient([FakeHTTPError(503, "This model is currently experiencing high demand")], label="a")
+    b = FakeClient(label="b")
+    router, clock = make_router({"a": a, "b": b})
+
+    router.complete(MESSAGES, 100)
+    clock.now += router_module.MAX_COOLDOWN + 1
+    row = next(r for r in router.status() if r["provider"] == "a")
+    assert row["state"] == "failing"
+    assert "last attempt failed" in row["reason"] and "503" in row["reason"]
+    assert row["last_status"] == 503
+    assert row["last_failure_ago"] > router_module.MAX_COOLDOWN
+
+
+def test_failing_clears_once_the_last_failure_is_old_enough():
+    a = FakeClient([FakeHTTPError(503)], label="a")
+    b = FakeClient(label="b")
+    router, clock = make_router({"a": a, "b": b})
+
+    router.complete(MESSAGES, 100)
+    clock.now += router_module.MAX_COOLDOWN + router_module.FAILING_WINDOW + 1
+    row = next(r for r in router.status() if r["provider"] == "a")
+    assert row["state"] == "ready" and row["reason"] == ""
+
+
+def test_a_successful_call_clears_the_failing_state():
+    a = FakeClient([FakeHTTPError(503), "fine"], label="a")
+    b = FakeClient(label="b")
+    router, clock = make_router({"a": a, "b": b})
+
+    router.complete(MESSAGES, 100)  # a fails, b answers
+    clock.now += router_module.SERVER_ERROR_COOLDOWN + 1
+    assert router.complete(MESSAGES, 100) == "fine"  # a is tried first again
+    row = next(r for r in router.status() if r["provider"] == "a")
+    assert row["state"] == "ready"
+
+
+def test_a_daily_token_limit_message_is_used_up_not_a_short_rest():
+    # Live aion answer: 429 "Daily token limit exceeded." — waiting 30s is a lie.
+    a = FakeClient([FakeHTTPError(429, "Daily token limit exceeded.")], label="a")
+    b = FakeClient(label="b")
+    router, _ = make_router({"a": a, "b": b})
+
+    router.complete(MESSAGES, 100)
+    row = next(r for r in router.status() if r["provider"] == "a")
+    assert row["state"] == "limit"
+    assert row["cooldown_remaining"] == 0
+
+
 def test_a_rejected_key_switches_off_the_whole_provider():
     router, _ = make_router({"a": FakeClient([FakeHTTPError(401)]), "b": FakeClient(label="b")})
     router.endpoints.append(Endpoint(provider="a", model="m2", base_url="https://a.test/v1", api_key_env="K"))

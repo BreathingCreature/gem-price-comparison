@@ -98,9 +98,15 @@ def _int_setting(name: str, default: int) -> int:
 # --- NVIDIA / LLM ----------------------------------------------------------
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-# Model pinned to nemotron-3-super (user choice). NVIDIA_MODELS env var can
-# still override with a comma-separated list if a fallback chain is wanted.
-_DEFAULT_MODELS = "nvidia/nemotron-3-super-120b-a12b"
+# Primary model: nemotron-3-ultra (550B, 55B active) - same family as the old
+# super-120b, the strongest free-endpoint text model left. The two faster
+# Nemotron 3.5 models are the fallbacks; tools/check_models.py re-ranks them.
+_DEFAULT_MODELS = (
+    "nvidia/nemotron-3-ultra-550b-a55b,"
+    "nvidia/nemotron-3.5-super-vl-120b-a12b,"
+    "nvidia/nemotron-3.5-lightning-30b-a3b,"
+    "openai/gpt-oss-20b"
+)
 NVIDIA_MODELS = [m.strip() for m in os.getenv("NVIDIA_MODELS", _DEFAULT_MODELS).split(",") if m.strip()]
 NVIDIA_MODEL = NVIDIA_MODELS[0]  # back-compat alias
 NVIDIA_MAX_TOKENS = _int_setting("NVIDIA_MAX_TOKENS", 2000)
@@ -121,6 +127,11 @@ def key_is_set(value) -> bool:
 LLM_PROVIDERS_FILE = Path(os.getenv("LLM_PROVIDERS_FILE", str(BASE_DIR / "llm_providers.json")))
 # Longest a single LLM call may wait for a busy endpoint before giving up.
 LLM_MAX_WAIT_SECONDS = _float_setting("LLM_MAX_WAIT_SECONDS", 45.0)
+# A model that answers 404 is remembered on disk and skipped after a restart.
+# After this many days it is tried once more, in case the provider brought it
+# back (NVIDIA does add and remove free models often).
+RETIRED_RECHECK_DAYS = _float_setting("GEM_RETIRED_RECHECK_DAYS", 7.0, minimum=0.0)
+
 # Optional tag mixed into every LLM cache key so different models or experiments
 # don't replay each other's answers. Empty string = no tag (old keys unchanged).
 LLM_CACHE_TAG = os.getenv("LLM_CACHE_TAG", "")

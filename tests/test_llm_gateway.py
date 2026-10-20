@@ -362,3 +362,100 @@ def test_a_busy_llm_at_match_is_a_warning_and_the_listings_are_skipped():
     assert result["matches"] == []
     assert any("busy" in warning for warning in result["warnings"])
     assert "https://www.flipkart.com/m650/p/itm1" in result["skipped"]
+
+
+# --- a model that 404s is retired, and the next model takes over -----------------
+
+def _save_retired(at: float, name: str = "a/m", reason: str = "HTTP 404: not found") -> None:
+    state_file().parent.mkdir(parents=True, exist_ok=True)
+    state_file().write_text(
+        json.dumps({"used_up": {}, "retired": {name: {"at": at, "reason": reason}}}),
+        encoding="utf-8",
+    )
+
+
+def test_a_404_uses_the_next_model_and_is_remembered_on_disk():
+    dead = FakeClient([_HTTPError(404, "model not found")])
+    live = FakeClient(["answer from b"], label="b")
+    router, _ = _router({"a": dead, "b": live})
+
+    assert router.complete(MESSAGES, 100) == "answer from b"
+    assert dead.calls == 1
+    assert not router.endpoints[0].enabled
+    assert "404" in router.endpoints[0].disabled_reason
+    saved = json.loads(state_file().read_text(encoding="utf-8"))
+    assert set(saved["retired"]) == {"a/m"}
+    assert "reason" in saved["retired"]["a/m"]
+
+
+def test_a_restart_skips_a_retired_model_without_calling_it():
+    dead = FakeClient([_HTTPError(404, "model not found")])
+    router, _ = _router({"a": dead, "b": FakeClient(["first"], label="b")})
+    assert router.complete(MESSAGES, 100) == "first"
+
+    fresh = FakeClient(["never used"], label="a")
+    second, _ = _router({"a": fresh, "b": FakeClient(["second"], label="b")})
+    assert second.complete(MESSAGES, 100) == "second"
+    assert fresh.calls == 0
+    rows = {row["endpoint"]: row for row in second.status()}
+    assert rows["a/m"]["retired"] is True
+    assert "404" in rows["a/m"]["reason"]
+
+
+def test_a_retired_model_is_tried_again_after_the_recheck_window(monkeypatch):
+    monkeypatch.setattr(config, "RETIRED_RECHECK_DAYS", 1.0)
+    clocks = Clocks()
+    _save_retired(at=clocks.wall - 2 * 86400)
+
+    client = FakeClient(["it came back"], label="a")
+    router, _ = _router({"a": client}, clocks=clocks)
+    assert router.endpoints[0].enabled
+    assert router.complete(MESSAGES, 100) == "it came back"
+    assert json.loads(state_file().read_text(encoding="utf-8"))["retired"] == {}
+
+
+def test_a_retired_entry_newer_than_the_window_keeps_the_model_off(monkeypatch):
+    monkeypatch.setattr(config, "RETIRED_RECHECK_DAYS", 7.0)
+    clocks = Clocks()
+    _save_retired(at=clocks.wall - 3600)
+
+    client = FakeClient(["must not be called"], label="a")
+    router, _ = _router({"a": client}, clocks=clocks)
+    assert not router.endpoints[0].enabled
+    assert client.calls == 0
+
+
+def test_a_working_model_keeps_the_used_up_note_in_the_same_file():
+    dead = FakeClient([_HTTPError(404, "model not found")])
+    live = FakeClient([_HTTPError(429, "daily limit")])
+    router, _ = _router({"a": dead, "b": live})
+    with pytest.raises(GatewayExhausted):
+        router.complete(MESSAGES, 100)
+
+    saved = json.loads(state_file().read_text(encoding="utf-8"))
+    assert "a/m" in saved["retired"]
+    assert saved["used_up"]["b/m"] == pytest.approx(MIDNIGHT)
+
+
+def test_the_endpoint_name_does_not_repeat_the_provider():
+    assert Endpoint(provider="nvidia", model="nvidia/nemotron-x", base_url="https://x.test/v1",
+                    api_key_env="K").name == "nvidia/nemotron-x"
+    assert Endpoint(provider="groq", model="openai/gpt-oss-120b", base_url="https://x.test/v1",
+                    api_key_env="K").name == "groq/openai/gpt-oss-120b"
+
+
+def test_an_old_doubled_name_in_the_state_file_still_retires_the_model():
+    state_file().parent.mkdir(parents=True, exist_ok=True)
+    state_file().write_text(json.dumps({
+        "used_up": {},
+        "retired": {"nvidia/nvidia/nemotron-x": {"at": Clocks().wall, "reason": "404"}},
+    }), encoding="utf-8")
+    clients = {"nvidia": FakeClient(["never used"], label="nvidia")}
+    router, _ = _router(clients, endpoints=[
+        Endpoint(provider="nvidia", model="nvidia/nemotron-x", base_url="https://nvidia.test/v1",
+                 api_key_env="FAKE_KEY"),
+    ])
+
+    assert router.endpoints[0].name == "nvidia/nemotron-x"
+    assert not router.endpoints[0].enabled
+    assert clients["nvidia"].calls == 0

@@ -187,3 +187,46 @@ def test_live_is_the_umbrella_for_every_live_check(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["doctor.py", "--live"])
     assert doctor.main() == 0
     assert all(seen[name] for name in ("live_llm", "live_engines", "live_shops", "live_failover", "live_scrape"))
+
+
+def test_a_live_check_skips_a_retired_model_with_a_warning(monkeypatch):
+    import json
+    import time
+
+    from core import config
+    from llm import router
+
+    endpoint = router.Endpoint(provider="nvidia", model="nvidia/gone", base_url="https://x.test/v1", api_key_env="K")
+    monkeypatch.setattr(router, "load_endpoints", lambda: ([endpoint], "failover"))
+    state = Path(config.CACHE_DIR) / "llm_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "used_up": {},
+        "retired": {"nvidia/gone": {"at": time.time(), "reason": "model not found (404)"}},
+    }), encoding="utf-8")
+
+    [(status, message)] = doctor.check_live_llm()
+    assert status == doctor.WARN
+    assert "skipped" in message and "404" in message
+
+
+def test_the_live_check_gives_a_reasoning_model_room(monkeypatch):
+    from llm import router
+
+    seen = {}
+
+    class _FakeRouter:
+        def __init__(self, endpoints, **kwargs):
+            self.endpoints = endpoints
+
+        def complete(self, messages, max_tokens, purpose=""):
+            seen["max_tokens"] = max_tokens
+            return '{"ok": true}'
+
+    endpoint = router.Endpoint(provider="x", model="m", base_url="https://x.test/v1", api_key_env="K")
+    monkeypatch.setattr(router, "Router", _FakeRouter)
+    monkeypatch.setattr(router, "load_endpoints", lambda: ([endpoint], "failover"))
+
+    [(status, _)] = doctor.check_live_llm()
+    assert status == doctor.PASS
+    assert seen["max_tokens"] == 256
