@@ -95,9 +95,11 @@ def test_normal_behaviour_is_the_default():
     # these tests assume the developer has not exported the switches
     assert config.RETRY_ENABLED is True and config.GATES_ENABLED is True
     assert config.PARALLEL_SEARCH is False and config.LLM_CACHE_ENABLED is False
-    # speed/cost switches: every one off (or 1 worker) keeps today's behaviour
-    assert config.LLM_WORKERS == 1 and config.PREFILTER_TOP == 0
-    assert config.PRICE_PREGATE is False and config.REUSE_VERDICTS is False
+    # Stage 6 defaults: the filter and the pre-gate are ON, verdicts are
+    # reused, and the verifier runs four listings at a time.
+    assert config.LLM_WORKERS == 4 and config.PREFILTER_TOP == 10
+    assert config.PRICE_PREGATE is True and config.REUSE_VERDICTS is True
+    assert config.STRICT_MODE is False
     assert config.DISCOVERY_ENABLED is True
     # checkpoint 18: light Flipkart browser + bounded discovery stage
     assert config.FLIPKART_LIGHT is True and config.DISCOVERY_TIME_LIMIT_SECONDS == 25.0
@@ -261,7 +263,7 @@ def test_price_pre_gate_skips_the_llm_for_a_price_far_outside_the_band(monkeypat
     assert len(out.all_decisions) == 1 and out.all_decisions[0]["is_match"] is False
 
 
-def test_price_pre_gate_is_off_by_default(monkeypatch):
+def test_price_pre_gate_is_on_by_default(monkeypatch):
     calls = []
 
     def fake(normalized, candidate, client=None):
@@ -270,9 +272,25 @@ def test_price_pre_gate_is_off_by_default(monkeypatch):
                 "confidence": 0.95, "reason": "same", "price_used": 1000.0, "extraction_source": "scraper"}
 
     monkeypatch.setattr(matcher, "verify_or_extract", fake)
+    # the fixture's price is 39 against a 1000 GeM price -> outside the band
+    out = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
+    assert calls == []  # Stage 6.4: never spends an LLM call on it
+    assert out.confirmed_matches == []
+
+
+def test_price_pre_gate_off_sends_the_listing_to_the_llm(monkeypatch):
+    calls = []
+
+    def fake(normalized, candidate, client=None):
+        calls.append(candidate["url"])
+        return {"candidate_url": candidate["url"], "source_domain": "shop.example", "is_match": True,
+                "confidence": 0.95, "reason": "same", "price_used": 1000.0, "extraction_source": "scraper"}
+
+    monkeypatch.setattr(matcher, "verify_or_extract", fake)
+    monkeypatch.setattr(matcher, "PRICE_PREGATE", False)
     out = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
     assert calls == ["https://shop.example/p/1"]
-    assert len(out.confirmed_matches) == 1
+    assert out.confirmed_matches == []  # the hard gate still rejects 39
 
 
 def test_price_pre_gate_and_the_hard_gate_agree(monkeypatch):
@@ -329,6 +347,7 @@ def test_retry_reuses_first_pass_verdicts_when_switched_on(monkeypatch):
 
 
 def test_retry_without_reuse_asks_about_all_listings_again(monkeypatch):
+    monkeypatch.setattr(pipeline, "REUSE_VERDICTS", False)
     _, match_calls, _, first_url, second_url = _retry_pair()
     assert match_calls[1] == [first_url, second_url]
 
@@ -468,3 +487,89 @@ def test_when_every_lane_crashes_the_error_is_raised(monkeypatch):
 def test_sequential_mode_still_raises_a_search_crash():
     with pytest.raises(RuntimeError, match="chrome died"):
         _run(flipkart_search_fn=_crash)
+
+
+# --- strict mode and the shared verdict cache -----------------------------------
+
+def test_strict_mode_runs_the_lanes_but_sends_every_listing(monkeypatch):
+    # GEM_STRICT=1: the old verifier path (every listing, one at a time), but
+    # the searches still run together.
+    monkeypatch.setattr(pipeline, "STRICT_MODE", True)
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", False)
+    checked = []
+
+    def match_fn(normalized, candidates):
+        checked.extend(c.url for c in candidates)
+        return _all_matches(normalized, candidates)
+
+    result, seen = _run(flipkart_search_fn=_two_flipkart_listings, match_fn=match_fn)
+    names = [e["name"] for e in seen if e["type"] == "stage"]
+    assert "search_both" in names and "search_flipkart" not in names
+    assert "https://www.flipkart.com/bad/p/itm2" in checked  # no pre-filter
+    trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))
+    assert "prefilter" not in trace["stages"]
+
+
+def test_strict_mode_checks_one_listing_at_a_time(monkeypatch):
+    from core import parallel
+
+    monkeypatch.setattr(matcher, "STRICT_MODE", True)
+    seen = {}
+    real = parallel.run_many
+
+    def spy(jobs, workers=1):
+        seen["workers"] = workers
+        return real(jobs, workers=workers)
+
+    monkeypatch.setattr(matcher, "run_many", spy)
+
+    def fake(normalized, candidate, client=None):
+        return {"candidate_url": candidate["url"], "source_domain": candidate["source_domain"],
+                "is_match": True, "confidence": 0.9, "reason": "same", "price_used": 900.0,
+                "extraction_source": "scraper"}
+
+    monkeypatch.setattr(matcher, "verify_or_extract", fake)
+    candidates = [{"url": f"https://x.com/{i}", "source_domain": "x.com",
+                   "structured_fields": {"title": f"t{i}"}, "raw_page_text": ""} for i in range(3)]
+    matcher.match_candidates({"canonical_name": "Demo"}, candidates)
+    assert seen["workers"] == 1
+
+
+def test_the_run_hands_the_real_matcher_one_shared_verdict_cache(monkeypatch):
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
+    caches = []
+
+    def fake_match(normalized, candidates, *, verdict_cache=None):
+        caches.append(verdict_cache)
+        return _all_matches(normalized, candidates)
+
+    monkeypatch.setattr(matcher, "match_candidates", fake_match)
+    result, _ = _run(
+        flipkart_search_fn=_two_flipkart_listings,
+        amazon_search_fn=_search("amazon.in", [_cand("amazon.in", "https://www.amazon.in/dp/B0ABCDEFGH", 950.0)]),
+        match_fn=matcher.match_candidates,
+    )
+    assert result["matches"]
+    assert len(caches) >= 2
+    assert all(cache is caches[0] for cache in caches)
+    assert caches[0] == {}
+
+
+def test_a_possible_match_is_reported_and_not_counted_as_not_found(monkeypatch):
+    def possible(_n, candidates):
+        if not candidates:
+            return MatchBatchResult()
+        d = {"candidate_url": candidates[0].url, "source_domain": candidates[0].source_domain,
+             "is_match": False, "confidence": 0.6, "reason": "maybe", "price_used": 900.0,
+             "extraction_source": "scraper", "outcome": "possible", "why": "confidence 0.60 below 0.75"}
+        return MatchBatchResult(all_decisions=[d], confirmed_matches=[], possible_matches=[d])
+
+    result, _ = _run(
+        flipkart_search_fn=_two_flipkart_listings,
+        amazon_search_fn=_search("amazon.in", []),
+        match_fn=possible,
+    )
+    assert result["matches"] == []
+    assert [d["candidate_url"] for d in result["possible_matches"]] == ["https://www.flipkart.com/good/p/itm1"]
+    assert "flipkart.com" not in result["not_found_on"]
+    assert any("possibly the same product" in issue for issue in result["search_issues"])

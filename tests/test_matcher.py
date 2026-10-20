@@ -52,7 +52,10 @@ class _FakeClient:
 
 
 def _candidate(url, domain="flipkart.com"):
-    return {"url": url, "source_domain": domain, "structured_fields": {"title": "x"}, "raw_page_text": ""}
+    # Distinct titles on purpose: Stage 6 reuses a verdict for an identical
+    # (title, price) pair for the same product, so identical fixtures would
+    # collapse into one LLM call.
+    return {"url": url, "source_domain": domain, "structured_fields": {"title": f"listing {url}"}, "raw_page_text": ""}
 
 
 def _decision_json(is_match, confidence, price):
@@ -93,11 +96,11 @@ def test_match_candidates_sorts_confirmed_by_price_ascending():
     assert prices == [500.0, 999.0, 1500.0]
 
 
-def test_match_candidates_demotes_confirmed_without_price_to_skipped():
-    # A null-price "match" can't enter cheapest/savings arithmetic — it
-    # must not sit in confirmed_matches looking like a verdict. Decision is
-    # kept in all_decisions for the trace; URL moves to skipped so the
-    # pipeline reports the domain as verify-incomplete, not "not found".
+def test_match_candidates_marks_confirmed_without_price_as_possible():
+    # Stage 6.3: a null-price "match" cannot enter cheapest/savings
+    # arithmetic, but it is NOT a "no" — it becomes `possible` with the reason
+    # "price unknown". The decision keeps the LLM verdict for the trace and
+    # the listing is no longer dumped into skipped.
     fake = _FakeClient(
         _decision_json(True, 0.9, None),  # matched but no price extracted
         _decision_json(True, 0.9, 800),
@@ -106,10 +109,12 @@ def test_match_candidates_demotes_confirmed_without_price_to_skipped():
     result = matcher.match_candidates({"canonical_name": "Demo"}, candidates, client=fake)
 
     assert [d["price_used"] for d in result.confirmed_matches] == [800.0]
-    assert result.skipped == ["https://x.com/a"]
+    assert result.skipped == []
     demoted = next(d for d in result.all_decisions if d["candidate_url"] == "https://x.com/a")
     assert demoted["is_match"] is True  # LLM verdict preserved for the trace
-    assert "demoted" in (demoted.get("reason") or "")
+    assert demoted["outcome"] == "possible"
+    assert demoted["why"] == "price unknown"
+    assert [d["candidate_url"] for d in result.possible_matches] == ["https://x.com/a"]
 
 
 def test_match_candidates_hard_rejects_non_inr_currency_without_llm_call():
