@@ -147,3 +147,54 @@ eason. A page
   verify prompt states the model-code / pack-size / missing-price rules in
   plain words. Page text stays inside the same fences, defused the same way.
   (Stage 5)
+
+- 2026-10-20 - The pre-filter is ON by default at ten listings per shop
+  (`GEM_PREFILTER_TOP=10`) and has hard ceilings regardless of the setting:
+  at most 10 non-model-code listings per shop, and at most 20 model-code
+  hits (the ones priced nearest the GeM price win above that). If the caps
+  would leave a shop with nothing, its best three by score are sent anyway
+  (the recall safety net). Every dropped listing is in the trace as
+  {title, url, price, score, tier, rule}, where rule is one of
+  over_shop_cap, over_model_cap, not_relevant. A product with no brand and
+  no model code gets the lower 0.4 relevance bar (`min_relevant_score`),
+  because it has fewer words to share with a real title. (Stage 6)
+
+- 2026-10-20 - `GEM_STRICT=1` is the escape hatch, not the default: the
+  pre-filter is off (every listing reaches the LLM) and the verifier runs
+  one listing at a time, while the searches still run as lanes
+  (`PARALLEL_SEARCH or STRICT_MODE`). That keeps the old behaviour one
+  switch away without making it the normal path. (Stage 6)
+
+- 2026-10-20 - Every judged listing gets one outcome: `match` (confirmed
+  with a real price), `possible` (the same product may be right, never used
+  for cheapest/savings), `no_match`, or `not_checked` (the gateway could not
+  answer). `possible` carries a short `why`: "different pack", "price
+  unknown", or "confidence 0.60 below 0.75". A same-product verdict with no
+  price is `possible`, replacing the old silent demotion to skipped.
+  `not_checked` listings are also appended to `skipped` so every caller
+  written before this stage still sees them as "no verdict"; Stage 7 splits
+  the two counts. (Stage 6)
+
+- 2026-10-20 - Verdict reuse is ON: one answer covers the same (canonical
+  name, model, GeM price, listing title, listing price). Within a batch the
+  duplicates wait for the first answer; across shops the pipeline passes one
+  shared `verdict_cache` dict, so a Flipkart listing copied into discovery
+  costs nothing. A reused decision keeps the current listing's URL and
+  domain, so a cross-shop reuse can never show the wrong link. The verifier
+  runs 4 listings at a time by default (`GEM_LLM_WORKERS`). (Stage 6)
+
+- 2026-10-20 - The scraper's card price is the price. When the LLM's
+  extracted price disagrees, the decision keeps the scraper value with
+  `price_from: "scraper"`, and records `llm_price_seen` plus a `price_note`
+  instead of hiding the disagreement. The price pre-gate is now ON by
+  default. A page showing only an MRP cannot be detected yet (no scraper
+  flag distinguishes MRP from selling price), so it is treated like any
+  other price; when the price is missing the listing becomes `possible`
+  with why "price unknown". (Stage 6)
+
+- 2026-10-20 - Similar products are one LLM call, made only when the run
+  found neither a match nor a possible one. It sees up to five tier-2/3
+  listings that share product words (tier 1 is the same-product question,
+  already answered) and returns [{shop, title, price, url, why}] cheapest
+  first. A failure is a warning, never an error, and `similar` never feeds
+  the cheapest/savings arithmetic. (Stage 6)

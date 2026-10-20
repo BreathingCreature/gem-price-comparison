@@ -68,6 +68,7 @@ from core.config import (
     RESULT_VERSION,
     RETRY_ENABLED,
     REUSE_VERDICTS,
+    STRICT_MODE,
     TRACE_MAX_AGE_DAYS,
     TRACE_MAX_FILES,
     TRACES_DIR,
@@ -535,12 +536,49 @@ def _run_discovery_and_generic_scrape(
     return discovery_results, generic_candidates
 
 
+def _prefilter_top() -> int:
+    """GEM_PREFILTER_TOP, except that GEM_STRICT=1 means no filter at all."""
+    return 0 if STRICT_MODE else PREFILTER_TOP
+
+
 def _prefilter_candidates(candidates: list, normalized) -> tuple[list, list]:
-    """GEM_PREFILTER_TOP: keep only the best N titled listings per shop before
-    spending LLM calls. Off (0, the default) returns the input untouched."""
-    if PREFILTER_TOP <= 0:
+    """Keep only the best N titled listings per shop (default 10) before
+    spending LLM calls. GEM_PREFILTER_TOP=0 or GEM_STRICT=1 returns the
+    input untouched."""
+    top = _prefilter_top()
+    if top <= 0:
         return candidates, []
-    return prefilter.filter_candidates(candidates, normalized, PREFILTER_TOP)
+    return prefilter.filter_candidates(candidates, normalized, top)
+
+
+def _similar_products(normalized, candidates: list, warnings: list) -> list:
+    """Stage 6.5: one LLM call, only when the run found nothing at all. The
+    listings are 'same kind of product, not the same product', so they are
+    never used for the cheapest price."""
+    product = prefilter.product_tokens(normalized)
+    scored = []
+    for candidate in candidates:
+        item = _cand_dict(candidate)
+        fields = item.get("structured_fields")
+        title = str(fields.get("title") or "") if isinstance(fields, dict) else ""
+        if not title:
+            continue
+        # Tier 1 means the model code is in the title — that is a same-product
+        # question, already answered. Anything with no shared word is noise.
+        if prefilter.tier(title, product) == 1:
+            continue
+        score = prefilter.similarity(title, product)
+        if score <= 0:
+            continue
+        scored.append((score, item))
+    if not scored:
+        return []
+    scored.sort(key=lambda pair: -pair[0])
+    try:
+        return llm_client.find_similar(normalized, [item for _, item in scored[:5]])
+    except Exception as exc:  # noqa: BLE001 - a nicety must never break a run
+        warnings.append(f"Similar products check failed: {type(exc).__name__}: {exc}")
+        return []
 
 
 def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: str):
@@ -668,7 +706,35 @@ def _merge_match_results(lane_results: list):
             if id(d) in kept_ids:
                 confirmed.append(d)
     confirmed.sort(key=lambda d: d.get("price_used") if d.get("price_used") is not None else float("inf"))
-    return matcher.MatchBatchResult(all_decisions=kept, confirmed_matches=confirmed, skipped=skipped)
+    possible: list = []
+    for lane in lane_results:
+        entries = lane.get("possible_matches") if isinstance(lane, dict) else getattr(lane, "possible_matches", None)
+        for d in entries or []:
+            if id(d) in kept_ids:
+                possible.append(d)
+    possible.sort(
+        key=lambda d: (
+            d.get("price_used") is None,
+            d.get("price_used") if d.get("price_used") is not None else 0.0,
+        )
+    )
+    not_checked: list[str] = []
+    seen_not_checked: set = set()
+    for lane in lane_results:
+        entries = lane.get("not_checked") if isinstance(lane, dict) else getattr(lane, "not_checked", None)
+        for u in entries or []:
+            key = _listing_key(u) or f"__noid_nc_{len(not_checked)}"
+            if key in seen_not_checked:
+                continue
+            seen_not_checked.add(key)
+            not_checked.append(u)
+    return matcher.MatchBatchResult(
+        all_decisions=kept,
+        confirmed_matches=confirmed,
+        skipped=skipped,
+        possible_matches=possible,
+        not_checked=not_checked,
+    )
 
 
 # --- main entry point --------------------------------------------------------------
@@ -758,6 +824,11 @@ def _run_pipeline(
             fallback = (normalized.get("canonical_name") or gem_product_dict.get("title") or "").strip()
             queries = [fallback] if fallback else [gem_product_dict.get("category_slug") or "product"]
 
+        # Stage 6.3: verdicts are shared across the lanes of one run — the
+        # same listing title + price for the same product is one question.
+        if match_fn is matcher.match_candidates and REUSE_VERDICTS:
+            match_fn = partial(match_fn, verdict_cache={})
+
         # Same deal at the matching step: a lane whose LLM call finds every
         # endpoint busy or used up reports its listings as skipped.
         match_fn = _guarded_match(match_fn, warnings)
@@ -772,7 +843,10 @@ def _run_pipeline(
         # enough candidates), not just queries[0].
         prefilter_dropped: list = []
         lane_errors: list = []  # filled only by the parallel lanes (see _run_first_pass_lanes)
-        if PARALLEL_SEARCH:
+        # GEM_STRICT=1 keeps the lanes (searches still run together) but turns
+        # the pre-filter off and the verifier back to one listing at a time.
+        lane_mode = PARALLEL_SEARCH or STRICT_MODE
+        if lane_mode:
             # GEM_PARALLEL=1: three lanes — Flipkart, Amazon and discovery+generic
             # — search at the same time, each checking its own listings the moment
             # they arrive (so a fast lane's LLM work overlaps the slow Flipkart lane).
@@ -787,8 +861,8 @@ def _run_pipeline(
                 lane_errors=lane_errors,
             )
             prefilter_dropped = list(flipkart_dropped) + list(amazon_dropped) + list(other_shops_dropped)
-            if PREFILTER_TOP > 0:
-                trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
+            if _prefilter_top() > 0:
+                trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
         else:
             flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
                 flipkart_search_fn, amazon_search_fn, queries, normalized=normalized
@@ -804,7 +878,7 @@ def _run_pipeline(
             _record_search_health(r, tried_domains, search_issues)
 
         # --- stage 3/4 first pass: open discovery + generic scrape for everything else ---
-        if not PARALLEL_SEARCH:
+        if not lane_mode:
             if DISCOVERY_ENABLED:
                 events.emit("stage", name="discovery", label="Looking for other shops")
                 discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
@@ -831,9 +905,12 @@ def _run_pipeline(
         all_candidates = _dedup(
             [c for c in list(flipkart_candidates) + list(amazon_candidates) + generic_candidates if _usable(c)]
         )
+        # Everything the run ever saw as a usable listing — the similar-products
+        # call (Stage 6.5) draws from this, retry results included.
+        similar_pool = list(all_candidates)
 
         # --- stage 5: match ---------------------------------------------------------------
-        if PARALLEL_SEARCH:
+        if lane_mode:
             # Each lane already checked its own listings (and emitted its own
             # match stage); merging keeps one row per listing, first lane wins.
             match_result = _merge_match_results([flipkart_match, amazon_match, other_shops_match])
@@ -843,8 +920,8 @@ def _run_pipeline(
             prefilter_dropped.extend(dropped_now)
             events.emit("candidates_total", count=len(match_input))
             match_result = match_fn(normalized, match_input)
-            if PREFILTER_TOP > 0:
-                trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
+            if _prefilter_top() > 0:
+                trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
         final_match_result = match_result
         trace["stages"]["matching"] = match_result.to_dict() if hasattr(match_result, "to_dict") else match_result
 
@@ -932,10 +1009,13 @@ def _run_pipeline(
                     [c for c in list(all_candidates) + list(retry_flipkart_candidates) + list(retry_amazon_candidates)
                      + retry_generic_candidates if _usable(c)]
                 )
+                similar_pool.extend(
+                    list(retry_flipkart_candidates) + list(retry_amazon_candidates) + list(retry_generic_candidates)
+                )
                 retry_pool, dropped_now = _prefilter_candidates(retry_pool, normalized)
                 prefilter_dropped.extend(dropped_now)
-                if PREFILTER_TOP > 0:
-                    trace["stages"]["prefilter"] = {"top": PREFILTER_TOP, "dropped": prefilter_dropped}
+                if _prefilter_top() > 0:
+                    trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
 
                 # GEM_REUSE_VERDICTS: the first pass already asked the LLM about
                 # these listings and the answers will not change — only ask about
@@ -953,11 +1033,15 @@ def _run_pipeline(
                 if reused_decisions:
                     # final all_decisions must still show what happened with the
                     # reused listings — only the confirmed/skipped come from the
-                    # retry itself.
+                    # retry itself. Possible verdicts from the first pass are
+                    # still possible; do not lose them.
                     retry_match_result = matcher.MatchBatchResult(
                         all_decisions=reused_decisions + list(retry_match_result.all_decisions),
                         confirmed_matches=list(retry_match_result.confirmed_matches),
                         skipped=list(retry_match_result.skipped),
+                        possible_matches=list(retry_match_result.possible_matches)
+                        + [d for d in reused_decisions if d.get("outcome") == "possible"],
+                        not_checked=list(retry_match_result.not_checked),
                     )
                 final_match_result = retry_match_result
                 retry_trace["matching"] = retry_match_result.to_dict() if hasattr(retry_match_result, "to_dict") else retry_match_result
@@ -967,6 +1051,17 @@ def _run_pipeline(
                 retry_trace["skipped_reason"] = "expand_search returned no new queries to try"
 
         trace["stages"]["retry"] = retry_trace
+
+        final_possible = list(getattr(final_match_result, "possible_matches", []) or [])
+
+        # --- stage 6.5: similar products --------------------------------------------------
+        # Only when the run found nothing at all — not one confirmed match and
+        # not one possible one. A "similar" product is a different thing at a
+        # different price, so it never feeds the cheapest/savings arithmetic.
+        similar: list = []
+        if not confirmed and not final_possible and similar_pool:
+            similar = _similar_products(normalized, similar_pool, warnings)
+        trace["stages"]["similar"] = similar
 
         matched_domains = {m.get("source_domain") for m in confirmed}
 
@@ -982,9 +1077,14 @@ def _run_pipeline(
                 if d:
                     skipped_domains.add(d)
         verify_incomplete = sorted((tried_domains - matched_domains) & skipped_domains)
-        not_found_on = sorted(tried_domains - matched_domains - skipped_domains)
+        possible_domains = {d.get("source_domain") for d in final_possible if d.get("source_domain")}
+        not_found_on = sorted(tried_domains - matched_domains - skipped_domains - possible_domains)
         for d in verify_incomplete:
             search_issues.append(f"{d}: candidates skipped (verify incomplete) — not counted as 'not found'")
+        for d in sorted((tried_domains - matched_domains) & possible_domains):
+            search_issues.append(
+                f"{d}: possibly the same product (not confirmed) — not counted as 'not found'"
+            )
 
         # Dedupe while preserving order — retry paths can append the same
         # domain's issue twice.
@@ -1013,6 +1113,8 @@ def _run_pipeline(
         result = {
             "gem_product": gem_product_dict,
             "matches": confirmed,
+            "possible_matches": final_possible,
+            "similar": similar,
             "not_found_on": not_found_on,
             "search_issues": search_issues,
             "skipped": skipped,
@@ -1022,7 +1124,13 @@ def _run_pipeline(
             "trace_id": trace_id,
         }
 
-        trace["final_result"] = {"matches": confirmed, "not_found_on": not_found_on, "search_issues": search_issues}
+        trace["final_result"] = {
+            "matches": confirmed,
+            "possible_matches": final_possible,
+            "similar": similar,
+            "not_found_on": not_found_on,
+            "search_issues": search_issues,
+        }
         _emit_finished(result)
         trace["events"] = events.snapshot()
         _write_trace(trace)

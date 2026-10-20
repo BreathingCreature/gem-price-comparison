@@ -166,6 +166,11 @@ PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0, minimum
 # On/off switches. The defaults are the normal behaviour. They exist so the
 # evaluation can switch one feature off at a time (see docs/evaluation.md).
 PARALLEL_SEARCH = _flag("GEM_PARALLEL", False)  # search Flipkart and Amazon at the same time
+# GEM_STRICT=1 is the owner's switch back to the old slow, high-recall
+# behaviour: no pre-filter, every listing goes to the LLM, and the lanes
+# still search at the same time (but the verifier runs one listing at a
+# time). It changes nothing else.
+STRICT_MODE = _flag("GEM_STRICT", False)
 RETRY_ENABLED = _flag("GEM_RETRY", True)  # ask the LLM for better search words when nothing matched
 GATES_ENABLED = _flag("GEM_GATES", True)  # the currency check and the price-band check after the LLM verdict
 LLM_CACHE_ENABLED = _flag("LLM_CACHE", False)  # remember LLM answers on disk (llm/cache.py)
@@ -176,13 +181,16 @@ LLM_CACHE_DIR = Path(os.getenv("LLM_CACHE_DIR", str(CACHE_DIR / "llm")))
 # overlap the rupee range (e.g. $300 vs GeM ₹10,000).
 KNOWN_MARKETPLACE_DOMAINS = ["amazon.in", "flipkart.com"]
 
-# Speed and cost knobs. The values below are the normal behaviour: one job at
-# a time, nothing dropped, nothing remembered. Each one can be turned up on
-# its own, and the evaluation records them with the run (eval/run_eval.py).
-LLM_WORKERS = max(1, _int_setting("GEM_LLM_WORKERS", 1))  # listings verified at the same time
-PREFILTER_TOP = max(0, _int_setting("GEM_PREFILTER_TOP", 0))  # keep only the best N listings per shop before the LLM (0 = off)
-PRICE_PREGATE = _flag("GEM_PRICE_PREGATE", False)  # skip the LLM for listings whose price is already outside the band
-REUSE_VERDICTS = _flag("GEM_REUSE_VERDICTS", False)  # on a retry, keep the verdicts already given in the first pass
+# Speed and cost knobs. These are the normal behaviour now: four listings
+# checked at once, the cheap pre-filter on (best 10 per shop, with caps in
+# core/prefilter.py), a listing already priced outside the band skips the
+# LLM, and a verdict already given in this run is reused. Every one can be
+# turned back off on its own, and the evaluation records them with the run
+# (eval/run_eval.py).
+LLM_WORKERS = max(1, _int_setting("GEM_LLM_WORKERS", 4))  # listings verified at the same time
+PREFILTER_TOP = max(0, _int_setting("GEM_PREFILTER_TOP", 10))  # keep only the best N listings per shop before the LLM (0 = off)
+PRICE_PREGATE = _flag("GEM_PRICE_PREGATE", True)  # skip the LLM for listings whose price is already outside the band
+REUSE_VERDICTS = _flag("GEM_REUSE_VERDICTS", True)  # reuse a verdict already given in this run (same listing, same product)
 SLIM_REFERENCE = _flag("GEM_SLIM_REFERENCE", False)  # verify calls send only the reference's identity fields, not the full spec table
 DISCOVERY_ENABLED = _flag("GEM_DISCOVERY", True)  # other-shops discovery and the generic scrape
 FLIPKART_LIGHT = _flag("GEM_FLIPKART_LIGHT", True)  # plain HTTP search page first, then the light Chrome; 0 turns it off
