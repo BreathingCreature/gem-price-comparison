@@ -10,77 +10,79 @@
   <header class="top">
     <div>
       <h1>GeM Price Comparison</h1>
-      <p class="sub">Paste a GeM product link and watch the search happen.</p>
+      <p class="sub">Paste a GeM product link. The shops fill in as the search runs.</p>
     </div>
-    <div class="clock-box">
+    <div class="top-right">
+      <span id="demo-badge" class="pill demo" hidden>demo mode: fake data</span>
       <span id="status-pill" class="pill">idle</span>
-      <span id="elapsed" class="clock" title="Time since the run started">00:00</span>
     </div>
   </header>
 
   <form id="run-form" class="run-form">
     <input id="gem-url" type="url" required placeholder="https://mkp.gem.gov.in/.../p-123-456-cat.html" aria-label="GeM product link">
-    <label class="check"><input id="refresh" type="checkbox"> Fresh run (ignore saved result)</label>
+    <label class="check"><input id="refresh" type="checkbox"> Refresh (ignore the saved result)</label>
     <button id="run-btn" type="submit">Compare prices</button>
-    <span id="demo-badge" class="pill demo" hidden>demo mode: fake data</span>
   </form>
   <p id="form-error" class="error" role="alert" hidden></p>
 
-  <nav class="tabs" aria-label="Views">
-    <button class="tab active" data-tab="progress" type="button">Progress</button>
-    <button class="tab" data-tab="advanced" type="button">Advanced</button>
-  </nav>
+  <main>
+    <section id="start-screen" class="card">
+      <h2>Recent runs</h2>
+      <p id="recent-empty" class="muted" hidden>No saved runs yet. The first comparison will show up here.</p>
+      <ul id="recent-runs" class="recent"></ul>
+    </section>
 
-  <main id="view-progress" class="view">
-    <section id="now" class="now" aria-live="polite">Nothing running yet.</section>
-    <ol id="timeline" class="timeline"></ol>
-    <section id="gem-card" class="card" hidden></section>
-    <section id="searches" class="stack"></section>
-    <section id="checks" class="card" hidden>
-      <h2>Checking the listings</h2>
-      <ul id="check-list" class="checks"></ul>
-    </section>
-    <section id="final" class="card" hidden></section>
-  </main>
-
-  <main id="view-advanced" class="view" hidden>
-    <section class="card">
-      <h2>LLM endpoints</h2>
-      <p class="muted" id="llm-strategy"></p>
-      <table class="grid" id="providers"><thead><tr>
-        <th>Endpoint</th><th>State</th><th>Calls</th><th>Errors</th><th>Avg s</th><th>Note</th>
-      </tr></thead><tbody></tbody></table>
-    </section>
-    <section class="card">
-      <h2>Time per step</h2>
-      <table class="grid" id="stage-times"><thead><tr><th>Step</th><th>Seconds</th></tr></thead><tbody></tbody></table>
-    </section>
-    <section class="card">
-      <h2>LLM calls in this run</h2>
-      <p class="muted" id="llm-summary">No calls yet.</p>
-      <table class="grid" id="llm-calls"><thead><tr>
-        <th>At (s)</th><th>Endpoint</th><th>For</th><th>Took (s)</th><th>Result</th>
-      </tr></thead><tbody></tbody></table>
-    </section>
-    <section class="card">
-      <h2>Every event</h2>
-      <div class="row">
-        <label>Show
-          <select id="event-filter">
-            <option value="">everything</option>
-            <option value="stage">steps</option>
-            <option value="search">searches</option>
-            <option value="candidate">candidate checks</option>
-            <option value="llm">llm</option>
-          </select>
-        </label>
-        <a id="download-events" href="#" download="events.json">Download events (JSON)</a>
-        <a id="trace-link" href="#" target="_blank" rel="noopener" hidden>Open full trace</a>
+    <section id="result-screen" hidden>
+      <div class="card">
+        <h2 id="result-title">Product</h2>
+        <p class="muted" id="result-price"></p>
+        <p><span id="result-state" class="pill">running</span></p>
+        <p id="cheapest-line" class="cheapest"></p>
       </div>
-      <table class="grid mono" id="event-log"><thead><tr><th>t</th><th>#</th><th>type</th><th>details</th></tr></thead><tbody></tbody></table>
+
+      <div id="shop-cards" class="shops"></div>
+
+      <section id="matches-section" class="card" hidden>
+        <h2>Matches</h2>
+        <p id="matches-empty" class="muted" hidden>No confirmed match yet.</p>
+        <table class="grid">
+          <thead><tr><th>Shop</th><th>Price</th><th>Vs GeM</th><th>Confidence</th><th>Reason</th><th>Link</th></tr></thead>
+          <tbody id="matches-body"></tbody>
+        </table>
+      </section>
+
+      <section id="possible-section" class="card" hidden>
+        <h2>Possible matches</h2>
+        <table class="grid">
+          <thead><tr><th>Shop</th><th>Title</th><th>Price</th><th>Why</th><th>Link</th></tr></thead>
+          <tbody id="possible-body"></tbody>
+        </table>
+      </section>
+
+      <section id="similar-section" class="card" hidden>
+        <h2>Similar (not the same product)</h2>
+        <ul id="similar-list" class="plain"></ul>
+      </section>
+
+      <section id="warnings-section" class="card" hidden>
+        <h2>Warnings</h2>
+        <ul id="warnings-list" class="plain warn-list"></ul>
+      </section>
+
+      <section class="card">
+        <button id="llm-toggle" type="button" class="linkish">Show LLM endpoints</button>
+        <div id="llm-body" hidden>
+          <p class="muted" id="llm-strategy"></p>
+          <table class="grid">
+            <thead><tr><th>Endpoint</th><th>State</th><th>Calls</th><th>Errors</th><th>Note</th></tr></thead>
+            <tbody id="providers-body"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
   </main>
 
+  <script src="render.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

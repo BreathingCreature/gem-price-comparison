@@ -64,6 +64,9 @@ class Job:
             return list(self.events[start:]), self.status in FINAL_STATES
 
     def summary(self) -> dict:
+        result = self.result if isinstance(self.result, dict) else {}
+        product = result.get("gem_product") if isinstance(result.get("gem_product"), dict) else {}
+        comparison = result.get("comparison") if isinstance(result.get("comparison"), dict) else {}
         return {
             "id": self.id,
             "gem_url": self.gem_url,
@@ -73,6 +76,9 @@ class Job:
             "started": self.started,
             "finished": self.finished,
             "event_count": len(self.events),
+            "title": product.get("title"),
+            "cheapest_price": comparison.get("cheapest_match_price"),
+            "match_count": len(result.get("matches") or []),
         }
 
 

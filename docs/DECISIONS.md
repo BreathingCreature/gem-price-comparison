@@ -258,3 +258,34 @@ eason. A page
   the lane's thread: the run stops waiting on that lane's answer by keeping
   the rest of the result and writing the reason on the card. The retry then
   gives that shop one more try. (Stage 7)
+
+## Stage 8 - interfaces (API, demo, frontend, CLI)
+
+- **Recent runs are merged from memory and disk.** `GET /api/runs` lists live
+  jobs first and then the saved run records, and `GET /api/runs/{id}` falls
+  back to `runs_store.get_run` when the job is gone. A run record now stores
+  the whole v2 result, so a restart does not lose the page you were looking
+  at; the cost is a slightly larger file per run, which the rotation already
+  bounds.
+- **The demo runs the real pipeline with fakes.** `api/demo.py` builds a fake
+  GeM product, fake shop searches and a fake matcher, then calls
+  `run_pipeline(..., use_cache=False)`. The page therefore sees the same event
+  order as a real run (including the per-shop retry), and a demo residue can
+  never be served from the cache. `use_cache` is a pipeline keyword, off only
+  for the demo.
+- **Trace text is trimmed before it leaves the API, not when written.** The
+  saved trace keeps everything for debugging; the `/api/traces/{id}` route cuts
+  known page-text fields to 1000 characters unless `GEM_DEBUG=1`. Trimming at
+  write time would make the trace useless for the one thing it is for.
+- **Formatting lives in `frontend/render.js`, not in `app.js`.** The DOM-free
+  module is required by the page and by a Node smoke test, so money, shop
+  wording and link safety are testable without a browser. The page scripts
+  still use no `innerHTML` anywhere.
+- **The CLI keeps watching after the first result, with a time limit.** After
+  `run_finished(state="shown")` the printer keeps printing `shop_updated` and
+  `similar_ready` lines, then `Done.`. It stops after `GEM_RETRY_CLI_WAIT`
+  seconds (default 120, the pipeline retry budget) with one line saying so, so
+  a terminal is never held open forever. `--no-wait` turns the watching off.
+- **A link that is not GeM exits 2 before anything runs.** Both the API and the
+  CLI use `core/gem_url.looks_like_gem_url`; the CLI prints one line to stderr
+  and does not import the pipeline (so `--strict` can set `GEM_STRICT` first).

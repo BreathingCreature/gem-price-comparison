@@ -77,3 +77,17 @@ def list_runs(limit: int = 20) -> list[dict]:
 def summarize(record: dict) -> dict:
     """The fields the recent-runs list shows."""
     return {key: record.get(key) for key in SUMMARY_FIELDS if key in record}
+
+
+def get_run(run_id: str) -> dict | None:
+    """One saved record by id (the API's fallback after a restart)."""
+    run_id = str(run_id or "").strip()
+    if not run_id or "/" in run_id or "\\" in run_id or run_id.startswith("."):
+        return None
+    path = runs_dir() / f"{run_id}.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+

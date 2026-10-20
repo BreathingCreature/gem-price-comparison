@@ -179,17 +179,29 @@ def test_demo_and_injected_runners_never_warm_up(monkeypatch):
 
 
 def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
-    monkeypatch.setenv("GEM_DEMO_SPEED", "0")
+    from api import demo
+
+    monkeypatch.setattr(demo, "DEMO_DELAY", 0)
     client = TestClient(create_app(demo=True))
     assert client.get("/api/health").json()["demo"] is True
 
     run_id = client.post("/api/runs", json={"gem_url": "https://example.com/anything"}).json()["run_id"]
     run = wait_until_finished(client, run_id)
 
-    assert run["status"] == "done" and len(run["result"]["matches"]) == 4
+    assert run["status"] == "done"
+    result = run["result"]
+    assert result["state"] == "done"
+    assert [(m["shop"], m["price"]) for m in result["matches"]] == [("flipkart.com", 1149.0), ("amazon.in", 1199.0)]
+    assert result["cheapest"]["shop"] == "flipkart.com"
+    assert result["cheapest"]["saving_vs_gem"] == 150.0
+    assert result["shops"]["amazon.in"]["status"] == "found"
+    assert result["shops"]["flipkart.com"]["status"] == "found" and result["shops"]["flipkart.com"]["retried"] is True
+    assert result["shops"]["example-shop.in"]["status"] == "not_found"
     seen, _ = read_stream(client, run_id)
     types = {e["type"] for e in seen}
-    assert {"gem_product", "search_finished", "candidate_verdict", "llm_call", "llm_cooldown", "run_finished"} <= types
+    assert {"gem_product", "search_finished", "candidate_verdict", "run_finished", "shop_started",
+            "shop_finished", "retry_started", "shop_updated", "run_updated", "done"} <= types
+    assert [e["type"] for e in seen][-1] == "done"
 
 
 # --- B9: GEM_JOBS lets several runs share the server ----------------------
@@ -237,3 +249,94 @@ def test_a_bad_gem_jobs_value_is_a_warning_not_a_crash(monkeypatch):
     client = TestClient(create_app(runner=fake_runner, demo=False))
     run_id = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
     assert wait_until_finished(client, run_id)["status"] == "done"
+
+# --- Stage 8: the API survives a restart and trims big traces --------------
+
+def _saved_record(run_id="savedrun1"):
+    return {
+        "run_id": run_id,
+        "gem_url": GEM_URL,
+        "title": "Saved Mouse",
+        "state": "done",
+        "checked_at": "2026-10-20T10:00:00+00:00",
+        "cheapest_price": 999.0,
+        "match_count": 1,
+        "from_cache": False,
+        "result": {
+            "result_version": 2,
+            "state": "done",
+            "gem": {"title": "Saved Mouse", "price": {"low": 1099.0, "high": 1099.0, "kind": "fixed"}},
+            "shops": {},
+            "matches": [],
+            "cheapest": {"shop": "amazon.in", "price": 999.0, "saving_vs_gem": 100.0},
+            "warnings": [],
+        },
+    }
+
+
+def test_recent_runs_read_from_disk_after_a_restart():
+    from core import runs as runs_store
+
+    runs_store.save_run(_saved_record())
+    restarted = TestClient(create_app(runner=fake_runner, demo=False))
+    listed = restarted.get("/api/runs").json()["runs"]
+    assert listed[0]["id"] == "savedrun1"
+    assert listed[0]["title"] == "Saved Mouse"
+    assert listed[0]["cheapest_price"] == 999.0
+    assert listed[0]["live"] is False
+
+
+def test_a_saved_run_can_be_reopened_after_a_restart():
+    from core import runs as runs_store
+
+    runs_store.save_run(_saved_record())
+    restarted = TestClient(create_app(runner=fake_runner, demo=False))
+    run = restarted.get("/api/runs/savedrun1").json()
+    assert run["state"] == "done" and run["live"] is False
+    assert run["result"]["cheapest"]["shop"] == "amazon.in"
+
+
+def test_a_live_run_reports_the_v2_state_not_only_the_job_status():
+    def shown_runner(gem_url, refresh, on_event):
+        return {"state": "shown", "matches": [], "gem_product": {"title": "X"}}
+
+    client = TestClient(create_app(runner=shown_runner, demo=False))
+    run_id = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+    run = wait_until_finished(client, run_id)
+    assert run["state"] == "shown"
+
+
+def test_the_trace_route_trims_saved_page_text(client):
+    page = "x" * 5000
+    trace = {
+        "stages": {
+            "extraction": {"raw_page_text": page},
+            "matching": {"all_decisions": [{"candidate_url": "https://a.test/x", "raw_page_text": page}]},
+        }
+    }
+    (pipeline.TRACES_DIR / "abcdef0123456789.json").write_text(json.dumps(trace), encoding="utf-8")
+    body = client.get("/api/traces/abcdef0123456789").json()
+    assert len(body["stages"]["extraction"]["raw_page_text"]) < 1200
+    assert body["stages"]["extraction"]["raw_page_text"].startswith("x" * 1000)
+    assert body["stages"]["matching"]["all_decisions"][0]["candidate_url"] == "https://a.test/x"
+
+
+def test_gem_debug_keeps_the_whole_trace(client, monkeypatch):
+    monkeypatch.setenv("GEM_DEBUG", "1")
+    page = "y" * 5000
+    (pipeline.TRACES_DIR / "abcdef0123456789.json").write_text(json.dumps({"raw_page_text": page}), encoding="utf-8")
+    assert client.get("/api/traces/abcdef0123456789").json()["raw_page_text"] == page
+
+
+def test_llm_status_marks_an_endpoint_that_used_up_its_allowance(client, monkeypatch):
+    from core import config
+
+    endpoint = Endpoint(provider="one", model="m", base_url="https://one.test/v1", api_key_env="K")
+    state_file = config.CACHE_DIR / "llm_state.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(json.dumps({"used_up": {endpoint.name: time.time() + 3600}}), encoding="utf-8")
+    monkeypatch.setattr(router_module, "_router", Router([endpoint], strategy="spread"))
+
+    body = client.get("/api/llm/status").json()
+    assert body["endpoints"][0]["state"] == "limit"
+    assert "used up until" in body["endpoints"][0]["reason"]
