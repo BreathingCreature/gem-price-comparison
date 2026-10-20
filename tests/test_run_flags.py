@@ -100,7 +100,7 @@ def test_normal_behaviour_is_the_default():
     assert config.PRICE_PREGATE is False and config.REUSE_VERDICTS is False
     assert config.DISCOVERY_ENABLED is True
     # checkpoint 18: light Flipkart browser + bounded SearXNG stage
-    assert config.FLIPKART_LIGHT is False and config.DISCOVERY_TIME_LIMIT_SECONDS == 20.0
+    assert config.FLIPKART_LIGHT is True and config.DISCOVERY_TIME_LIMIT_SECONDS == 20.0
 
 
 # --- parallel search ------------------------------------------------------------

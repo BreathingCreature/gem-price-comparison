@@ -26,3 +26,56 @@
 - 2026-10-20 - Run records live in `cache/runs/<run_id>.json` (one small JSON
   per run). `list_runs()` sorts by `saved_at`, so list order never depends on
   the filesystem. (Stage 2)
+
+- 2026-10-20 - Shops report why they came back empty: SearchScrapeResult
+  carries status (ok | locked | parser_empty) and 
+eason. A page
+  with zero cards and no no-results marker is parser_empty, never "no
+  products"; a CAPTCHA is locked. error also gets a short text for
+  parser_empty so old callers that only read error still see it. (Stage 3)
+
+- 2026-10-20 - Flipkart's fast path is on by default (GEM_FLIPKART_LIGHT,
+  now True): one plain-HTTP GET of the search page, used only when it looks
+  like a real results page (the genuine no-results marker or at least three
+  parsed cards). One fingerprint, not a rotation — the point is one cheap
+  request before deciding on Chrome. A later page failing only stops paging;
+  a page-1 failure hands the whole query to Chrome. A dead Chrome is rebuilt
+  once per run, not once per query. (Stage 3)
+
+- 2026-10-20 - The struck-out MRP containers are removed before any price
+  read on a Flipkart card, not just before the text fallback, so a drifted
+  selling-price class cannot make the MRP look like the price. Amazon reads
+  span.a-price without .a-text-price for the same reason. Both shops mark
+  a card in_stock: False when its text says so; unknown means in stock.
+  (Stage 3)
+
+- 2026-10-20 - Per-page card cap: there was none to remove. Every card on a
+  page was already parsed; only the run's total max_results caps a page.
+  Verified rather than invented, so no cap was added. (Stage 3)
+
+- 2026-10-20 - The generic scraper reads JSON-LD (Product, @graph, lists,
+  AggregateOffer.lowPrice) before meta tags, then h1/title. A listing with a
+  title but no price is kept with price: null + price_unknown: true;
+  soft-404 pages carry page_not_found: true. Non-INR currencies are still
+  kept as-is so the matcher rejects them. (Stage 3)
+
+- 2026-10-20 - Generic scraping refuses non-public addresses before the
+  request and again after redirects (_is_public_http_url). The guard is
+  scheme + IP-literal based; a hostname that resolves to a private address is
+  left to requests, because resolving it in the guard would duplicate DNS and
+  still race. (Stage 3)
+
+- 2026-10-20 - GeM products carry `price = {low, high, kind}` (kind fixed |
+  l1 | range | unknown) plus the selector that produced it. gem_price stays
+  the low end and gem_price_type stays for old callers. Brand/model fall
+  back to the spec table when the title has neither. (Stage 3)
+
+- 2026-10-20 - undetected-chromedriver is gone, not just optional: the code
+  path, the config switch and the requirements comment were removed. Plain
+  Selenium + the CDP mask stays. (Stage 3)
+
+- 2026-10-20 - Tests hide `curl_cffi` from `sys.modules` (the autouse
+  fixture) and the Flipkart/fast-path seams, so no test can reach a live shop
+  through libcurl, whose sockets bypass the socket-level network guard.
+  	ests/test_doctor.py removes that sentinel for its package check only.
+  (Stage 3)

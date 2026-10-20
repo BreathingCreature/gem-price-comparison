@@ -384,7 +384,7 @@ def test_flipkart_light_switch_reaches_the_driver():
     assert seen["light"] is True
 
 
-def test_flipkart_is_not_light_by_default():
+def test_flipkart_is_light_by_default():
     seen = {}
 
     def capture(*, light=False):
@@ -392,6 +392,19 @@ def test_flipkart_is_not_light_by_default():
         return _QuietDriver()
 
     with _patched(flipkart, build_stealth_driver=capture,
+                  _load_search_page=lambda driver, query, page=1: "<html></html>"):
+        flipkart.search("logitech m650", max_pages=1)
+    assert seen["light"] is True
+
+
+def test_flipkart_light_can_be_switched_off():
+    seen = {}
+
+    def capture(*, light=False):
+        seen["light"] = light
+        return _QuietDriver()
+
+    with _patched(flipkart, build_stealth_driver=capture, FLIPKART_LIGHT=False,
                   _load_search_page=lambda driver, query, page=1: "<html></html>"):
         flipkart.search("logitech m650", max_pages=1)
     assert seen["light"] is False
@@ -595,6 +608,9 @@ def _forbidden_new_connection(*args, **kwargs):
     raise AssertionError("a new connection was opened instead of reusing the curl session")
 
 
+_MISSING = object()
+
+
 @contextmanager
 def _stub_curl_cffi():
     """Stand-in for the curl_cffi package the fetch function imports lazily."""
@@ -603,12 +619,12 @@ def _stub_curl_cffi():
     requests_stub.get = _forbidden_new_connection
     package_stub = type(sys)("curl_cffi")
     package_stub.requests = requests_stub
-    old = sys.modules.get("curl_cffi")
+    old = sys.modules.get("curl_cffi", _MISSING)
     sys.modules["curl_cffi"] = package_stub
     try:
         yield
     finally:
-        if old is None:
+        if old is _MISSING:
             del sys.modules["curl_cffi"]
         else:
             sys.modules["curl_cffi"] = old
@@ -658,9 +674,9 @@ def test_resolve_chromedriver_asks_selenium_manager_once():
     assert seen["args"] == ["--browser", "chrome"]
 
 
-def test_undetected_chromedriver_is_an_optional_dependency():
-    # F: uc fails on this machine (Chrome 151 headless dies) and is already
-    # opt-in behind GEM_USE_UC=1 — it must not sit in requirements.txt.
+def test_undetected_chromedriver_is_not_a_dependency():
+    # The uc path is gone (Chrome 151 headless dies in it); nothing may
+    # silently bring it back as a dependency.
     requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(encoding="utf-8")
     active = [
         line for line in requirements.splitlines()

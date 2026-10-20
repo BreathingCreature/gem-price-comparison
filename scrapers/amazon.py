@@ -10,8 +10,8 @@ search HTML in ~2s. Live-verified on this machine: chrome150 fingerprint →
 HTTP 200, 16 result cards, real prices, zero CAPTCHA.
 
 Fallback path: headless Chrome via scrapers/base.build_stealth_driver
-(undetected-chromedriver first, plain Selenium second). Used only when
-curl_cffi is unavailable, errors, or Amazon serves it a wall/empty page.
+(plain Selenium with the CDP webdriver-mask). Used only when curl_cffi is
+unavailable, errors, or Amazon serves it a wall/empty page.
 Amazon serves soft bot-walls that look like ordinary pages, so this module
 treats "page loaded but zero result containers and no explicit no-results
 message" as a BLOCKED/suspect page (with a debug dump), not as "product
@@ -60,6 +60,20 @@ _NO_RESULTS_PHRASES = [
     "no results matching",
     "didn't match any products",
 ]
+
+# A card that says any of these is not buyable. Unknown defaults to in stock,
+# because the search card usually has no stock line at all.
+_OUT_OF_STOCK_PHRASES = [
+    "out of stock",
+    "sold out",
+    "currently unavailable",
+    "temporarily out of stock",
+]
+
+
+def _in_stock(card_text: str) -> bool:
+    low = card_text.lower()
+    return not any(phrase in low for phrase in _OUT_OF_STOCK_PHRASES)
 
 
 def _load_search_page(driver, query: str, page: int = 1) -> str | None:
@@ -116,9 +130,11 @@ def parse_cards_from_html(html: str) -> list[dict]:
         title_el = card.select_one("h2 span.a-text-normal, h2 a span, h2 span")
         name = title_el.get_text(" ", strip=True) if title_el else ""
 
-        price_el = card.select_one("span.a-price > span.a-offscreen")
+        # Selling price only. .a-text-price is Amazon's struck-out MRP, and
+        # reading it made a ₹2,000 item look ₹2,000-off cheaper than it is.
+        price_el = card.select_one("span.a-price:not(.a-text-price) > span.a-offscreen")
         if price_el is None:
-            price_el = card.select_one("span.a-price")
+            price_el = card.select_one("span.a-price:not(.a-text-price)")
         price = parse_indian_price(price_el.get_text(" ", strip=True)) if price_el else None
 
         link_el = card.select_one("h2 a") or card.select_one("a.a-link-normal.s-no-outline")
@@ -131,7 +147,14 @@ def parse_cards_from_html(html: str) -> list[dict]:
 
         if not name or not price or not link:
             continue
-        out.append({"name": name, "price": price, "link": link, "card_text": card.get_text(" ", strip=True)[:1000]})
+        card_text = card.get_text(" ", strip=True)[:1000]
+        out.append({
+            "name": name,
+            "price": price,
+            "link": link,
+            "card_text": card_text,
+            "in_stock": _in_stock(card_text),
+        })
 
     seen, uniq = set(), []
     for r in out:
@@ -173,7 +196,7 @@ def _collect_cards(cards: list[dict], candidates: list[CandidateResult], seen: s
                     "currency": "INR",
                     "seller": None,
                     "image_url": None,
-                    "in_stock": True,
+                    "in_stock": bool(c.get("in_stock", True)),
                 },
                 raw_page_text=c["card_text"],
             )
@@ -322,6 +345,8 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
         blocked=False,
         pages_scraped=pages_scraped,
         error=None,
+        status="ok",
+        reason=None if candidates else "Amazon reported no results",
     )
 
 
@@ -336,6 +361,7 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
     candidates: list[CandidateResult] = []
     seen: set[tuple] = set()
     blocked = False
+    parser_empty = False
     pages_scraped = 0
     error: str | None = None
 
@@ -358,12 +384,12 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
                 else:
                     # Loaded a page with zero parseable cards and no
                     # no-results message = soft bot-wall or layout change.
-                    # Call it blocked (not "not found") and dump for debugging.
-                    blocked = True
+                    # Call it parser_empty (not "not found") and dump it.
+                    parser_empty = True
                     _save_debug(html, "amazon_suspect")
                     logger.warning(
                         "Amazon page %d for %r: zero result cards and no no-results marker "
-                        "(soft bot-wall or layout change) — marking blocked, not 'not found'.",
+                        "(soft bot-wall or layout change) — marking parser_empty, not 'not found'.",
                         page,
                         query,
                     )
@@ -383,6 +409,16 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
         except Exception:
             pass
 
+    if error:
+        status, reason = None, None
+    elif blocked:
+        status, reason = "blocked", "captcha or robot check"
+    elif parser_empty:
+        status, reason = "parser_empty", "the page had no product cards"
+        error = "parser_empty: the page had no product cards"
+    else:
+        status, reason = "ok", None if candidates else "Amazon reported no results"
+
     return SearchScrapeResult(
         source_domain="amazon.in",
         query=query,
@@ -390,6 +426,8 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
         blocked=blocked,
         pages_scraped=pages_scraped,
         error=error,
+        status=status,
+        reason=reason,
     )
 
 
