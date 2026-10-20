@@ -17,10 +17,13 @@ def test_the_page_is_served_from_the_root():
     assert "GeM Price Comparison" in response.text
 
 
-def test_the_page_loads_its_script_and_style():
+def test_the_page_loads_its_scripts_and_style():
     client = _client()
     assert client.get("/app.js").status_code == 200
+    assert client.get("/render.js").status_code == 200
     assert client.get("/style.css").status_code == 200
+    html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    assert html.index("render.js") < html.index("app.js")  # formatting first
 
 
 def test_every_element_the_script_looks_up_exists_in_the_page():

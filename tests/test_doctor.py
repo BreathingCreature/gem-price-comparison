@@ -22,12 +22,13 @@ def test_a_check_that_crashes_is_reported_as_a_failure_not_a_crash(monkeypatch):
     assert results[0][0] == doctor.FAIL and "oops" in results[0][1]
 
 
-def test_the_demo_check_passes_and_restores_the_speed_setting(monkeypatch):
-    monkeypatch.setenv("GEM_DEMO_SPEED", "3")
+def test_the_demo_check_passes_and_restores_the_delay(monkeypatch):
+    from api import demo
+
+    monkeypatch.setattr(demo, "DEMO_DELAY", 0.5)
     status, _ = doctor.check_demo_run()
     assert status == doctor.PASS
-    import os
-    assert os.environ["GEM_DEMO_SPEED"] == "3"
+    assert demo.DEMO_DELAY == 0.5
 
 
 def test_the_llm_check_warns_when_nothing_is_usable(monkeypatch):

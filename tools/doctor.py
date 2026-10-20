@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 
 REQUIRED_PACKAGES = ["requests", "bs4", "lxml", "selenium", "dotenv", "openai", "curl_cffi", "fastapi", "uvicorn"]
-FRONTEND_FILES = ["index.html", "app.js", "style.css"]
+FRONTEND_FILES = ["index.html", "render.js", "app.js", "style.css"]
 
 
 def check_python():
@@ -112,7 +112,7 @@ def check_demo_run():
         else:
             os.environ["GEM_DEMO_SPEED"] = previous
     types = [e["type"] for e in seen]
-    needed = ["run_started", "gem_product", "search_finished", "candidate_verdict", "run_finished"]
+    needed = ["run_started", "gem_product", "search_finished", "candidate_verdict", "run_finished", "done"]
     missing = [t for t in needed if t not in types]
     if missing or not result.get("matches"):
         return FAIL, f"demo run is missing events {missing} or matches"
