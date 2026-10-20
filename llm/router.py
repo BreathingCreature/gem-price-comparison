@@ -70,7 +70,7 @@ TOKEN_WINDOW_SECONDS = 60.0
 # ["verify"]) — normalize and expand are rare and need a good model, verify
 # is ~90% of calls and an easy yes/no question that fast, high-rate-limit
 # providers handle well.
-KNOWN_PURPOSES = ("normalize", "verify", "expand")
+KNOWN_PURPOSES = ("normalize", "verify", "expand", "similar")
 
 # --- errors that tell the pipeline what to do next --------------------------------
 
