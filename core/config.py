@@ -129,7 +129,7 @@ LLM_CACHE_TAG = os.getenv("LLM_CACHE_TAG", "")
 def require_nvidia_key() -> str:
     """Call this from anything that's about to make an LLM call — NOT at
     import time. That way parts that don't need the LLM (like the GeM
-    extractor in Part 1) still work fine without a key configured yet.
+    extractor) still work fine without a key configured yet.
     Obvious template placeholders count as unset so you get this clear
     error instead of a confusing API 401 later."""
     key = (NVIDIA_API_KEY or "").strip()

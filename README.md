@@ -1,105 +1,112 @@
 # GeM Price Comparison
 
-Pipeline that takes a GeM (Government e-Marketplace) product URL, extracts the reference product, then finds cheaper alternatives on Indian retail marketplaces (Amazon.in, Flipkart, brand sites) using scraping + LLM matching.
+Paste a GeM (Government e-Marketplace) product link. The tool reads the page,
+searches Amazon.in, Flipkart and other Indian shops, and tells you whether the
+same product is cheaper there. It shows the result as soon as it has one, then
+updates it while the slower shops and one retry finish.
 
-## Quick Start
+The LLM does one job only: reading the product and judging whether a listing is
+the same product. All fetching is plain code. Nothing is guessed: an unknown
+price stays unknown.
 
-```bash
-# 1. Create virtual environment
+## One-minute start (Windows, VS Code)
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-
-# 2. Install dependencies
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# 3. Configure API key
 copy .env.example .env
-# Edit .env and add your NVIDIA_API_KEY
-
-# 4. Run
-python cli.py "https://mkp.gem.gov.in/.../p-12345-67890-cat.html"
+notepad .env                     # put NVIDIA_API_KEY in it
+python tools/doctor.py           # every line should be PASS or WARN
+python cli.py "https://mkp.gem.gov.in/..."
 ```
 
-Speed options are off by default, see [docs/fast-profile.md](docs/fast-profile.md).
+In VS Code: open the folder, `Ctrl+Shift+P` → "Python: Select Interpreter" →
+`.venv`, then use the integrated terminal. The project needs Python 3.10 or
+newer (3.12 is what CI uses).
+
+## Keys
+
+Two example files, both copied and kept out of git:
+
+| File to copy | What goes in it | Needed? |
+|---|---|---|
+| `.env.example` → `.env` | `NVIDIA_API_KEY=...`, optional settings | Yes, for anything that calls the LLM |
+| `llm_providers.example.json` → `llm_providers.json` | the providers and their models | Optional; without it, only NVIDIA from `.env` is used |
+
+Get a free NVIDIA key at https://integrate.api.nvidia.com. More than one
+provider is better: when one is busy or out of allowance the router uses the
+next. See [docs/llm-providers.md](docs/llm-providers.md).
 
 ## Commands
 
-| Command | Description |
+| Command | What it does |
 |---|---|
-| `python cli.py "<gem-url>"` | Compare GeM price vs marketplaces |
-| `python cli.py "<gem-url>" --refresh` | Bypass cache, force live check |
-| `python cli.py "<gem-url>" --json` | Output raw JSON |
-| `python tests\test_X.py` | Run individual test file (7 files) |
+| `python cli.py "<gem link>"` | Compare and print the result, then the `Updated:` lines |
+| `python cli.py "<gem link>" --refresh` | Ignore the saved result and run again |
+| `python cli.py "<gem link>" --no-wait` | Print the first result and exit, no retry watching |
+| `python cli.py "<gem link>" --json` | The whole result as JSON |
+| `python cli.py "<gem link>" --strict` | Slow, high-recall mode (see below) |
+| `python -m uvicorn api.server:app --port 8000` | Web page on http://127.0.0.1:8000 |
+| `GEM_DEMO=1 python -m uvicorn api.server:app` | Web page with fake data, no scraping, no LLM |
+| `python tools/doctor.py` | Offline health check |
+| `python tools/doctor.py --live` | Live: LLM endpoints, search engines, one canary per shop |
+| `python tools/doctor.py --clean` | Remove old traces, run records and debug pages |
+| `python tools/probe_endpoints.py` | One line per LLM endpoint (finish reason, rate-limit header names) |
+| `python tools/save_page.py flipkart "usb c cable"` | Save a real page as a test fixture |
+| `python -m eval.run_eval --key eval/answer_key.csv --label first` | Measure against your answer key |
+| `python -m pytest -q` | The whole test suite |
 
-## Architecture
+Exit codes of the CLI: `0` success, `1` the run failed, `2` the link is not a
+GeM product link (nothing was fetched).
 
-```
-cli.py (entry)
-  └── core/
-      ├── config.py       # All settings, env loading, paths, logger
-      └── pipeline.py     # Orchestrator: extract → discover → scrape → LLM → match → retry
-  ├── scrapers/           # All web scraping
-  │   ├── _base.py        # Contracts + browser factory + price parser
-  │   ├── gem.py          # GeM page scraper (Part 1)
-  │   ├── discover.py     # Search engines → candidate URLs (Part 2)
-  │   ├── amazon.py       # Amazon.in (curl_cffi + Selenium fallback)
-  │   ├── flipkart.py     # Flipkart (Selenium only)
-  │   └── generic.py      # Any URL: og: tags + raw text
-  ├── discovery/          # URL finding (search engines)
-  │   └── discover.py     # DDG → SearXNG chain
-  └── llm/                # LLM intelligence + gates
-      ├── client.py       # NVIDIA API, retries, prompts
-      └── match.py        # Sanity gates (currency, confidence, price)
-```
+## Normal mode and `GEM_STRICT`
 
-## Key Design Decisions
+Normal mode is the fast one: shops are searched at the same time, a cheap
+filter keeps the best listings per shop, and four listings are checked at once.
+The result appears as soon as one shop answers; the retry updates it later.
 
-- **No LLM browsing** — LLM only verifies/expands; all fetching is plain code
-- **Currency honesty** — Non-INR prices rejected before LLM call
-- **Never crash on one bad URL** — Catch → log → return partial with `fetch_error`
-- **Test isolation** — All tests inject `_FakeSession` via `session=` kwarg; zero network/LLM calls
-- **Cache + Trace** — Per-URL JSON cache (TTL 1h), full decision trail in `traces/`
+`--strict` (or `GEM_STRICT=1`) turns the filter off, sends every listing to the
+LLM and checks one at a time. It is slower and more expensive. Use it when you
+think the filter may have hidden a real match.
 
-## Requirements
+## Web page
 
-- Python 3.10+
-- NVIDIA API key (free tier at https://integrate.api.nvidia.com)
-- Chrome/Chromium for Selenium fallback (Amazon/Flipkart)
+`python -m uvicorn api.server:app --port 8000` is enough. The server binds
+`127.0.0.1` by default because there is no login. Paste a link and the page
+fills in shop by shop. The recent-runs list survives a restart, and an old run
+can be opened again.
 
-## Tests
+Demo mode (`GEM_DEMO=1`) runs the real pipeline with fake pages, so you can work
+on the page with no keys and no network.
 
-```bash
-# Run each test file individually (77 tests total across 7 files)
-python tests\test_cli.py
-python tests\test_discovery.py
-python tests\test_gem_extractor.py
-python tests\test_llm_client.py
-python tests\test_matcher.py
-python tests\test_pipeline.py
-python tests\test_scrapers.py
-```
+## Known limits
 
-> **Note:** `python -m unittest discover` runs 0 tests — use per-file runners above.
+- Amazon and Flipkart fight bots. A shop can answer with a CAPTCHA; the tool
+  says so on that shop's card and tries once more, then stops. It does not use
+  a proxy pool.
+- Prices come from the page text. A page that hides the price in an image, or
+  shows a range, may give no price or the low end of the range. Nothing is
+  invented; unknown stays `null`.
+- One Chrome window at a time per run. Two runs together work; five do not.
+- The match verdict is an LLM's judgement. Cheap/expensive checks and a
+  confidence threshold guard it, but a wrong answer is still possible.
+- Only the shops that the search engines return are checked. A shop that
+  blocks search engines is never seen.
+- The numbers are a snapshot, not a guarantee. Delivery, seller and condition
+  are not compared.
+- Measuring accuracy needs a hand-made answer key of 30-40 products. Without
+  that, the accuracy numbers are stories, not measurements.
+- Nothing here is legal advice about procurement rules.
 
-## Web app
+## Where things are
 
-Run the server and open http://localhost:8000:
-
-```
-python -m uvicorn api.server:app --port 8000
-```
-
-Paste a GeM product link and the page shows each step as it happens: the GeM
-product, the Flipkart and Amazon results, the other shops, and the verdict on
-every listing, with a running clock. The Advanced tab shows the LLM endpoints,
-time per step, every LLM call and the raw event log.
-
-To work on the page without scraping anything, start the server in demo mode
-(`GEM_DEMO=1`, fake data, no LLM calls). Check that everything is wired up with
-`python tools/doctor.py`.
-
-More: `docs/architecture.md`, `docs/api.md`, `docs/llm-providers.md`.
-
-## Evaluation
-
-How to measure recall, precision and speed against a hand-made answer key: see [docs/evaluation.md](docs/evaluation.md).
+- `core/pipeline.py` — one entry point for CLI and API; everything else is a
+  helper.
+- `docs/architecture.md` — the flow, the shops, the retry, result v2.
+- `docs/settings.md` — every setting, its default and its risk.
+- `docs/api.md` — routes and events for the web page.
+- `docs/troubleshooting.md` — blocked shops, CAPTCHA, LLM limits, missing Chrome.
+- `docs/evaluation.md` — how to measure recall and precision.
+- `docs/llm-providers.md` — adding a provider.
+- `docs/DECISIONS.md` — why the code does what it does.
