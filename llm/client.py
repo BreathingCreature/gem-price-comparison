@@ -354,8 +354,10 @@ Given the product's title, its URL category/product slug words, and whatever spe
 - "key_identifiers": 2-5 short strings that MUST match for two listings to be considered the same product (brand, model, and only the specs that actually distinguish this product from a similar one — not generic descriptors like "durable" or "high quality").
 - "canonical_name": a clean "Brand Model — short descriptor" string.
 - "search_queries": 1-3 short, natural search strings (5-10 words each) a person would type into Amazon or Flipkart's search box to find this exact product. No GeM jargon, no tender/procurement codes, no warranty terms.
+- "aliases": 0-3 other names this exact product is sold under — alternate model spellings, series names, or the name a retailer would list it as. Empty list if there are none.
+- "key_attributes": 2-5 short "attribute: value" strings that pin down this variant (for example "capacity: 1 TB", "pack size: 2", "size: 7"), so a different size or pack is not mistaken for the same product. Empty list only if the product genuinely has no such attributes.
 
-Respond with ONLY a single JSON object with exactly these five keys: brand, model, key_identifiers, canonical_name, search_queries. No markdown fences, no explanation, no other text."""
+Respond with ONLY a single JSON object with exactly these seven keys: brand, model, key_identifiers, canonical_name, search_queries, aliases, key_attributes. No markdown fences, no explanation, no other text."""
 
 
 def normalize_product(gem_product: dict, *, client=None) -> dict:
@@ -377,6 +379,8 @@ def normalize_product(gem_product: dict, *, client=None) -> dict:
         "brand": data.get("brand") or gem_product.get("brand"),
         "model": data.get("model") or gem_product.get("model"),
         "key_identifiers": _as_str_list(data.get("key_identifiers")),
+        "aliases": _as_str_list(data.get("aliases")),
+        "key_attributes": _as_str_list(data.get("key_attributes")),
         "search_queries": _as_str_list(data.get("search_queries"))
         or ([gem_product.get("title")] if gem_product.get("title") else []),
         # Category/specs/price kept on the normalized identity so verify can
@@ -394,6 +398,12 @@ def normalize_product(gem_product: dict, *, client=None) -> dict:
 _VERIFY_SYSTEM = """You are verifying whether a product listing found on a retail marketplace is the SAME physical product as a reference product from a government e-marketplace (GeM) listing. Minor variant differences (color, bundle packaging that doesn't change the core item) are acceptable — a genuinely different model, capacity, or spec is not a match.
 
 You will be given the reference product's identity (which may include its GeM price and category), a candidate listing URL/domain, and the candidate's scraper-parsed fields (title/price, which may be missing or wrong if the scraper failed) AND the raw visible text of the candidate's page. If the parsed fields look complete and trustworthy, use them. If they look missing, incomplete, or wrong, read the raw page text yourself and extract the real title and price from it instead.
+
+Hard rules, in plain words:
+- Same model code (the manufacturer's model number, printed on both listings) is a strong yes.
+- Different model code is a no, however similar everything else looks.
+- A different pack size or capacity is a no — say no with the reason "different pack".
+- A missing price on the candidate page is not, by itself, a reason to reject it: judge the product's identity, not a price you cannot see.
 
 Price sanity: if the reference GeM price is known and the candidate price is wildly different (roughly more than 3x or less than 1/3 of it) with no plausible explanation (genuine premium bundle, currency/unit confusion, MRP vs selling price), do not give a high confidence — either reject or lower confidence accordingly.
 

@@ -9,14 +9,22 @@ used, whether it is cooling down after an error, how often it failed.
 
 For every call the router:
   1. skips endpoints that are disabled, cooling down, over their
-     provider's daily_limit, or out of tokens for this minute
-     (see llm_providers.json),
+     provider's daily_limit, used up for the day, or out of tokens for
+     this minute (see llm_providers.json),
   2. waits a moment if the provider is already at its max_concurrent,
   3. skips endpoints that were used too recently (their minimum gap),
   4. picks one of the rest, and
   5. if the call fails, puts that endpoint on a cooldown and tries the next.
-If everything is cooling down it waits (up to LLM_MAX_WAIT_SECONDS), then
-gives up with an error that says why.
+
+"Used up for the day" is different from a cooldown: when an endpoint
+answers "daily limit" or "quota exceeded" there is nothing to wait for
+until tomorrow, so the router writes that endpoint's name to
+cache/llm_state.json and skips it on every later call — including after a
+restart. Only names and reset times are stored, never keys.
+
+If nothing can answer, the router raises GatewayBusy (cooling down or at a
+concurrency cap — worth retrying shortly) or GatewayExhausted (every
+allowance for the day is gone). Both subclass RuntimeError.
 
 Adding a provider means adding one entry to llm_providers.json. No code.
 See llm_providers.example.json and docs/llm-providers.md.
@@ -25,13 +33,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
+from core import config as _config
 from core import events
 from core.config import (
     LLM_MAX_WAIT_SECONDS,
@@ -60,6 +71,120 @@ TOKEN_WINDOW_SECONDS = 60.0
 # is ~90% of calls and an easy yes/no question that fast, high-rate-limit
 # providers handle well.
 KNOWN_PURPOSES = ("normalize", "verify", "expand")
+
+# --- errors that tell the pipeline what to do next --------------------------------
+
+class GatewayError(RuntimeError):
+    """No endpoint could answer. Subclasses RuntimeError on purpose: every
+    caller written before this distinction existed keeps working."""
+
+
+class GatewayBusy(GatewayError):
+    """Endpoints are cooling down or at their concurrency cap. The listing
+    was not checked — retry it later, it did not fail."""
+
+
+class GatewayExhausted(GatewayError):
+    """Every endpoint has used up its allowance for the day. Warning text is
+    the whole message: 'LLM limits used up until HH:MM for: name, name'."""
+
+
+# --- remembering an endpoint whose day is used up ---------------------------------
+
+STATE_FILE_NAME = "llm_state.json"
+
+# Text a provider uses when the day's allowance is gone, not when it merely
+# wants a slower pace. "rate limit" alone is deliberately NOT here: that is
+# a short rest, and the normal cooldown handles it.
+_QUOTA_MARKERS = (
+    "daily limit",
+    "daily quota",
+    "quota exceeded",
+    "exceeded your quota",
+    "quota exhausted",
+    "insufficient_quota",
+    "out of credits",
+    "credit balance",
+)
+
+# "retry after 2 hours", "try again in 30 minutes", "resets in 45s" ...
+_RESET_HINT_RE = re.compile(
+    r"(?:retry|try again|resets?|reset in|available)\D{0,20}?(\d+(?:\.\d+)?)\s*"
+    r"(s|sec(?:ond)?s?|m|min(?:ute)?s?|h|hr|hours?)\b",
+    re.IGNORECASE,
+)
+
+
+def _state_path() -> Path:
+    """Read at call time, so a changed CACHE_DIR (tests) is respected."""
+    return Path(_config.CACHE_DIR) / STATE_FILE_NAME
+
+
+def _read_used_up() -> dict[str, float]:
+    """{endpoint name: epoch seconds until it is worth trying again}."""
+    try:
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    used = data.get("used_up") if isinstance(data, dict) else None
+    if not isinstance(used, dict):
+        return {}
+    out: dict[str, float] = {}
+    for name, until in used.items():
+        try:
+            out[str(name)] = float(until)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _write_used_up(used: dict[str, float]) -> None:
+    """One piece or nothing: temp file next to the target, then os.replace."""
+    path = _state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, tmp = tempfile.mkstemp(prefix=".llm_state_", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump({"used_up": used}, fh, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _is_quota_error(status, text: str) -> bool:
+    lowered = (text or "").lower()
+    return status == 402 or any(marker in lowered for marker in _QUOTA_MARKERS)
+
+
+def _reset_hint(text: str, now: float) -> Optional[float]:
+    """The moment the error text promises, in epoch seconds, or None."""
+    match = _RESET_HINT_RE.search(text or "")
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    if unit.startswith("h"):
+        seconds = value * 3600
+    elif unit.startswith("m"):
+        seconds = value * 60
+    else:
+        seconds = value
+    if seconds <= 0 or seconds > 24 * 3600:
+        return None
+    return now + seconds
+
+
+def _next_local_midnight(now: float) -> float:
+    local = datetime.fromtimestamp(now)
+    return (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _clock_text(until: float) -> str:
+    return datetime.fromtimestamp(until).strftime("%H:%M")
 
 
 @dataclass
@@ -220,12 +345,19 @@ class Router:
         sleep: Callable[[float], None] = time.sleep,
         client_factory: Optional[Callable[[Endpoint], object]] = None,
         today: Optional[Callable[[], str]] = None,
+        wall_clock: Callable[[], float] = time.time,
     ):
         self.endpoints = endpoints
         self.strategy = strategy
         self.max_wait = max_wait
         self.clock = clock
         self.sleep = sleep
+        # Timestamps about *when in the day* something happened use wall time,
+        # not the monotonic clock used for cooldowns. Tests inject a fake.
+        self.wall_clock = wall_clock
+        self._used_up: dict[str, float] = {
+            name: until for name, until in _read_used_up().items() if until > self.wall_clock()
+        }
         self._factory = client_factory or self._make_client
         self._clients: dict = {}
         self._lock = threading.Lock()
@@ -243,23 +375,34 @@ class Router:
     # -- public ---------------------------------------------------------------
 
     def complete(self, messages: list[dict], max_tokens: int, purpose: str = "") -> str:
-        """Return the model's raw text. Raises RuntimeError if nobody can answer."""
+        """Return the model's raw text. Raises GatewayBusy or GatewayExhausted
+        (both RuntimeError) if nobody can answer."""
         deadline = self.clock() + self.max_wait
         estimated = _estimate_call_tokens(messages)
+        empty_answers = 0
         while True:
             endpoint, wait = self._pick(purpose, estimated)
             if endpoint is None:
                 if wait is None:
-                    raise RuntimeError("No LLM endpoint is usable: " + self._why_unusable())
+                    raise self._unusable_error()
                 if self.clock() + wait > deadline:
-                    raise RuntimeError(
-                        "All LLM endpoints are busy or failing: " + self._why_unusable(include_cooling=True)
-                    )
+                    raise self._unusable_error()
                 self.sleep(wait)
                 continue
             raw = self._call(endpoint, messages, max_tokens, purpose)
             if raw is not None:
                 return raw
+            # An empty answer is a failed call, but the same endpoint will
+            # probably answer empty again — try ONE other endpoint, then stop.
+            if "empty answer" in endpoint.last_error:
+                empty_answers += 1
+                if empty_answers >= 2:
+                    raise GatewayBusy(
+                        "Every LLM endpoint returned an empty answer: "
+                        + self._why_unusable(include_cooling=True)
+                    )
+            else:
+                empty_answers = 0
 
     def status(self) -> list[dict]:
         now = self.clock()
@@ -267,10 +410,16 @@ class Router:
         with self._lock:
             self._roll_day()
             for e in self.endpoints:
+                reason = ""
                 if not e.enabled:
                     state = "disabled"
+                    reason = e.disabled_reason
                 elif self._over_daily(e):
                     state = "limit"
+                    reason = "daily limit reached"
+                elif self._is_used_up(e):
+                    state = "limit"
+                    reason = f"used up until {_clock_text(self._used_up_until(e))}"
                 elif e.cooldown_until > now:
                     state = "cooling"
                 else:
@@ -281,7 +430,7 @@ class Router:
                         "provider": e.provider,
                         "model": e.model,
                         "state": state,
-                        "reason": e.disabled_reason if state == "disabled" else ("daily limit reached" if state == "limit" else ""),
+                        "reason": reason,
                         "cooldown_remaining": round(max(e.cooldown_until - now, 0.0), 1),
                         "calls": e.calls,
                         "errors": e.errors,
@@ -309,6 +458,39 @@ class Router:
 
     def _over_daily(self, endpoint: Endpoint) -> bool:
         return endpoint.daily_limit > 0 and self._calls_today.get(endpoint.provider, 0) >= endpoint.daily_limit
+
+    def _used_up_until(self, endpoint: Endpoint) -> float:
+        return self._used_up.get(endpoint.name, 0.0)
+
+    def _is_used_up(self, endpoint: Endpoint) -> bool:
+        return self._used_up_until(endpoint) > self.wall_clock()
+
+    def _mark_used_up(self, endpoint: Endpoint, until: float) -> None:
+        """Remember the endpoint's day is gone, on disk too (call with the
+        lock held). A state file that cannot be written must not break a
+        run — it only costs the restart memory."""
+        self._used_up[endpoint.name] = until
+        self._used_up = {name: end for name, end in self._used_up.items() if end > self.wall_clock()}
+        try:
+            _write_used_up(self._used_up)
+        except OSError as exc:
+            logger.warning("could not save the used-up LLM endpoints (%s); a restart may retry them.", exc)
+
+    def _unusable_error(self) -> GatewayError:
+        """Busy or used-up? The pipeline acts differently: busy is retried,
+        used-up produces one warning with the time it ends."""
+        enabled = [e for e in self.endpoints if e.enabled]
+        if enabled and all(self._over_daily(e) or self._is_used_up(e) for e in enabled):
+            names = ", ".join(sorted(e.name for e in enabled))
+            until = max(
+                [self._used_up_until(e) for e in enabled if self._is_used_up(e)]
+                + [_next_local_midnight(self.wall_clock())]
+            )
+            message = f"LLM limits used up until {_clock_text(until)} for: {names}"
+            if any(self._over_daily(e) for e in enabled):
+                message += " (" + self._why_unusable() + ")"
+            return GatewayExhausted(message)
+        return GatewayBusy("All LLM endpoints are busy or failing: " + self._why_unusable(include_cooling=True))
 
     def _release_slot(self, endpoint: Endpoint) -> None:
         """One in-flight call for this provider just finished."""
@@ -342,9 +524,11 @@ class Router:
             ]
             if not usable:
                 return None, None
-            available = [e for e in usable if not self._over_daily(e)]
+            available = [
+                e for e in usable if not self._over_daily(e) and not self._is_used_up(e)
+            ]
             if not available:
-                return None, None  # daily limits are the only thing left
+                return None, None  # every allowance for today is gone
             free = [e for e in available if e.max_concurrent <= 0 or self._in_flight.get(e.provider, 0) < e.max_concurrent]
             ready = [
                 e for e in free
@@ -433,6 +617,8 @@ class Router:
                 parts.append(f"{e.name}: {e.disabled_reason}")
             elif self._over_daily(e):
                 parts.append(f"{e.name}: daily limit reached ({self._calls_today.get(e.provider, 0)}/{e.daily_limit} calls today)")
+            elif self._is_used_up(e):
+                parts.append(f"{e.name}: used up until {_clock_text(self._used_up_until(e))}")
             elif include_cooling and e.last_error:
                 parts.append(f"{e.name}: {e.last_error}")
         return "; ".join(parts) or "no endpoints configured"
@@ -492,6 +678,7 @@ class Router:
     def _record_failure(self, endpoint: Endpoint, exc: Exception, seconds: float, purpose: str) -> None:
         status = getattr(exc, "status_code", None)
         text = (f"HTTP {status}: " if status else "") + f"{type(exc).__name__}: {str(exc)[:200]}"
+        used_up_until: Optional[float] = None
         with self._lock:
             endpoint.errors += 1
             endpoint.fail_streak += 1
@@ -503,6 +690,12 @@ class Router:
                 for e in targets:
                     e.enabled, e.disabled_reason = False, reason
                 cooldown = 0.0
+            elif _is_quota_error(status, str(exc)):
+                # Not "slow down" — the allowance is gone. Nothing to wait
+                # for until the reset, so remember it (today and tomorrow).
+                used_up_until = _reset_hint(str(exc), self.wall_clock()) or _next_local_midnight(self.wall_clock())
+                self._mark_used_up(endpoint, used_up_until)
+                cooldown = 0.0
             else:
                 base = RATE_LIMIT_COOLDOWN if status == 429 else OTHER_ERROR_COOLDOWN
                 retry_after = _retry_after(exc)
@@ -512,11 +705,17 @@ class Router:
         # This call is over (failed or empty) — its reservation stops being
         # "about to run"; with no real usage it just keeps the estimate.
         self._finalize_tokens(endpoint)
-        logger.warning("LLM endpoint %s failed (%s). %s", endpoint.name, text,
-                       "Disabled." if cooldown == 0.0 else f"Resting it for {cooldown:.0f}s.")
+        if used_up_until is not None:
+            logger.warning("LLM endpoint %s has used up its allowance (%s). Not trying it again until %s.",
+                           endpoint.name, text, _clock_text(used_up_until))
+        else:
+            logger.warning("LLM endpoint %s failed (%s). %s", endpoint.name, text,
+                           "Disabled." if cooldown == 0.0 else f"Resting it for {cooldown:.0f}s.")
         events.emit("llm_call", endpoint=endpoint.name, provider=endpoint.provider, model=endpoint.model,
                     purpose=purpose, seconds=round(seconds, 2), ok=False, status=status, error=text)
-        if cooldown:
+        if used_up_until is not None:
+            events.emit("llm_used_up", endpoint=endpoint.name, until=_clock_text(used_up_until), reason=text)
+        elif cooldown:
             events.emit("llm_cooldown", endpoint=endpoint.name, seconds=round(cooldown, 1), reason=text)
         else:
             events.emit("llm_disabled", endpoint=endpoint.name, reason=endpoint.disabled_reason)

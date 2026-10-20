@@ -77,7 +77,7 @@ eason. A page
 - 2026-10-20 - Tests hide `curl_cffi` from `sys.modules` (the autouse
   fixture) and the Flipkart/fast-path seams, so no test can reach a live shop
   through libcurl, whose sockets bypass the socket-level network guard.
-  	ests/test_doctor.py removes that sentinel for its package check only.
+  tests/test_doctor.py removes that sentinel for its package check only.
   (Stage 3)
 
 - 2026-10-20 - Discovery asks every engine at the same time and takes the
@@ -106,3 +106,44 @@ eason. A page
   would make every run "uncacheable" whenever an engine hiccups. Blocked is
   reported only when no engine produced links and at least one was blocked;
   otherwise the call reports the engine errors. (Stage 4)
+
+- 2026-10-20 - "Used up for the day" is a persisted fact, not a cooldown.
+  `cache/llm_state.json` holds `{endpoint name: epoch second it may be tried
+  again}` and nothing else — no keys, no prompts, no answers. It is written
+  atomically (temp file + `os.replace`) and read when a `Router` starts, so
+  a restart after "daily limit" still skips that endpoint. Entries expire on
+  their own; a successful call elsewhere does not clear them. (Stage 5)
+
+- 2026-10-20 - A quota answer is recognised by status/text, not by every
+  429: HTTP 402, or text containing "daily limit", "daily quota", "quota
+  exceeded", "exceeded your quota", "quota exhausted", "insufficient_quota",
+  "out of credits" or "credit balance". A plain 429 ("slow down") keeps the
+  ordinary short cooldown; treating one burst as a lost day would waste free
+  capacity. When the error text says when it resets ("retry after 2 hours",
+  "resets in 45s") that time is used; otherwise it is the next local
+  midnight. (Stage 5)
+
+- 2026-10-20 - `GatewayBusy` and `GatewayExhausted` share the `GatewayError`
+  base, which subclasses `RuntimeError`, so older `except RuntimeError`
+  callers (including the matcher's per-listing skip) keep working unchanged.
+  `GatewayExhausted`'s message is the pipeline warning verbatim — "LLM
+  limits used up until HH:MM for: name, name"; endpoints stopped by a
+  configured `daily_limit` add their call counts in parentheses. (Stage 5)
+
+- 2026-10-20 - The pipeline does not die when the LLM is gone: normalize
+  falls back to the GeM title as the identity, and every match batch is
+  wrapped so a busy/used-up gateway turns that batch's listings into skipped
+  (reported as "verify incomplete") with one warning. The full
+  `not_checked` status belongs to Stage 6; this stage only keeps the run
+  alive and honest. (Stage 5)
+
+- 2026-10-20 - An empty answer is retried once on another endpoint and then
+  raises `GatewayBusy` with the last failure in the message. It is never
+  cached, because only parsed JSON reaches `llm/cache.py::put` and an empty
+  answer never gets that far. (Stage 5)
+
+- 2026-10-20 - Describe prompt v2 adds `aliases` and `key_attributes` (both
+  optional lists, parsed with the existing defensive list coercion) and the
+  verify prompt states the model-code / pack-size / missing-price rules in
+  plain words. Page text stays inside the same fences, defused the same way.
+  (Stage 5)
