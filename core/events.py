@@ -20,6 +20,8 @@ import time
 from contextlib import contextmanager
 from typing import Callable, Optional
 
+from core.errors import redact_obj
+
 _current = contextvars.ContextVar("gem_event_sink", default=None)
 
 
@@ -35,6 +37,7 @@ class EventSink:
         with self._lock:
             self._seq += 1
             event = {"seq": self._seq, "t": round(time.monotonic() - self.started, 3), "type": type_, **data}
+            event = redact_obj(event)
             self.events.append(event)
         if self.callback is not None:
             try:
