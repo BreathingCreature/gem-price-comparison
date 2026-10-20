@@ -186,7 +186,7 @@ REUSE_VERDICTS = _flag("GEM_REUSE_VERDICTS", False)  # on a retry, keep the verd
 SLIM_REFERENCE = _flag("GEM_SLIM_REFERENCE", False)  # verify calls send only the reference's identity fields, not the full spec table
 DISCOVERY_ENABLED = _flag("GEM_DISCOVERY", True)  # other-shops discovery and the generic scrape
 FLIPKART_LIGHT = _flag("GEM_FLIPKART_LIGHT", True)  # plain HTTP search page first, then the light Chrome; 0 turns it off
-DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 20.0)  # total budget for the SearXNG stage
+DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 25.0)  # total budget for one discovery call, all engines together
 
 # Max trace files to keep before rotation deletes oldest. Env-overrideable.
 TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)

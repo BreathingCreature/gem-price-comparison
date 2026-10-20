@@ -6,20 +6,24 @@ sites, and anything Part 6's expand_search retry step turns up. Amazon and
 Flipkart bypass this entirely via their own direct search (see
 scrapers/amazon.py, scrapers/flipkart.py).
 
-Backend chain (researched 2026-09-24, all free):
-1. DuckDuckGo lite/html endpoints via curl_cffi TLS impersonation —
-   plain requests get CAPTCHA'd after a few queries (community consensus;
-   ddg-search-mcp uses this exact technique). Falls back to plain requests
-   when a test session is injected or curl_cffi is missing.
-2. SearXNG public instances (aggregator; no CAPTCHA, HTML results parse
-   via the same h3 > a shape as Google). The old Google plain-HTML
-   fallback was removed (F): its page went JS-only from this machine
-   (live-verified 2026-09: HTTP 200, zero <h3>, zero /url?q= links), so it
-   only ever cost one wasted request per query.
+Engines (all free, asked IN PARALLEL — a dead one must not cost the others'
+wait):
+1. DuckDuckGo lite/html via curl_cffi TLS impersonation — plain requests
+   get CAPTCHA'd after a few queries. Falls back to plain requests when a
+   test session is injected or curl_cffi is missing.
+2. ddgs (the maintained duckduckgo_search successor) when installed.
+3. SearXNG public instances (aggregator; server-rendered HTML results).
+   The old Google plain-HTML fallback was removed (F): its page went JS-only
+   from this machine.
+
+The whole stage has one deadline (GEM_DISCOVERY_TIME_LIMIT, default 25 s):
+whatever has not answered by then is dropped, and its engine is recorded in
+`search_issues` instead of failing the run. Results are unioned and deduped
+by the shared listing key.
 
 DDG CAPTCHA cooldown: a live DDG block sets a module-level 1-hour cooldown
-(pattern from searxng PR #5839) so later queries skip straight to SearXNG
-instead of re-hammering DuckDuckGo.
+so later queries skip straight to the other engines. Separately, an engine
+that fails 3 times in this process is skipped for 5 minutes (memory only).
 
 Honesty: a backend that responds but yields zero parseable links now
 returns DiscoveryResult.error set ("backends responded but no result
@@ -34,6 +38,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -41,6 +46,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from core.config import USER_AGENT, REQUEST_TIMEOUT_SECONDS, DISCOVERY_TIME_LIMIT_SECONDS, logger
+from core.keys import listing_key
 
 QUERY_DELAY_RANGE = (1.5, 2.5)  # polite delay between queries in one discover_candidates call
 
@@ -82,7 +88,8 @@ _DIRECT_SCRAPER_DOMAINS = {"amazon.in", "flipkart.com"}
 # Open discovery returns INDIAN retail sites only (user directive
 # 2026-09-24: "visit amazon.in not us, indian sites not the other ones").
 # Rule: any .in / .co.in domain, or one of these known Indian marketplaces
-# that use .com.
+# that use .com. `discovery/indian_shops.txt` adds one domain per line
+# (comments allowed) without a code change.
 _INDIAN_RETAIL_DOMAINS = {
     "flipkart.com", "amazon.in", "snapdeal.com", "paytmmall.com",
     "indiamart.com", "industrybuying.com", "moglix.com", "croma.com",
@@ -91,11 +98,32 @@ _INDIAN_RETAIL_DOMAINS = {
     "pepperfry.com", "shopclues.com", "firstcry.com",
 }
 
+_INDIAN_SHOP_ALLOWLIST_FILE = Path(__file__).with_name("indian_shops.txt")
+_allowlist_extra: Optional[set[str]] = None
+
+
+def _allowlist_extra_domains() -> set[str]:
+    """Domains listed in discovery/indian_shops.txt, read once per process."""
+    global _allowlist_extra
+    if _allowlist_extra is None:
+        domains: set[str] = set()
+        try:
+            for line in _INDIAN_SHOP_ALLOWLIST_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip().lower()
+                if line and not line.startswith("#"):
+                    domains.add(line.removeprefix("www."))
+        except OSError:
+            logger.warning("Could not read %s — using the built-in Indian shop list only.", _INDIAN_SHOP_ALLOWLIST_FILE)
+        _allowlist_extra = domains
+    return _allowlist_extra
+
 
 def _is_indian_retail(domain: str) -> bool:
     if domain.endswith(".in") or domain.endswith(".co.in"):
         return True
-    return _domain_matches_set(domain, _INDIAN_RETAIL_DOMAINS)
+    if _domain_matches_set(domain, _INDIAN_RETAIL_DOMAINS):
+        return True
+    return _domain_matches_set(domain, _allowlist_extra_domains())
 
 
 @dataclass
@@ -111,6 +139,8 @@ class DiscoveryResult:
     filtered_urls: list[str] = field(default_factory=list)
     blocked: bool = False
     error: Optional[str] = None
+    # One line per engine that failed, was skipped or timed out this query.
+    search_issues: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -119,6 +149,7 @@ class DiscoveryResult:
             "filtered_urls": self.filtered_urls,
             "blocked": self.blocked,
             "error": self.error,
+            "search_issues": self.search_issues,
         }
 
 
@@ -297,8 +328,8 @@ def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = Non
     injected sessions (tests) keep plain requests.
 
     All instances are asked AT THE SAME TIME — a dead instance must not
-    cost the others' wait — and the whole stage has one deadline
-    (GEM_DISCOVERY_TIME_LIMIT, default 20s): sequentially, four instances x
+    cost the others' wait — and the whole discovery call has one deadline
+    (GEM_DISCOVERY_TIME_LIMIT, default 25s): sequentially, four instances x
     up to 15s could stall a run for minutes. First instance with parseable
     links wins; on deadline the best answer so far is used."""
     headers = {"Accept-Language": "en-IN,en;q=0.9"}
@@ -348,7 +379,8 @@ def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = Non
     return "<html><body><!-- searxng: no parseable results --></body></html>"
 
 
-# Backends tried per query, in order: DDG (curl_cffi live) → SearXNG.
+# Backends tried per query. Kept as a documented pair even though
+# discover_candidates now drives the engine map below.
 _FETCHERS = (_fetch_ddg_html, _fetch_searxng_html)
 
 _BLOCK_PHRASES = [
@@ -417,6 +449,167 @@ def _parse_result_urls(html: str) -> list[str]:
     return uniq
 
 
+# --- engines, run in parallel ---------------------------------------------------------
+
+ENGINE_FAILURE_LIMIT = 3
+ENGINE_SKIP_SECONDS = 300.0
+
+# In-memory only (deliberately not persisted): a fresh process retries
+# everything, which is what you want after a network blip.
+_engine_failures: dict[str, int] = {}
+_engine_skip_until: dict[str, float] = {}
+
+_ddgs_installed: Optional[bool] = None
+
+
+def _ddgs_available() -> bool:
+    global _ddgs_installed
+    if _ddgs_installed is None:
+        try:
+            import ddgs  # noqa: F401
+            _ddgs_installed = True
+        except Exception:
+            _ddgs_installed = False
+    return _ddgs_installed
+
+
+def _engine_skipped(name: str) -> bool:
+    return time.time() < _engine_skip_until.get(name, 0.0)
+
+
+def _note_engine_outcome(name: str, *, ok: bool) -> None:
+    if ok:
+        _engine_failures[name] = 0
+        return
+    count = _engine_failures.get(name, 0) + 1
+    if count >= ENGINE_FAILURE_LIMIT:
+        _engine_failures[name] = 0
+        _engine_skip_until[name] = time.time() + ENGINE_SKIP_SECONDS
+        logger.warning(
+            "Search engine %s failed %d times in a row — skipping it for %.0f minutes.",
+            name, ENGINE_FAILURE_LIMIT, ENGINE_SKIP_SECONDS / 60.0,
+        )
+    else:
+        _engine_failures[name] = count
+
+
+def _engine_duckduckgo(query: str, session) -> tuple[list[str], bool]:
+    html = _fetch_ddg_html(query, session=session)
+    if _looks_blocked(html):
+        if session is None:
+            _start_ddg_cooldown()
+        return [], True
+    return _parse_result_urls(html), False
+
+
+def _engine_ddgs(query: str, session) -> tuple[list[str], bool]:
+    """The `ddgs` package (maintained duckduckgo_search successor). Raises
+    ImportError when not installed — the engine list skips it then."""
+    from ddgs import DDGS
+
+    with DDGS() as ddgs:
+        rows = list(ddgs.text(query, max_results=15))
+    urls = [
+        row.get("href") or row.get("url")
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    return [u for u in urls if isinstance(u, str) and u.startswith("http")], False
+
+
+def _engine_searxng(query: str, session) -> tuple[list[str], bool]:
+    html = _fetch_searxng_html(query, session=session)
+    if _looks_blocked(html):
+        return [], True
+    return _parse_result_urls(html), False
+
+
+# Name -> function. Tests replace this map with fake engines; the order here
+# is the order their results are merged in, so the union is deterministic.
+ENGINE_FUNCS = {
+    "duckduckgo": _engine_duckduckgo,
+    "ddgs": _engine_ddgs,
+    "searxng": _engine_searxng,
+}
+
+
+def _active_engines() -> dict:
+    engines = dict(ENGINE_FUNCS)
+    if not _ddgs_available():
+        engines.pop("ddgs", None)
+    return engines
+
+
+def _run_engines(query: str, session) -> tuple[list[str], bool, list[str], bool]:
+    """Ask every engine at once. Returns (urls, blocked_any, issues, responded).
+
+    An engine that raises is noted and dropped; one that is still running at
+    the deadline is cancelled and noted. Nothing here raises to the caller —
+    discovery must never fail a run.
+    """
+    engines = _active_engines()
+    issues: list[str] = []
+    responded = False
+    blocked_any = False
+    by_engine: dict[str, list[str]] = {}
+
+    pool = ThreadPoolExecutor(max_workers=max(1, len(engines)), thread_name_prefix="discovery")
+    futures = {}
+    try:
+        for name, fn in engines.items():
+            if _engine_skipped(name):
+                issues.append(f"{name}: skipped after repeated failures")
+                continue
+            futures[name] = pool.submit(fn, query, session)
+
+        names = {future: name for name, future in futures.items()}
+        try:
+            for future in as_completed(names, timeout=DISCOVERY_TIME_LIMIT_SECONDS):
+                name = names[future]
+                try:
+                    urls, blocked = future.result()
+                except _DdgCoolingDown as e:
+                    issues.append(f"{name}: {e}")
+                    continue
+                except ImportError as e:
+                    issues.append(f"{name}: not installed ({e})")
+                    continue
+                except Exception as e:
+                    issues.append(f"{name}: {type(e).__name__}: {e}")
+                    logger.warning("%s failed for %r: %s: %s", name, query, type(e).__name__, e)
+                    _note_engine_outcome(name, ok=False)
+                    continue
+                responded = True
+                blocked_any = blocked_any or blocked
+                _note_engine_outcome(name, ok=True)
+                by_engine[name] = urls
+        except FuturesTimeout:
+            issues.append(f"time limit {DISCOVERY_TIME_LIMIT_SECONDS:.0f}s reached — slow engines dropped")
+            logger.info(
+                "Discovery for %r hit the %.0fs time limit — using the engines that answered.",
+                query, DISCOVERY_TIME_LIMIT_SECONDS,
+            )
+            for name, future in futures.items():
+                if name in by_engine or future.done():
+                    continue
+                future.cancel()
+                _note_engine_outcome(name, ok=False)
+    finally:
+        # Never wait for stragglers — the deadline is the point.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for name in engines:
+        for url in by_engine.get(name, []):
+            key = listing_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(url)
+    return urls, blocked_any, issues, responded
+
+
 def discover_candidates(
     query: str,
     allowed_domains: Optional[list[str]] = None,
@@ -424,49 +617,32 @@ def discover_candidates(
     session: Optional[requests.Session] = None,
 ) -> DiscoveryResult:
     """allowed_domains=None means open discovery (first pass, brand sites) —
-    soft-blocklist common non-retail domains, keep everything else.
+    soft-blocklist common non-retail domains, keep Indian retail only.
     allowed_domains=[...] means strict mode (retry pass, using
     expand_search's suggested_domains) — keep only exact/subdomain matches.
 
-    Tries each backend in _FETCHERS until one yields parseable links.
+    All engines are asked at the same time; their results are unioned and
+    deduped by the shared listing key. A failed, skipped or slow engine is
+    recorded in search_issues and never fails the call.
     """
-    raw_urls: list[str] = []
-    got_response = False
-    blocked_any = False
-    last_err: Optional[str] = None
+    raw_urls, blocked_any, issues, responded = _run_engines(query, session)
 
-    for fetch in _FETCHERS:
-        try:
-            html = fetch(query, session=session)
-        except _DdgCoolingDown as e:
-            logger.info("Skipping DDG for %r: %s", query, e)
-            continue
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-            logger.warning("%s failed for %r: %s", fetch.__name__, query, last_err)
-            continue
-        got_response = True
-        if _looks_blocked(html):
-            logger.warning("%s blocked/CAPTCHA'd the query %r — trying next backend.", fetch.__name__, query)
-            blocked_any = True
-            if fetch is _fetch_ddg_html and session is None:
-                _start_ddg_cooldown()
-            continue
-        raw_urls = _parse_result_urls(html)
-        if raw_urls:
-            break
-
-    if not got_response:
-        return DiscoveryResult(query=query, error=last_err or "all search backends failed")
     if not raw_urls:
+        if not responded:
+            return DiscoveryResult(
+                query=query,
+                error="; ".join(issues) or "all search backends failed",
+                search_issues=issues,
+            )
         if blocked_any:
-            return DiscoveryResult(query=query, blocked=True)
+            return DiscoveryResult(query=query, blocked=True, search_issues=issues)
         # Responded fine but yielded nothing parseable — NOT a silent empty
         # success; downstream must be able to tell "engine broken" from
         # "nothing on the internet matches".
         return DiscoveryResult(
             query=query,
             error="search backends responded but no result links could be parsed",
+            search_issues=issues,
         )
 
     filtered = []
@@ -495,7 +671,7 @@ def discover_candidates(
                 continue  # Indian sites only — no .com foreign stores in open discovery
             filtered.append(u)
 
-    return DiscoveryResult(query=query, raw_urls=raw_urls, filtered_urls=filtered)
+    return DiscoveryResult(query=query, raw_urls=raw_urls, filtered_urls=filtered, search_issues=issues)
 
 
 def discover_for_queries(

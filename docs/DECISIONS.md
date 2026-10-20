@@ -79,3 +79,30 @@ eason. A page
   through libcurl, whose sockets bypass the socket-level network guard.
   	ests/test_doctor.py removes that sentinel for its package check only.
   (Stage 3)
+
+- 2026-10-20 - Discovery asks every engine at the same time and takes the
+  union, deduped by `core/keys.py::listing_key`. One deadline covers the
+  whole call (`GEM_DISCOVERY_TIME_LIMIT`, now 25 s, was a 20 s SearXNG-only
+  budget); engines still running at the deadline are cancelled and noted.
+  (Stage 4)
+
+- 2026-10-20 - Engine health is in memory only: three failures in a row skip
+  that engine for five minutes, a success resets the count, and a timeout
+  counts as a failure. A restart retries everything, which is the right
+  default after a network blip. (Stage 4)
+
+- 2026-10-20 - `ddgs` is an optional guarded import and the engine is left
+  out entirely when the package is missing (no issue line on every run).
+  `duckduckgo` and `searxng` stay the two always-tried engines; the
+  six-backend router from the spec is not built. (Stage 4)
+
+- 2026-10-20 - `discovery/indian_shops.txt` is additive to the built-in
+  Indian shop list, one domain per line, comments allowed. `.in` /
+  `.co.in` still pass without being listed. (Stage 4)
+
+- 2026-10-20 - `DiscoveryResult` gained `search_issues` (one line per
+  failed, skipped or timed-out engine), included in `to_dict` so it lands
+  in the trace. It is not folded into the run's `search_issues`: doing so
+  would make every run "uncacheable" whenever an engine hiccups. Blocked is
+  reported only when no engine produced links and at least one was blocked;
+  otherwise the call reports the engine errors. (Stage 4)

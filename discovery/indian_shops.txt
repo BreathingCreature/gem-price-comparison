@@ -1,0 +1,14 @@
+# Indian shops that use a .com / other non-.in ending, so the .in rule in
+# discovery/discover.py cannot recognise them. One domain per line; a line
+# starting with # is a comment. Subdomains are matched automatically.
+#
+# These are added to the built-in list in discover.py, not a replacement.
+boat-lifestyle.com
+noise.com
+mivi.com
+chumbak.com
+fablestreet.com
+bombayshirts.com
+thesouledstore.com
+zebronics.com
+portronics.com
