@@ -25,6 +25,26 @@ from llm import client as _client
 from llm.router import load_endpoints
 
 MESSAGES = [{"role": "user", "content": "Reply with the single word: OK"}]
+_RATE_LIMIT_HEADER = __import__("re").compile(r"rate|retry|reset|remaining|limit", __import__("re").IGNORECASE)
+
+
+def _response_headers(resp):
+    headers = getattr(resp, "headers", None)
+    if headers is None:
+        headers = getattr(getattr(resp, "_response", None), "headers", None)
+    return headers or {}
+
+
+def _finish_reason(resp):
+    try:
+        return resp.choices[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return None
+
+
+def _rate_limit_header_names(resp):
+    """Names only. A header value could contain account data, so it is never read."""
+    return sorted(str(name) for name in _response_headers(resp) if _RATE_LIMIT_HEADER.search(str(name)))
 
 
 def _make_client(endpoint):
@@ -60,15 +80,21 @@ def probe_endpoint(endpoint, *, client_factory=None) -> dict:
     seconds = round(time.perf_counter() - started, 2)
     if not raw:
         return {"endpoint": endpoint.name, "ok": False, "seconds": seconds,
+                "finish_reason": _finish_reason(resp),
+                "rate_limit_headers": _rate_limit_header_names(resp),
                 "error": "empty answer (a reasoning model may need more max_tokens or request_options)"}
-    return {"endpoint": endpoint.name, "ok": True, "seconds": seconds, "reply": raw[:40]}
+    return {"endpoint": endpoint.name, "ok": True, "seconds": seconds, "reply": raw[:40],
+            "finish_reason": _finish_reason(resp),
+            "rate_limit_headers": _rate_limit_header_names(resp)}
 
 
 def _line(row: dict) -> str:
     if row.get("disabled"):
         return f"  {row['endpoint']:<48} off      {row['error']}"
     if row["ok"]:
-        return f"  {row['endpoint']:<48} OK       {row['seconds']:.2f}s  {row['reply']!r}"
+        limits = ", ".join(row.get("rate_limit_headers") or []) or "none"
+        return (f"  {row['endpoint']:<48} OK       {row['seconds']:.2f}s  {row['reply']!r}"
+                f"  finish={row.get('finish_reason')}  rate-limit headers: {limits}")
     return f"  {row['endpoint']:<48} FAILED   {row['error']}"
 
 

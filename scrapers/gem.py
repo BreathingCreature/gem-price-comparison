@@ -1,5 +1,5 @@
 """
-Part 1 — GeM product extractor.
+GeM product extractor: one product page in, GemProduct out.
 
 Input: a single GeM product URL
        (mkp.gem.gov.in/<category>/<product>/p-<id>-<id>-cat.html)
@@ -9,7 +9,7 @@ No browser needed. GeM's product pages are server-rendered HTML; a real
 (even headless, even anti-detection-masked) browser actually gets blocked
 here. Plain requests + BeautifulSoup works. See the build spec doc, section
 0, for how that was confirmed. This is the opposite situation from
-Amazon/Flipkart in Part 4, which DO need a real browser — don't copy this
+Amazon/Flipkart, which DO need a real browser — don't copy this
 module's approach over there.
 """
 from __future__ import annotations
@@ -234,7 +234,7 @@ def _spec_value(specs: dict, names: set) -> Optional[str]:
 def _guess_brand_model(title: str) -> tuple[Optional[str], Optional[str]]:
     """Very light heuristic: first word of the title as brand (case-
     insensitive — real GeM titles often start lowercase, e.g. "logitech
-    Wireless Computer Mouse"). Intentionally weak — Part 2's LLM normalizer
+    Wireless Computer Mouse"). Intentionally weak — the LLM normalizer
     does the real identity extraction. This just gives it a head start, and
     is a fallback if that LLM call fails."""
     if not title:

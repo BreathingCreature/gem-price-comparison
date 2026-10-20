@@ -26,8 +26,9 @@ def _client(reply=None, error=None):
 def test_a_working_endpoint_is_reported_ok():
     ep = _endpoint("nvidia")
     row = probe_endpoints.probe_endpoint(ep, client_factory=lambda e: _client(reply="OK"))
-    assert row == {"endpoint": "nvidia/m", "ok": True, "seconds": row["seconds"], "reply": "OK"}
+    assert row["endpoint"] == "nvidia/m" and row["ok"] is True and row["reply"] == "OK"
     assert row["seconds"] >= 0
+    assert row["finish_reason"] is None and row["rate_limit_headers"] == []
 
 
 def test_a_failing_endpoint_reports_the_real_error():
@@ -68,3 +69,23 @@ def test_main_is_quiet_and_returns_0_when_everything_works(monkeypatch):
     monkeypatch.setattr(probe_endpoints, "_make_client", lambda e: _client(reply="OK"))
 
     assert probe_endpoints.main([]) == 0
+
+
+def test_the_finish_reason_and_rate_limit_header_names_are_reported():
+    class C:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="OK"), finish_reason="stop")],
+                headers={"x-ratelimit-remaining-requests": "9", "x-ratelimit-reset-requests": "1s",
+                         "content-type": "application/json"},
+            )
+
+    row = probe_endpoints.probe_endpoint(_endpoint("nvidia"), client_factory=lambda e: C())
+    assert row["finish_reason"] == "stop"
+    assert row["rate_limit_headers"] == ["x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"]
+    line = probe_endpoints._line(row)
+    assert "finish=stop" in line and "x-ratelimit-remaining-requests" in line
+    assert "9" not in line.rsplit("rate-limit headers:", 1)[1]  # names only, never values

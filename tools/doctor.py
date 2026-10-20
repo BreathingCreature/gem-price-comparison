@@ -97,20 +97,17 @@ def check_frontend_files():
 
 def check_demo_run():
     """Runs the pretend pipeline and checks the event story is complete."""
-    from api.demo import demo_runner
+    from api import demo
 
-    previous = os.environ.get("GEM_DEMO_SPEED")
-    os.environ["GEM_DEMO_SPEED"] = "0"
+    previous = demo.DEMO_DELAY
+    demo.DEMO_DELAY = 0.0
     seen = []
     try:
-        result = demo_runner("https://mkp.gem.gov.in/demo", False, seen.append)
+        result = demo.demo_runner("https://mkp.gem.gov.in/demo", False, seen.append)
     except Exception as exc:
         return FAIL, f"demo run crashed: {type(exc).__name__}: {exc}"
     finally:
-        if previous is None:
-            os.environ.pop("GEM_DEMO_SPEED", None)
-        else:
-            os.environ["GEM_DEMO_SPEED"] = previous
+        demo.DEMO_DELAY = previous
     types = [e["type"] for e in seen]
     needed = ["run_started", "gem_product", "search_finished", "candidate_verdict", "run_finished", "done"]
     missing = [t for t in needed if t not in types]
@@ -137,6 +134,87 @@ def check_live_llm():
             results.append((FAIL, f"{endpoint.name} failed: {exc}"))
     if not results:
         results.append((WARN, "no enabled endpoint to test"))
+    return results
+
+
+SHOP_CANARIES = (("flipkart", "usb c cable"), ("amazon", "usb c cable"))
+ENGINE_CANARY_QUERY = "logitech m650 price india"
+DEBUG_HTML_DIR = ROOT / "debug_html"
+
+
+def check_live_engines():
+    """Asks every active discovery engine one query. No engine, no warning storm."""
+    from discovery import discover
+
+    try:
+        engines = discover._active_engines()
+    except Exception as exc:
+        return [(FAIL, f"cannot list discovery engines: {type(exc).__name__}: {exc}")]
+    if not engines:
+        return [(WARN, "no discovery engine is active right now")]
+    results = []
+    for name, fn in engines.items():
+        started = time.monotonic()
+        try:
+            urls, blocked = fn(ENGINE_CANARY_QUERY, None)
+        except Exception as exc:
+            results.append((FAIL, f"engine {name} crashed: {type(exc).__name__}: {exc}"))
+            continue
+        took = time.monotonic() - started
+        if blocked:
+            results.append((WARN, f"engine {name} showed a CAPTCHA (it rests for {discover.ENGINE_SKIP_SECONDS:.0f}s)"))
+        elif not urls:
+            results.append((WARN, f"engine {name} returned no links in {took:.1f}s"))
+        else:
+            results.append((PASS, f"engine {name} returned {len(urls)} link(s) in {took:.1f}s"))
+    return results
+
+
+def _canary_page_html(shop, query):
+    """The raw page a canary saw, best effort --- only used to save evidence."""
+    from scrapers import amazon, flipkart
+
+    try:
+        if shop == "flipkart":
+            return flipkart._fetch_light_page(query)
+        return amazon._fetch_curl_cffi_page(query)
+    except Exception:
+        return None
+
+
+def _save_canary_page(shop, query, html):
+    DEBUG_HTML_DIR.mkdir(parents=True, exist_ok=True)
+    slug = "".join(ch if ch.isalnum() else "-" for ch in query.lower()).strip("-")[:40]
+    path = DEBUG_HTML_DIR / f"{shop}-{slug}-{int(time.time())}.html"
+    path.write_text(html or "", encoding="utf-8")
+    return path
+
+
+def check_live_shops():
+    """One known query per shop; the parser must produce at least one card."""
+    from scrapers import amazon, flipkart
+
+    modules = {"flipkart": flipkart, "amazon": amazon}
+    results = []
+    for shop, query in SHOP_CANARIES:
+        started = time.monotonic()
+        try:
+            found = modules[shop].search(query)
+        except Exception as exc:
+            found, error = None, f"{type(exc).__name__}: {exc}"
+        else:
+            error = found.error
+        took = time.monotonic() - started
+        if found is not None and found.candidates and not found.blocked and not error:
+            results.append((PASS, f"shop {shop} parsed {len(found.candidates)} card(s) in {took:.0f}s"))
+            continue
+        path = _save_canary_page(shop, query, _canary_page_html(shop, query))
+        if found is not None and found.blocked:
+            results.append((WARN, f"shop {shop} blocked the canary (page saved: {path})"))
+        elif error:
+            results.append((FAIL, f"shop {shop} canary error: {error} (page saved: {path})"))
+        else:
+            results.append((WARN, f"shop {shop} parsed 0 cards in {took:.0f}s (page saved: {path})"))
     return results
 
 
@@ -199,7 +277,8 @@ def check_live_failover():
 OFFLINE_CHECKS = [check_python, check_packages, check_modules, check_llm_config, check_folders, check_frontend_files, check_demo_run]
 
 
-def run_checks(live_llm: bool = False, live_scrape: bool = False, live_failover: bool = False) -> list[tuple[str, str]]:
+def run_checks(live_llm: bool = False, live_scrape: bool = False, live_failover: bool = False,
+               live_engines: bool = False, live_shops: bool = False) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
     for check in OFFLINE_CHECKS:
         try:
@@ -208,21 +287,82 @@ def run_checks(live_llm: bool = False, live_scrape: bool = False, live_failover:
             results.append((FAIL, f"{check.__name__} crashed: {type(exc).__name__}: {exc}"))
     if live_llm:
         results.extend(check_live_llm())
+    if live_engines:
+        results.extend(check_live_engines())
     if live_scrape:
         results.extend(check_live_scrape())
+    if live_shops:
+        results.extend(check_live_shops())
     if live_failover:
         results.extend(check_live_failover())
     return results
 
 
+def _age_seconds(path: Path) -> float:
+    return time.time() - path.stat().st_mtime
+
+
+def clean_old_files(older_than_days: float) -> list[tuple[str, str]]:
+    """Removes traces, run records and saved debug pages older than the limit."""
+    from core import pipeline, runs
+
+    cutoff = max(0.0, float(older_than_days)) * 86400.0
+    results = []
+    for label, folder, pattern in (
+        ("trace", Path(pipeline.TRACES_DIR), "*.json"),
+        ("run record", Path(runs.runs_dir()), "*.json"),
+        ("debug page", DEBUG_HTML_DIR, "*.html"),
+    ):
+        if not folder.exists():
+            results.append((PASS, f"no {label}s to clean ({folder} does not exist)"))
+            continue
+        removed = 0
+        failed = 0
+        for path in folder.glob(pattern):
+            try:
+                if _age_seconds(path) < cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                failed += 1
+        if failed:
+            results.append((FAIL, f"could not remove {failed} {label}(s) from {folder}"))
+        else:
+            results.append((PASS, f"removed {removed} old {label}(s) from {folder} (older than {older_than_days:g}d)"))
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Health check for the GeM price comparison project.")
+    parser.add_argument("--live", action="store_true",
+                        help="run every live check: LLM endpoints, search engines and shop canaries")
     parser.add_argument("--live-llm", action="store_true", help="send one tiny message to each enabled LLM endpoint")
+    parser.add_argument("--live-engines", action="store_true", help="ask each active search engine one query")
+    parser.add_argument("--live-shops", action="store_true", help="run one canary query per shop and parse the page")
     parser.add_argument("--live-scrape", action="store_true", help="run one real Flipkart and Amazon search")
     parser.add_argument("--live-failover", action="store_true", help="break the first LLM endpoint on purpose and check another answers")
+    parser.add_argument("--clean", action="store_true", help="remove old traces, run records and saved debug pages")
+    parser.add_argument("--older-than", type=float, default=None,
+                        help="age in days for --clean (default: TRACE_MAX_AGE_DAYS)")
     args = parser.parse_args()
 
-    results = run_checks(live_llm=args.live_llm, live_scrape=args.live_scrape, live_failover=args.live_failover)
+    if args.clean:
+        from core import config
+
+        days = args.older_than if args.older_than is not None else config.TRACE_MAX_AGE_DAYS
+        results = clean_old_files(days)
+        for status, message in results:
+            print(f"{status}  {message}")
+        return 1 if any(status == FAIL for status, _ in results) else 0
+
+    results = run_checks(
+        live_llm=args.live or args.live_llm,
+        live_scrape=args.live or args.live_scrape,
+        live_failover=args.live or args.live_failover,
+        live_engines=args.live or args.live_engines,
+        live_shops=args.live or args.live_shops,
+    )
     for status, message in results:
         print(f"{status}  {message}")
     failed = sum(1 for status, _ in results if status == FAIL)

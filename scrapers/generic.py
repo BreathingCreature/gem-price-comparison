@@ -1,5 +1,5 @@
 """
-Part 4 — generic scraper.
+Generic scraper for any shop URL.
 
 The fallback for any domain without a dedicated scraper: brand sites,
 anything the retry step (expand_search) turns up, anything not

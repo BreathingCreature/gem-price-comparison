@@ -5,7 +5,7 @@ flipkart.parse_cards_from_html and amazon.parse_cards_from_html are pure
 functions (html string in, list[dict] out) — deliberately separated from
 the Selenium driving code so they're testable without Chrome installed,
 which this sandbox doesn't have anyway. generic.scrape() is tested with a
-fake requests session, same pattern as Part 1's tests.
+fake requests session, same pattern as the GeM extractor tests.
 
 None of this proves the selectors match today's real Flipkart/Amazon
 markup — only that the parsing logic does the right thing with HTML shaped

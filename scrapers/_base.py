@@ -1,5 +1,5 @@
 """
-Part 4 — shared scraper contracts.
+Shared scraper contracts and helpers.
 
 Two different shapes here, because Amazon/Flipkart and "everything else"
 actually work differently in practice, not just in theory:
@@ -10,11 +10,11 @@ actually work differently in practice, not just in theory:
   off the result cards. Amazon follows the same pattern below, since
   there's no tested reason to do it differently and Amazon's search cards
   give the same kind of structured data.
-- Everything else (brand sites, anything Part 6's retry step turns up)
+- Everything else (brand sites, anything the retry step turns up)
   goes through generic.py's per-URL scrape(url) instead — there's no
   "search this site directly" shortcut for an arbitrary domain.
 
-This means Part 3 (discovery) and Part 6 (orchestrator) need to treat
+This means discovery and the pipeline need to treat
 Flipkart/Amazon as "query them directly" sources, not "discover via Google,
 then visit each URL" like everything else. Flagging that now since it
 changes how those parts get wired, even though they're not built yet.

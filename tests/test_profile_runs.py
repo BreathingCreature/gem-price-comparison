@@ -1,4 +1,4 @@
-"""Kit 20: where the seconds and the LLM calls went (tools/profile_runs.py).
+"""Where the seconds and the LLM calls went (tools/profile_runs.py).
 
 The trace JSON already carries everything: stage markers with timestamps and
 one llm_call event per call with its provider, purpose and seconds. This tool

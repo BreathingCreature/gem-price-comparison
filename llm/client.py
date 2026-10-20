@@ -1,5 +1,5 @@
 """
-Part 2 — LLM client wrapper.
+LLM client wrapper.
 
 Everything the pipeline needs from the NVIDIA endpoint lives here, behind
 three functions: normalize_product, verify_or_extract, expand_search. All
@@ -14,7 +14,7 @@ already solid — no reason to rewrite them.
 
 What's different from the old code: no SQLite caching here (this project
 is meant to be fresh-lookup, not permanently cached — see config.py's
-CACHE_TTL_SECONDS, which Part 6 handles at the pipeline level instead), no
+CACHE_TTL_SECONDS, which the pipeline handles at its level instead), no
 regex fallback (that's explicitly deferred — see the build spec's
 "Deferred" section), and three prompts instead of one, since this pipeline
 asks the LLM to do more: identity normalization, match verification with a
