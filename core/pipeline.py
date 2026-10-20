@@ -77,6 +77,7 @@ from core.errors import redact_obj
 from core.keys import listing_key
 from core.parallel import run_many, run_pair
 from llm import router as llm_router
+from llm.router import GatewayExhausted
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
 import discovery
@@ -140,6 +141,52 @@ def _emit_finished(result: dict) -> None:
         savings=comparison.get("savings_vs_gem"),
         trace_id=result.get("trace_id"),
     )
+
+
+def _identity_without_llm(gem_product_dict: dict) -> dict:
+    """The run must still search when the LLM is out of allowance: the GeM
+    title is a worse identity than the normalized one, but it is honest."""
+    title = (gem_product_dict.get("title") or "").strip()
+    return {
+        "canonical_name": title,
+        "brand": gem_product_dict.get("brand"),
+        "model": gem_product_dict.get("model"),
+        "key_identifiers": [],
+        "search_queries": [title] if title else [],
+        "category_slug": gem_product_dict.get("category_slug", ""),
+        "specs": gem_product_dict.get("specs") or {},
+        "gem_price": gem_product_dict.get("gem_price"),
+        "gem_price_type": gem_product_dict.get("gem_price_type", "unknown"),
+    }
+
+
+def _note_llm_offline(warnings: list, message: str) -> None:
+    """One warning per distinct problem; a lane-per-lane outage should not
+    repeat the same sentence three times."""
+    if message not in warnings:
+        warnings.append(message)
+    events.emit("llm_unavailable", reason=message)
+
+
+def _guarded_match(match_fn, warnings: list):
+    """A match batch whose LLM is unavailable must not kill the run: every
+    listing in that batch is reported as skipped (the honest 'not checked')
+    and one warning says why. Busy means 'retry later' and used-up means
+    'not today' — both are the same to the current report."""
+
+    def guarded(normalized, candidates, **kwargs):
+        try:
+            return match_fn(normalized, candidates, **kwargs)
+        except llm_router.GatewayError as exc:
+            _note_llm_offline(warnings, str(exc))
+            urls = []
+            for candidate in candidates or []:
+                item = _cand_dict(candidate)
+                url = item.get("url") if isinstance(item, dict) else None
+                urls.append(url or "<unknown url>")
+            return matcher.MatchBatchResult(all_decisions=[], confirmed_matches=[], skipped=urls)
+
+    return guarded
 
 
 def _save_run_record(gem_url: str, result: dict, trace_id: str, state: str = "done") -> None:
@@ -657,6 +704,7 @@ def _run_pipeline(
         "stages": {},
     }
 
+    warnings: list[str] = []
     flipkart_browser = None
     try:
         if flipkart_search_fn is None:
@@ -687,7 +735,14 @@ def _run_pipeline(
 
         # --- stage 2: normalize ----------------------------------------------------------
         events.emit("stage", name="normalize", label="Working out what the product really is")
-        normalized = normalize_fn(gem_product_dict)
+        try:
+            normalized = normalize_fn(gem_product_dict)
+        except GatewayExhausted as exc:
+            # Every LLM allowance is gone for the day. The comparison is
+            # still worth running with the GeM title as the identity; the
+            # listings simply cannot be verified (reported per lane below).
+            _note_llm_offline(warnings, str(exc))
+            normalized = _identity_without_llm(gem_product_dict)
         trace["stages"]["normalization"] = normalized
         events.emit(
             "normalized",
@@ -702,6 +757,10 @@ def _run_pipeline(
         if not queries:
             fallback = (normalized.get("canonical_name") or gem_product_dict.get("title") or "").strip()
             queries = [fallback] if fallback else [gem_product_dict.get("category_slug") or "product"]
+
+        # Same deal at the matching step: a lane whose LLM call finds every
+        # endpoint busy or used up reports its listings as skipped.
+        match_fn = _guarded_match(match_fn, warnings)
 
         if flipkart_browser is not None:
             # C6: the Flipkart page loop stops early when page 1 already holds
@@ -934,7 +993,6 @@ def _run_pipeline(
 
         # --- comparison arithmetic — the actual point of the project ----------------------
         gem_price = gem_product_dict.get("gem_price")
-        warnings: list[str] = []
         if gem_price is None:
             warnings.append(
                 "GeM price not extracted — price-sanity gate is OFF and savings comparison unavailable."
