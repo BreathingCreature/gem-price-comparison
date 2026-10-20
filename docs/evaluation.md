@@ -114,7 +114,7 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 | `GEM_SLIM_REFERENCE` | `0` | `1` sends only the reference's identity fields (brand, model, canonical name, key identifiers, price) in verify calls instead of the full spec table and search queries |
 | `GEM_DISCOVERY` | `1` | `0` skips the other-shops discovery and the brand-site fetches |
 | `GEM_FLIPKART_LIGHT` | `0` | `1` makes Flipkart's browser skip images and stop loading early. For timing, not for accuracy runs |
-| `GEM_DISCOVERY_TIME_LIMIT` | `20.0` | Seconds the whole search-engine stage may take before giving up on the slow ones |
+| `GEM_DISCOVERY_TIME_LIMIT` | `25.0` | Seconds one discovery call may take before giving up on the slow ones |
 
 Set them for one run only.
 
