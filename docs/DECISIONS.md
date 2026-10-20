@@ -198,3 +198,63 @@ eason. A page
   already answered) and returns [{shop, title, price, url, why}] cheapest
   first. A failure is a warning, never an error, and `similar` never feeds
   the cheapest/savings arithmetic. (Stage 6)
+
+- 2026-10-20 - Lanes are the default (`GEM_PARALLEL=1`); `0` keeps the old
+  sequential path for tests and strict debugging. Each lane ends with a
+  `shop_finished` event carrying its card, and the run emits a first,
+  complete result (`state: shown`) before any retry, so the page never waits
+  for a slow shop to show what the healthy ones already found. (Stage 7)
+
+- 2026-10-20 - A shop card is honest about what happened: `found` needs at
+  least one confirmed match; a blocked or empty search is `not_searched`; a
+  listing the LLM could not judge is `incomplete` (never `not_found`); a
+  lane over `GEM_LANE_TIME_LIMIT` (150 s) is `timed_out`; possible-only is
+  `possible`. `retryable` is true only for statuses a second attempt could
+  change, and a lane that crashed is not retried (the same call would crash
+  again). `build_result` enforces the same rules a second time, including
+  "no cheapest without a priced in-stock match and a GeM price". (Stage 7)
+
+- 2026-10-20 - Retry is per shop, not per run: after the first result only
+  the shops whose card says `retryable` are searched again, with the new
+  words from one `expand` call, and at most once per shop. A retry caused by
+  one unfinished shop keeps the matches another shop already confirmed
+  (merging, not replacing). If the LLM is used up, the retry is skipped with
+  a warning. A crashing retry search or discovery call is logged and the
+  first result stands. (Stage 7)
+
+- 2026-10-20 - The result object is built in one place (`core/result.py::
+  build_result`) and gains `result_version: 2`, `run_id`, `checked_at`,
+  `state`, `gem`, `shops`, `cheapest` (or null), `compared_with` and
+  `described_by`. Old top-level keys (`gem_product`, `not_found_on`,
+  `search_issues`, `skipped`, `comparison`) stay for this release so the
+  CLI, evaluator and current page keep working; changing `RESULT_VERSION`
+  also invalidates old cache files, so a v1 entry is never read as v2.
+  (Stage 7)
+
+- 2026-10-20 - Similar products and the retry decision live in their own
+  modules (`core/similar.py`, `core/retry.py`) so both can be tested without
+  a pipeline run. `pipeline._similar_products` stays as a thin alias because
+  existing tests patch it. (Stage 7)
+
+- 2026-10-20 - Stage 6's A11 (never retry a blocked shop) is replaced by the
+  spec's rule: a blocked shop is `not_searched` with `retryable=True` and
+  gets exactly one retry, because a different query can reach a page that
+  was CAPTCHA'd for the first one. `test_a_blocked_shop_is_not_asked_again_
+  on_the_retry` was rewritten as `test_a_blocked_shop_is_retried_once_with_
+  the_new_words`. (Stage 7)
+
+- 2026-10-20 - The search half of the pipeline now lives in `core/searches.py`
+  (direct search, search health, discovery + generic scraping) and the pure
+  candidate helpers in `core/candidates.py`; the pipeline re-exports the old
+  names so tests and tools calling `pipeline._search_direct`, `_dedup`,
+  `_write_trace` keep working. `core/pipeline.py` is still above the 500-line
+  guideline (cache, trace rotation and the lane runner stay there on purpose:
+  existing tests patch `pipeline.CACHE_DIR`, `pipeline.PARALLEL_SEARCH` and
+  `pipeline.PREFILTER_TOP`, which only works while those names are read from
+  that module). Splitting the rest safely is Phase 2 work, not a behaviour
+  change to slip in here. (Stage 7)
+
+- 2026-10-20 - `GEM_LANE_TIME_LIMIT` marks a shop `timed_out` but cannot stop
+  the lane's thread: the run stops waiting on that lane's answer by keeping
+  the rest of the result and writing the reason on the card. The retry then
+  gives that shop one more try. (Stage 7)

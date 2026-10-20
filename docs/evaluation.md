@@ -99,7 +99,8 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 
 | Setting | Normal | Effect |
 |---|---|---|
-| `GEM_PARALLEL` | `0` | `1` searches Flipkart and Amazon at the same time |
+| `GEM_PARALLEL` | `1` | `0` restores the old one-search-at-a-time path; `1` runs the Flipkart, Amazon and discovery lanes together |
+| `GEM_LANE_TIME_LIMIT` | `150.0` | Seconds a lane may take before its shops are reported `timed_out` (the thread cannot be killed; the result stops waiting on it) |
 | `GEM_RETRY` | `1` | `0` skips the second try with new search words |
 | `GEM_GATES` | `1` | `0` switches off the currency check and the price-band check |
 | `PRICE_SANITY_LOW_RATIO`, `PRICE_SANITY_HIGH_RATIO` | `0.15`, `5.0` | The allowed price band, as a multiple of the GeM price |

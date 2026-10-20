@@ -165,7 +165,7 @@ PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0, minimum
 
 # On/off switches. The defaults are the normal behaviour. They exist so the
 # evaluation can switch one feature off at a time (see docs/evaluation.md).
-PARALLEL_SEARCH = _flag("GEM_PARALLEL", False)  # search Flipkart and Amazon at the same time
+PARALLEL_SEARCH = _flag("GEM_PARALLEL", True)  # search the shops at the same time (the default)
 # GEM_STRICT=1 is the owner's switch back to the old slow, high-recall
 # behaviour: no pre-filter, every listing goes to the LLM, and the lanes
 # still search at the same time (but the verifier runs one listing at a
@@ -195,6 +195,10 @@ SLIM_REFERENCE = _flag("GEM_SLIM_REFERENCE", False)  # verify calls send only th
 DISCOVERY_ENABLED = _flag("GEM_DISCOVERY", True)  # other-shops discovery and the generic scrape
 FLIPKART_LIGHT = _flag("GEM_FLIPKART_LIGHT", True)  # plain HTTP search page first, then the light Chrome; 0 turns it off
 DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 25.0)  # total budget for one discovery call, all engines together
+# One lane may not hold the first result forever. A lane over this budget is
+# reported as timed_out and becomes retryable (the search itself cannot be
+# interrupted from here; scraper-level timeouts do the actual stopping).
+LANE_TIME_LIMIT_SECONDS = _float_setting("GEM_LANE_TIME_LIMIT", 150.0, minimum=1.0)
 
 # Max trace files to keep before rotation deletes oldest. Env-overrideable.
 TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)
@@ -202,7 +206,7 @@ TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)
 TRACE_MAX_AGE_DAYS = _float_setting("GEM_TRACE_MAX_AGE_DAYS", 14.0, minimum=0.0)
 # Bumped whenever the shape of a result changes; part of every cache key so
 # an upgrade never serves an old-shaped result.
-RESULT_VERSION = 1
+RESULT_VERSION = 2
 
 REQUEST_TIMEOUT_SECONDS = 15
 
