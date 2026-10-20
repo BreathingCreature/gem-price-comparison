@@ -89,6 +89,7 @@ def _match_rows(result: dict) -> list[dict]:
                 "url": match.get("url") or match.get("candidate_url") or "",
                 "reason": match.get("reason") or "",
                 "in_stock": match.get("in_stock", True),
+                "bulk": bool(match.get("bulk")),
             }
         )
     return rows
@@ -101,6 +102,8 @@ def _cheapest_text(result: dict) -> str:
     line = format_price(best.get("price"))
     if best.get("shop"):
         line += f" on {best['shop']}"
+        if best.get("bulk"):
+            line += " (B2B/bulk - may be wholesale)"
     saving = best.get("saving_vs_gem")
     if saving is not None:
         word = "less" if saving >= 0 else "more"
@@ -142,7 +145,8 @@ def print_result(gem_url: str, result: dict) -> None:
             is_cheapest = cheapest is not None and row.get("price") == cheapest and row.get("in_stock", True)
             marker = "* " if is_cheapest else "  "
             link = row.get("url") or ""
-            print(f"{marker}{row['shop']:<18}{format_price(row.get('price')):<15}{_pct(row.get('confidence')):<12}{link}")
+            shop = row["shop"] + (" (B2B)" if row.get("bulk") else "")
+            print(f"{marker}{shop:<18}{format_price(row.get('price')):<15}{_pct(row.get('confidence')):<12}{link}")
         if cheapest is not None:
             print()
             print("* = cheapest confirmed match")

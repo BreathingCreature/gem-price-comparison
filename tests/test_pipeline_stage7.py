@@ -121,6 +121,37 @@ def test_cheapest_needs_a_price_and_a_gem_price():
     assert built["cheapest"] is None
 
 
+def test_a_bulk_marketplace_match_is_flagged_and_warned_about():
+    # IndiaMART's ₹6,000 L130 (vs GeM ₹7,999) is likely a wholesale price, not
+    # a retail one. It stays a match, but the row and the cheapest line say so.
+    row = {"candidate_url": "https://www.indiamart.com/p/1", "source_domain": "indiamart.com",
+           "price_used": 600.0, "confidence": 0.95, "is_match": True, "reason": "same"}
+    batch = MatchBatchResult(all_decisions=[row], confirmed_matches=[row])
+    built, confirmed, _ = pipeline._aggregate(
+        gem_url=GEM_URL, gem_product_dict=_gem_product(), normalized=_normalized(),
+        match_result=batch, shops={}, similar=[], warnings=[], search_issues=[],
+        tried_domains={"indiamart.com"}, trace_id="t", state="shown",
+    )
+    assert confirmed[0]["bulk"] is True
+    assert built["matches"][0]["bulk"] is True
+    assert built["cheapest"]["bulk"] is True
+    assert any("B2B/bulk" in warning for warning in built["warnings"])
+
+
+def test_a_retail_match_is_not_flagged_as_bulk():
+    row = {"candidate_url": "https://www.croma.com/p/1", "source_domain": "croma.com",
+           "price_used": 600.0, "confidence": 0.95, "is_match": True, "reason": "same"}
+    batch = MatchBatchResult(all_decisions=[row], confirmed_matches=[row])
+    built, confirmed, _ = pipeline._aggregate(
+        gem_url=GEM_URL, gem_product_dict=_gem_product(), normalized=_normalized(),
+        match_result=batch, shops={}, similar=[], warnings=[], search_issues=[],
+        tried_domains={"croma.com"}, trace_id="t", state="shown",
+    )
+    assert confirmed[0]["bulk"] is False
+    assert built["cheapest"]["bulk"] is False
+    assert not any("B2B/bulk" in warning for warning in built["warnings"])
+
+
 def test_an_unfinished_shop_always_adds_a_warning():
     built = build_result(
         gem_url=GEM_URL, gem_product=_gem_product(), normalized=_normalized(),

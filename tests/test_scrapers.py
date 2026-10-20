@@ -123,6 +123,37 @@ def test_amazon_parse_cards_skips_no_asin():
     assert amazon.parse_cards_from_html(only_placeholder) == []
 
 
+AMAZON_TWO_H2_MOCK_HTML = """
+<div data-component-type="s-search-result" data-asin="B0LIVE0001">
+  <h2 class="a-size-mini s-line-clamp-1"><span class="a-size-medium a-color-base">Epson</span></h2>
+  <h2 aria-label="EcoTank L130 Single Function InkTank Printer for Home &amp; Office"
+      class="a-size-medium a-spacing-none a-color-base a-text-normal"><span>EcoTank L130 Single Function InkTank Printer for Home &amp; Office</span></h2>
+  <span class="a-price"><span class="a-offscreen">₹9,499.00</span></span>
+</div>
+"""
+
+
+def test_amazon_parse_cards_ignores_the_brand_h2():
+    # Live cards carry a brand line ("Epson") in their own h2 above the real
+    # title; reading the first h2 span dropped every Amazon candidate.
+    cards = amazon.parse_cards_from_html(AMAZON_TWO_H2_MOCK_HTML)
+    assert len(cards) == 1
+    assert cards[0]["name"] == "EcoTank L130 Single Function InkTank Printer for Home & Office"
+    assert cards[0]["price"] == "9499.00"
+
+
+def test_amazon_parse_cards_reads_the_title_h2_class_shape():
+    html = """
+    <div data-component-type="s-search-result" data-asin="B0LIVE0002">
+      <h2 class="a-size-mini"><span>Epson</span></h2>
+      <h2 class="a-size-medium a-text-normal"><span>EcoTank L3252 WiFi Printer</span></h2>
+      <span class="a-price"><span class="a-offscreen">₹13,999.00</span></span>
+    </div>
+    """
+    cards = amazon.parse_cards_from_html(html)
+    assert [c["name"] for c in cards] == ["EcoTank L3252 WiFi Printer"]
+
+
 # --- Generic ------------------------------------------------------------------------
 
 GENERIC_MOCK_HTML = """

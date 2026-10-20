@@ -96,6 +96,31 @@ eason. A page
   `duckduckgo` and `searxng` stay the two always-tried engines; the
   six-backend router from the spec is not built. (Stage 4)
 
+- 2026-10-21 - Brave Search HTML joined as a third engine. Live evidence: all
+  four SearXNG instances answered 200 with an empty shell (6.9-8.1 kB, no
+  result links), and a DDG CAPTCHA puts it on a one-hour cooldown - together
+  that left every query returning "search backends responded but no result
+  links could be parsed", which is why the Epson L130 run found only
+  Flipkart. Brave's page keeps "too many requests" in its JS bundle, so the
+  block-phrase check false-positived; the engine now trusts parseable results
+  first. Endpoint is `search.brave.com/search?q=` with curl_cffi fingerprint
+  rotation (chrome150 answers 429, safari180 answers 200). (Live fix)
+
+- 2026-10-21 - Amazon cards now have two `h2`s: the first is the brand line
+  ("Epson"), the second carries the real title in `aria-label`. The old
+  `h2 span...` selector read the brand, so 33 of 34 Amazon candidates were
+  dropped by the prefilter and the survivor was sent to the LLM as "Epson".
+  The parser reads `h2[aria-label]` first, then the older shapes in priority
+  order (a selector union still returns the brand span first). (Live fix)
+
+- 2026-10-21 - LLM status rows are honest about a failing endpoint: a 5xx
+  rests a minute instead of ten seconds (`SERVER_ERROR_COOLDOWN`), and a
+  row whose last call failed within 15 minutes reads `failing` (with
+  `last_status` / `last_failure_ago` / the error in `reason`) instead of
+  `ready`. A 429 whose text says "Daily token limit exceeded" is now treated
+  as used-up (aion's live wording missed the old "daily limit" marker).
+  (Live fix)
+
 - 2026-10-20 - `discovery/indian_shops.txt` is additive to the built-in
   Indian shop list, one domain per line, comments allowed. `.in` /
   `.co.in` still pass without being listed. (Stage 4)

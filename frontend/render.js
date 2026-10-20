@@ -27,7 +27,8 @@
       shop: cheapest.shop || "?",
       price: cheapest.price,
       saving: cheapest.saving_vs_gem,
-      url: cheapest.url || ""
+      url: cheapest.url || "",
+      bulk: !!cheapest.bulk
     };
   }
 
@@ -38,7 +39,8 @@
     if (best.saving != null && !isNaN(Number(best.saving))) {
       tail = " \u2014 " + money(Math.abs(Number(best.saving))) + " " + compareWord(best.saving) + " than GeM";
     }
-    return "Cheapest: " + money(best.price) + " on " + best.shop + tail;
+    var bulk = best.bulk ? " (B2B/bulk, may be wholesale)" : "";
+    return "Cheapest: " + money(best.price) + " on " + best.shop + bulk + tail;
   }
 
   function stateLabel(result, live) {
@@ -80,6 +82,7 @@
       }
       return {
         shop: row.shop || "",
+        bulk: !!row.bulk,
         title: row.title || "",
         price: price,
         priceText: money(price),

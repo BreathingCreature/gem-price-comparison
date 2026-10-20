@@ -344,7 +344,52 @@ def test_google_is_not_a_discovery_backend_anymore():
     assert discovery.discover._FETCHERS == (
         discovery.discover._fetch_ddg_html,
         discovery.discover._fetch_searxng_html,
+        discovery.discover._fetch_brave_html,
     )
+
+
+# --- Brave backend ------------------------------------------------------------------
+
+# One div.snippet per result; the title anchor is the first external link and
+# sponsored snippets point back at search.brave.com.
+BRAVE_MOCK_HTML = """
+<html><body>
+<script>var copy = {rateLimit: "too many requests"};</script>
+<div class="snippet svelte-jmfu5f" data-type="web">
+  <div class="title search-snippet-title"><a href="https://www.reliancedigital.in/product/epson-l130">EPSON L130</a></div>
+</div>
+<div class="snippet svelte-jmfu5f" data-type="web">
+  <div class="title search-snippet-title"><a href="https://search.brave.com/a/redirect?ad=1">Sponsored</a></div>
+</div>
+</body></html>
+"""
+
+
+def test_parse_result_urls_handles_brave_snippets():
+    urls = discovery.discover._parse_result_urls(BRAVE_MOCK_HTML)
+    assert urls == ["https://www.reliancedigital.in/product/epson-l130"]
+
+
+def test_brave_engine_returns_links_from_an_injected_session():
+    urls, blocked = discovery.discover._engine_brave("epson l130", _FakeSession(BRAVE_MOCK_HTML))
+    assert urls == ["https://www.reliancedigital.in/product/epson-l130"]
+    assert blocked is False
+
+
+def test_brave_engine_does_not_call_a_page_blocked_just_for_the_rate_limit_copy():
+    # Live Brave pages ship the "too many requests" string in their JS bundle;
+    # the phrase check flagged healthy result pages before.
+    urls, blocked = discovery.discover._engine_brave("epson l130", _FakeSession(BRAVE_MOCK_HTML))
+    assert urls and blocked is False
+
+
+def test_brave_engine_reports_block_only_when_nothing_parses():
+    urls, blocked = discovery.discover._engine_brave("epson l130", _FakeSession(MOCK_HTML_BLOCKED))
+    assert urls == [] and blocked is True
+
+
+def test_brave_is_registered_as_an_engine():
+    assert "brave" in discovery.discover.ENGINE_FUNCS
 
 
 def test_only_four_searxng_instances_are_used():

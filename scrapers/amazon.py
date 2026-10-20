@@ -127,8 +127,23 @@ def parse_cards_from_html(html: str) -> list[dict]:
         if not card.get("data-asin"):
             continue
 
-        title_el = card.select_one("h2 span.a-text-normal, h2 a span, h2 span")
-        name = title_el.get_text(" ", strip=True) if title_el else ""
+        # The card has TWO h2s on the live page: first the brand line
+        # ("Epson"), then the real title. Taking the first h2's span read the
+        # brand as the product name, so every card looked unrelated. The
+        # title h2 carries the full text in aria-label (new markup); the
+        # older shapes are tried after it, in priority order (a selector
+        # union would still return the brand's span first).
+        name = ""
+        aria_el = card.select_one("h2[aria-label]")
+        if aria_el is not None:
+            name = (aria_el.get("aria-label") or "").strip()
+        if not name:
+            for selector in ("h2.a-text-normal", "h2 span.a-text-normal", "h2 a span", "h2 span"):
+                title_el = card.select_one(selector)
+                if title_el is not None:
+                    name = title_el.get_text(" ", strip=True)
+                    if name:
+                        break
 
         # Selling price only. .a-text-price is Amazon's struck-out MRP, and
         # reading it made a ₹2,000 item look ₹2,000-off cheaper than it is.

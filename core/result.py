@@ -187,6 +187,7 @@ def build_result(
             "price": best_price,
             "url": best["url"],
             "saving_vs_gem": round(gem_price - best_price, 2),
+            "bulk": bool(best.get("bulk")),
         }
         comparison = dict(comparison)
         comparison.setdefault("cheapest_match_price", best_price)

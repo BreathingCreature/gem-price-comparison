@@ -385,6 +385,11 @@ def _similar_products(normalized, candidates: list, warnings: list) -> list:
 
 LANE_FOR_DOMAIN = {"flipkart.com": "flipkart", "amazon.in": "amazon"}
 
+# B2B / bulk marketplaces. They are allowed (the owner wants to see them) but
+# their price can be wholesale, so a match there is labelled "B2B" instead of
+# being read as a retail price — IndiaMART's ₹6,000 L130 was the trigger.
+BULK_MARKETPLACES = {"indiamart.com"}
+
 
 def _norm_domain(domain) -> str:
     return str(domain or "").lower().removeprefix("www.")
@@ -589,6 +594,12 @@ def _aggregate(
         if gem_price is not None and price is not None:
             match["delta_vs_gem"] = price - gem_price
             match["cheaper_than_gem"] = price < gem_price
+        match["bulk"] = _norm_domain(match.get("source_domain") or match.get("shop")) in BULK_MARKETPLACES
+    bulk_domains = sorted({_norm_domain(m.get("source_domain")) for m in confirmed if m.get("bulk")})
+    for domain in bulk_domains:
+        message = f"{domain} is a B2B/bulk marketplace - its price may be wholesale, not retail."
+        if message not in warnings:
+            warnings.append(message)
     priced = [m.get("price_used") for m in confirmed if m.get("price_used") is not None]
     comparison = {
         "gem_price": gem_price,

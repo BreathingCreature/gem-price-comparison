@@ -379,9 +379,53 @@ def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = Non
     return "<html><body><!-- searxng: no parseable results --></body></html>"
 
 
-# Backends tried per query. Kept as a documented pair even though
+BRAVE_FINGERPRINTS = ("safari180", "chrome150", "chrome142")
+
+
+def _fetch_brave_html(query: str, *, session: Optional[requests.Session] = None) -> str:
+    """Third backend: Brave Search's server-rendered HTML. Added after the
+    SearXNG instances began returning empty shells and a DDG CAPTCHA left
+    discovery with no working backend for an hour. Live calls rotate
+    curl_cffi fingerprints — chrome150 got HTTP 429 where safari180
+    answered; injected sessions (tests) keep plain requests."""
+    url = f"https://search.brave.com/search?q={quote_plus(query)}"
+    headers = {"Accept-Language": "en-IN,en;q=0.9", "User-Agent": USER_AGENT}
+
+    if session is not None:
+        resp = session.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        return resp.text
+
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        return resp.text
+
+    last_exc: Exception | None = None
+    for fingerprint in BRAVE_FINGERPRINTS:
+        try:
+            resp = curl_requests.get(
+                url, impersonate=fingerprint,
+                timeout=REQUEST_TIMEOUT_SECONDS, headers=headers,
+            )
+        except Exception as e:
+            last_exc = e
+            continue
+        if resp.status_code == 429:
+            last_exc = RuntimeError("HTTP 429 (rate limited)")
+            continue
+        if resp.status_code >= 400:
+            last_exc = RuntimeError(f"HTTP {resp.status_code}")
+            continue
+        return resp.text
+    raise last_exc or RuntimeError("brave search: no response")
+
+
+# Backends tried per query. Kept as a documented triple even though
 # discover_candidates now drives the engine map below.
-_FETCHERS = (_fetch_ddg_html, _fetch_searxng_html)
+_FETCHERS = (_fetch_ddg_html, _fetch_searxng_html, _fetch_brave_html)
 
 _BLOCK_PHRASES = [
     "detected unusual traffic", "/sorry/index", "our systems have detected",
@@ -440,6 +484,16 @@ def _parse_result_urls(html: str) -> list[str]:
         href = a.get("href", "")
         if href.startswith("http") and "duckduckgo.com" not in href:
             urls.append(href)
+
+    # Brave Search: one div.snippet per result; the first external anchor is
+    # the title link (ads point at search.brave.com/a/... and are skipped).
+    for snippet in soup.select("div.snippet"):
+        for a in snippet.select("a[href^='http']"):
+            href = a["href"]
+            if urlparse(href).netloc.lower().endswith("brave.com"):
+                continue
+            urls.append(href)
+            break
 
     seen, uniq = set(), []
     for u in urls:
@@ -524,12 +578,24 @@ def _engine_searxng(query: str, session) -> tuple[list[str], bool]:
     return _parse_result_urls(html), False
 
 
+def _engine_brave(query: str, session) -> tuple[list[str], bool]:
+    html = _fetch_brave_html(query, session=session)
+    # Brave's bundle ships the "too many requests" copy on every page, so the
+    # generic phrase check flags a healthy result page as blocked. Parseable
+    # results win; only a page with none is judged by the phrase list.
+    urls = _parse_result_urls(html)
+    if urls:
+        return urls, False
+    return [], _looks_blocked(html)
+
+
 # Name -> function. Tests replace this map with fake engines; the order here
 # is the order their results are merged in, so the union is deterministic.
 ENGINE_FUNCS = {
     "duckduckgo": _engine_duckduckgo,
     "ddgs": _engine_ddgs,
     "searxng": _engine_searxng,
+    "brave": _engine_brave,
 }
 
 

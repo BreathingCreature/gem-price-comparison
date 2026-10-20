@@ -120,7 +120,7 @@
     clear($("matches-body"));
     rows.forEach(function (row) {
       $("matches-body").appendChild(h("tr", { class: row.inStock ? "" : "out-of-stock" },
-        h("td", { text: row.shop }),
+        h("td", { text: row.bulk ? row.shop + " (B2B)" : row.shop }),
         h("td", { text: row.priceText }),
         h("td", { class: row.cheaper ? "ok" : "", text: row.vsGem }),
         h("td", { text: row.confidence }),
