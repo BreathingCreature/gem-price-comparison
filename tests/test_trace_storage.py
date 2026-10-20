@@ -55,6 +55,33 @@ def test_the_rotation_scan_runs_every_nth_write_only():
         assert len(kept) == 2 and all(name.startswith("new") for name in kept)
 
 
+def test_traces_older_than_the_age_limit_are_removed():
+    with tempfile.TemporaryDirectory() as tmp:
+        traces = Path(tmp)
+        now = time.time()
+        old = traces / "old.json"
+        old.write_text("{}", encoding="utf-8")
+        os.utime(old, (now - 5 * 86400, now - 5 * 86400))
+        fresh = traces / "fresh.json"
+        fresh.write_text("{}", encoding="utf-8")
+        with _patched(pipeline, TRACES_DIR=traces, TRACE_MAX_FILES=200, TRACE_MAX_AGE_DAYS=2):
+            pipeline._rotate_traces()
+        assert not old.exists()
+        assert fresh.exists()
+
+
+def test_the_age_limit_can_be_switched_off():
+    with tempfile.TemporaryDirectory() as tmp:
+        traces = Path(tmp)
+        now = time.time()
+        old = traces / "old.json"
+        old.write_text("{}", encoding="utf-8")
+        os.utime(old, (now - 5 * 86400, now - 5 * 86400))
+        with _patched(pipeline, TRACES_DIR=traces, TRACE_MAX_FILES=200, TRACE_MAX_AGE_DAYS=0):
+            pipeline._rotate_traces()
+        assert old.exists()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0

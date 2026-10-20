@@ -26,13 +26,21 @@ def _row(**kw):
 AMZ = "https://www.amazon.in/Some-Mouse-Title/dp/B0ABCDEFGH/ref=sr_1_1?crid=1"
 AMZ_SAME = "https://www.amazon.in/dp/B0ABCDEFGH"
 FK = "https://www.flipkart.com/some-mouse/p/itm123abc456?pid=ACCXYZ1234&lid=LST1"
-FK_SAME = "https://www.flipkart.com/other-slug/p/itm999?pid=ACCXYZ1234"
+FK_SAME = "https://www.flipkart.com/other-slug/p/itm999?pid=ACCXYZ1234&lid=LST1&q=mouse"
 
 
 def test_url_key_ignores_title_slug_and_tracking_junk():
-    assert score.url_key(AMZ) == score.url_key(AMZ_SAME) == "asin:B0ABCDEFGH"
-    assert score.url_key(FK) == score.url_key(FK_SAME) == "pid:ACCXYZ1234"
+    assert score.url_key(AMZ) == score.url_key(AMZ_SAME) == "amazon.in/dp/b0abcdefgh"
+    assert score.url_key(FK) == score.url_key(FK_SAME) == "flipkart.com?pid=ACCXYZ1234&lid=LST1"
     assert score.url_key("https://www.croma.com/x/p/123/?utm=1") == score.url_key("https://croma.com/x/p/123")
+
+
+def test_url_key_keeps_real_variants_and_keeps_shops_apart():
+    other_lid = "https://www.flipkart.com/some-mouse/p/itm123abc456?pid=ACCXYZ1234&lid=LST2"
+    assert score.url_key(FK) != score.url_key(other_lid)
+    croma_page_1 = "https://www.croma.com/x/p/123?page=1"
+    croma_page_2 = "https://www.croma.com/x/p/123?page=2"
+    assert score.url_key(croma_page_1) != score.url_key(croma_page_2)
 
 
 def test_site_of():

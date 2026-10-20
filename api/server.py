@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from api.jobs import JobManager
 from core import pipeline
 from core.config import BASE_DIR, logger
+from core.errors import redact
 
 FRONTEND_DIR = BASE_DIR / "frontend"
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -132,7 +133,7 @@ def create_app(
         job = manager.get(run_id)
         if job is None:
             raise HTTPException(status_code=404, detail="No such run.")
-        return {**job.summary(), "result": job.result, "error": job.error}
+        return {**job.summary(), "result": job.result, "error": redact(job.error) if job.error else None}
 
     @app.get("/api/runs/{run_id}/events")
     def stream_events(run_id: str, request: Request, after: int = 0):
@@ -165,7 +166,7 @@ def create_app(
         try:
             router = get_router()
         except Exception as exc:  # a broken llm_providers.json should be visible, not a crash
-            return {"error": f"{type(exc).__name__}: {exc}", "endpoints": []}
+            return {"error": redact(f"{type(exc).__name__}: {exc}"), "endpoints": []}
         return {"strategy": router.strategy, "endpoints": router.status()}
 
     @app.get("/api/traces/{trace_id}")

@@ -2,7 +2,7 @@ import socket
 
 import pytest
 
-from core import pipeline
+from core import config, pipeline
 from scrapers import amazon, flipkart
 
 
@@ -13,6 +13,7 @@ def isolated_runtime_dirs(tmp_path, monkeypatch):
         (tmp_path / name).mkdir()
     monkeypatch.setattr(pipeline, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(pipeline, "TRACES_DIR", tmp_path / "traces")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(flipkart, "DEBUG_DIR", tmp_path / "debug_html")
     monkeypatch.setattr(amazon, "DEBUG_DIR", tmp_path / "debug_html")
 

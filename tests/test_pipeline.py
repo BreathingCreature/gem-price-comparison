@@ -487,10 +487,10 @@ def test_direct_search_without_the_product_counts_every_candidate():
 # --- dedup uses per-site key (asin/pid/itm or host+path) ----------------
 
 
-def test_dedup_flipkart_same_pid_collapses():
+def test_dedup_flipkart_same_pid_and_lid_collapses():
     c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-a/p/itm1?pid=PID1&lid=LST1", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
-    c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-b/p/itm2?pid=PID1&lid=LST2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
-    assert len(pipeline._dedup([c1, c2])) == 1  # same pid -> one
+    c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse-b/p/itm2?pid=PID1&lid=LST1", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c2])) == 1  # same pid and lid -> one
 
 
 def test_dedup_flipkart_diff_pid_stays_separate():
@@ -531,10 +531,13 @@ def test_a2_flipkart_same_itm_diff_pid_stays_two():
     assert len(pipeline._dedup([c1, c2])) == 2  # different pids -> two
 
 
-def test_a2_flipkart_same_pid_diff_lidq_is_one():
+def test_a2_flipkart_same_pid_diff_lid_is_two():
     c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST1&q=mouse", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
     c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST2&q=mouse+2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
-    assert len(pipeline._dedup([c1, c2])) == 1  # same pid -> one
+    assert len(pipeline._dedup([c1, c2])) == 2  # lid is a real variant, not tracking
+
+    c3 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST1&q=other", scraper_used="flipkart", structured_fields={"title": "C", "price": 300.0}, raw_page_text="")
+    assert len(pipeline._dedup([c1, c3])) == 1  # q is not part of the identity
 
 
 def test_a2_amazon_dp_asin_equals_title_path_with_ref():
@@ -549,7 +552,7 @@ def test_a3_search_direct_and_dedup_use_same_key():
     """Both functions must produce identical keys for the same URL list."""
     urls = [
         "https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=X",
-        "https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=Y",
+        "https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=X",
         "https://brandstore.example.com/p/123?utm_source=a",
         "https://brandstore.example.com/p/123?utm_source=b",
         "https://www.amazon.in/dp/B0ABCDEFGH",

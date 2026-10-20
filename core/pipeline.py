@@ -50,15 +50,33 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from core import events
 from core import prefilter
-from core.config import CACHE_DIR, CACHE_TTL_SECONDS, TRACE_MAX_FILES, TRACES_DIR, KNOWN_MARKETPLACE_DOMAINS, logger
-from core.config import PARALLEL_SEARCH
-from core.config import DISCOVERY_ENABLED, PREFILTER_TOP, REUSE_VERDICTS
+from core import runs as runs_store
+from core.config import (
+    CACHE_DIR,
+    CACHE_TTL_SECONDS,
+    DISCOVERY_ENABLED,
+    KNOWN_MARKETPLACE_DOMAINS,
+    MATCH_CONFIDENCE_THRESHOLD,
+    PARALLEL_SEARCH,
+    PREFILTER_TOP,
+    PRICE_SANITY_HIGH_RATIO,
+    PRICE_SANITY_LOW_RATIO,
+    RESULT_VERSION,
+    RETRY_ENABLED,
+    REUSE_VERDICTS,
+    TRACE_MAX_AGE_DAYS,
+    TRACE_MAX_FILES,
+    TRACES_DIR,
+    logger,
+)
+from core.errors import redact_obj
+from core.keys import listing_key
 from core.parallel import run_many, run_pair
-from core.config import RETRY_ENABLED
+from llm import router as llm_router
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
 import discovery
@@ -66,7 +84,6 @@ from llm import match as matcher
 from scrapers import flipkart as flipkart_scraper
 from scrapers import amazon as amazon_scraper
 from scrapers import generic as generic_scraper
-import re
 
 MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped per run
 # A direct search is "enough" once it has this many RELEVANT candidates —
@@ -74,8 +91,6 @@ MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped
 # 3 Selenium runs when the first query already returned a full page of
 # results, while junk from query 1 no longer ends the loop (C7).
 DIRECT_SEARCH_MIN_CANDIDATES = 5
-# Trace files are ~100-200KB each and grow forever otherwise.
-TRACE_MAX_FILES = 200
 # E7: the rotation scan stats every trace file; running it every 25th write
 # keeps the folder within TRACE_MAX_FILES + 24 without paying that per run.
 TRACE_ROTATE_EVERY = 25
@@ -127,6 +142,27 @@ def _emit_finished(result: dict) -> None:
     )
 
 
+def _save_run_record(gem_url: str, result: dict, trace_id: str, state: str = "done") -> None:
+    """One small record per run, so the app can list recent runs after a
+    restart without scanning the trace folder."""
+    comparison = result.get("comparison") or {}
+    product = result.get("gem_product") or {}
+    record = {
+        "run_id": trace_id,
+        "gem_url": gem_url,
+        "title": product.get("title"),
+        "state": state,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "cheapest_price": comparison.get("cheapest_match_price"),
+        "match_count": len(result.get("matches") or []),
+        "from_cache": bool(result.get("from_cache")),
+    }
+    try:
+        runs_store.save_run(record)
+    except OSError as e:
+        logger.warning("Could not save the run list entry for %s: %s", trace_id, e)
+
+
 def _usable(candidate) -> bool:
     """False for candidates whose fetch failed with no evidence at all —
     sending those to the LLM lets it 'judge' from the reference alone."""
@@ -137,38 +173,12 @@ def _usable(candidate) -> bool:
 
 
 def _listing_key(url: str) -> str:
-    """Per-site key for dedup: ASIN for Amazon, pid/itm for Flipkart,
-    cleaned URL for everything else.
+    """The per-listing identity used for dedup and verdict reuse.
 
-    For other shops: lowercase host, drop fragment, drop trailing slash,
-    drop tracking parameters (utm_*, gclid, fbclid, ref, ref_, srsltid,
-    spm, cmpid, affid), keep all other parameters sorted by name.
+    The rule itself lives in core/keys.py so the eval scorer matches the
+    answer key exactly the way the pipeline dedups a run.
     """
-    url = (url or "").strip()
-    parsed = urlparse(url if "//" in url else "//" + url)
-    host = (parsed.hostname or "").lower()
-    host = host[4:] if host.startswith("www.") else host
-    path = (parsed.path or "").rstrip("/")
-
-    if host.endswith("amazon.in") or host.endswith("amazon.com"):
-        m = re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})", path)
-        if m:
-            return "asin:" + m.group(1).upper()
-    if host.endswith("flipkart.com"):
-        pid = parse_qs(parsed.query).get("pid")
-        if pid:
-            return "pid:" + pid[0].upper()
-        m = re.search(r"/p/(itm[a-z0-9]+)", path, re.I)
-        if m:
-            return "itm:" + m.group(1).lower()
-
-    # Other shops: host + path + sorted non-tracking query params
-    tracking = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-                "gclid", "fbclid", "ref", "ref_", "srsltid", "spm", "cmpid", "affid"}
-    params = parse_qs(parsed.query)
-    kept = sorted((k, v[0] if v else "") for k, v in params.items() if k not in tracking)
-    qs = "&".join(f"{k}={v}" for k, v in kept)
-    return f"{host}{path}?{qs}" if qs else f"{host}{path}"
+    return listing_key(url)
 
 
 def _dedup(candidates: list) -> list:
@@ -204,8 +214,38 @@ def _record_search_health(result, tried_domains: set, search_issues: list) -> No
 
 # --- cache ------------------------------------------------------------------------
 
+def _model_names() -> list[str]:
+    """Which models can answer, without touching any API key value."""
+    try:
+        endpoints, _ = llm_router.load_endpoints()
+    except Exception as e:  # noqa: BLE001 - a broken provider file must not stop a run
+        logger.warning("Could not read the LLM provider list for the cache key: %s", e)
+        return []
+    return sorted(endpoint.name for endpoint in endpoints if endpoint.enabled)
+
+
+def _answer_hash() -> str:
+    """A short fingerprint of the settings that change what a run answers.
+
+    Two runs with different confidence thresholds, price bands, prefilter
+    size or model list must not replay each other's cached result.
+    """
+    settings = {
+        "confidence_threshold": MATCH_CONFIDENCE_THRESHOLD,
+        "price_low_ratio": PRICE_SANITY_LOW_RATIO,
+        "price_high_ratio": PRICE_SANITY_HIGH_RATIO,
+        "prefilter_top": PREFILTER_TOP,
+        "retry": RETRY_ENABLED,
+        "discovery": DISCOVERY_ENABLED,
+        "models": _model_names(),
+    }
+    blob = json.dumps(settings, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def _cache_path(gem_url: str) -> Path:
-    key = hashlib.sha256(gem_url.strip().encode("utf-8")).hexdigest()[:24]
+    material = f"{gem_url.strip()}|{_answer_hash()}|{RESULT_VERSION}"
+    key = hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
     return CACHE_DIR / f"{key}.json"
 
 
@@ -243,14 +283,36 @@ def _cache_set(gem_url: str, result: dict) -> None:
 _trace_writes_since_rotation = 0
 
 
+def _rotate_traces() -> None:
+    """Keep the trace folder small: delete files over the count cap and files
+    older than TRACE_MAX_AGE_DAYS. Unbounded growth was ~100-200KB per live
+    run forever; the scan runs every TRACE_ROTATE_EVERY-th write instead of
+    on every single run so the stat() calls are not paid per run."""
+    try:
+        traces = sorted(TRACES_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError as e:
+        logger.debug("Trace rotation skipped: %s", e)
+        return
+    cutoff = time.time() - TRACE_MAX_AGE_DAYS * 86400
+    for index, path in enumerate(traces):
+        try:
+            too_many = index >= TRACE_MAX_FILES
+            too_old = TRACE_MAX_AGE_DAYS > 0 and path.stat().st_mtime < cutoff
+            if too_many or too_old:
+                path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.debug("Could not remove trace %s: %s", path, e)
+
+
 def _write_trace(trace: dict) -> str:
     global _trace_writes_since_rotation
     trace_id = trace["trace_id"]
     path = TRACES_DIR / f"{trace_id}.json"
     try:
         # E7: compact JSON — nothing reads traces by eye (the API serves them
-        # parsed); indent=2 only added air to 100-200KB files.
-        path.write_text(json.dumps(trace, ensure_ascii=False, default=str), encoding="utf-8")
+        # parsed); indent=2 only added air to 100-200KB files. Keys are
+        # scrubbed here because the trace is also served by the API.
+        path.write_text(json.dumps(redact_obj(trace), ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
         logger.warning("Trace write failed for %s: %s — pipeline result is still valid, just unlogged.", trace_id, e)
         return trace_id
@@ -258,15 +320,7 @@ def _write_trace(trace: dict) -> str:
     if _trace_writes_since_rotation < TRACE_ROTATE_EVERY:
         return trace_id
     _trace_writes_since_rotation = 0
-    # Rotate: keep the newest TRACE_MAX_FILES traces, delete the rest.
-    # Unbounded growth was ~100-200KB per live run forever; the scan runs
-    # every TRACE_ROTATE_EVERY-th write instead of on every single run.
-    try:
-        traces = sorted(TRACES_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in traces[TRACE_MAX_FILES:]:
-            old.unlink(missing_ok=True)
-    except OSError as e:
-        logger.debug("Trace rotation skipped: %s", e)
+    _rotate_traces()
     return trace_id
 
 
@@ -914,6 +968,7 @@ def _run_pipeline(
         _emit_finished(result)
         trace["events"] = events.snapshot()
         _write_trace(trace)
+        _save_run_record(gem_url, result, trace_id)
         if search_issues:
             logger.info("Not caching this run: %d search issue(s) reported.", len(search_issues))
         else:

@@ -30,7 +30,9 @@ import re
 import statistics
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
+
+from core.keys import listing_key
 
 PRICE_TOLERANCE = 0.02  # a price counts as right when it is within 2 percent
 NONE_WORD = "NONE"
@@ -76,24 +78,10 @@ def site_of(url: str) -> str:
 def url_key(url: str) -> str:
     """The part of a listing URL that identifies the listing.
 
-    Amazon: the 10-character ASIN. Flipkart: the pid parameter, else the itm
-    id. Other shops: host plus path without the query string."""
-    url = (url or "").strip()
-    parsed = urlparse(url if "//" in url else "//" + url)
-    site = site_of(url)
-    path = parsed.path or ""
-    if site == "amazon":
-        m = re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})", path)
-        if m:
-            return "asin:" + m.group(1).upper()
-    if site == "flipkart":
-        pid = parse_qs(parsed.query).get("pid")
-        if pid:
-            return "pid:" + pid[0].upper()
-        m = re.search(r"/p/(itm[a-z0-9]+)", path, re.I)
-        if m:
-            return "itm:" + m.group(1).lower()
-    return site + path.rstrip("/").lower()
+    Delegates to core.keys.listing_key: the scorer and the pipeline must
+    agree on what "the same listing" means, or a run can dedup two listings
+    that the answer key counts separately (and the other way round)."""
+    return listing_key(url)
 
 
 def parse_cell(cell: str):

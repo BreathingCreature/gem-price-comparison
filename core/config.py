@@ -11,6 +11,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from core.errors import redact
+
 load_dotenv()
 
 # --- logging -----------------------------------------------------------
@@ -19,6 +21,30 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("gem_compare")
+
+
+class SecretFilter(logging.Filter):
+    """Scrub key-shaped text from every log line.
+
+    A provider error can quote the key it rejected. Formatting the record
+    first (which applies %-args) and only replacing the text when something
+    actually matched keeps ordinary %d/%s records working untouched.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a broken record must still be logged
+            return True
+        cleaned = redact(message)
+        if cleaned != message:
+            record.msg = cleaned
+            record.args = ()
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(SecretFilter())
 
 # --- paths ---------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -119,7 +145,7 @@ def log_startup_check() -> None:
     """Call at the top of cli.py to surface config problems early instead of
     three modules deep in a confusing stack trace."""
     if NVIDIA_API_KEY:
-        logger.info("NVIDIA_API_KEY loaded (length=%d)", len(NVIDIA_API_KEY))
+        logger.info("NVIDIA_API_KEY loaded")
     else:
         logger.warning("NVIDIA_API_KEY not set — LLM-dependent parts will fail until it is.")
 
@@ -164,6 +190,11 @@ DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 20.0) 
 
 # Max trace files to keep before rotation deletes oldest. Env-overrideable.
 TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)
+# Traces older than this many days are removed by the same rotation scan.
+TRACE_MAX_AGE_DAYS = _float_setting("GEM_TRACE_MAX_AGE_DAYS", 14.0, minimum=0.0)
+# Bumped whenever the shape of a result changes; part of every cache key so
+# an upgrade never serves an old-shaped result.
+RESULT_VERSION = 1
 
 REQUEST_TIMEOUT_SECONDS = 15
 
