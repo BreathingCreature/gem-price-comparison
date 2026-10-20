@@ -158,7 +158,7 @@ def test_a1_cache_hits_only_is_not_error(tmp_path):
     assert rec["error"] is None
 
 
-# --- C1 (kit 20): the meta writer shared with eval/replay.py -------------
+# --- C1: the meta writer shared with eval/replay.py -----------------------
 
 def test_write_meta_helper_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
     meta = tmp_path / "x.meta.json"

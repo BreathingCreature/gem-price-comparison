@@ -1,5 +1,5 @@
 """
-Part 4 — Amazon.in scraper.
+Amazon.in scraper.
 
 Primary path (2026-09 research-backed): curl_cffi TLS/JA3 browser
 impersonation — no browser at all. This is the approach used by amzpy

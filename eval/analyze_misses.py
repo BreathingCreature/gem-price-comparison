@@ -1,4 +1,4 @@
-"""Why every real match that was missed was missed, and what N would be safe (kit 20).
+"""Why every real match that was missed was missed, and what N would be safe.
 
     python -m eval.analyze_misses --key eval/answer_key.csv --results eval/results/baseline.jsonl
 
@@ -129,7 +129,7 @@ def dropped_ranks(trace: dict) -> dict:
     ranks: dict = {}
     seen_per_shop: dict = {}
     for entry in prefilter.get("dropped") or []:
-        shop = entry.get("source_domain") or "?"
+        shop = entry.get("source_domain") or entry.get("shop") or "?"
         index = seen_per_shop.get(shop, 0)
         seen_per_shop[shop] = index + 1
         key = url_key(entry.get("url") or "")

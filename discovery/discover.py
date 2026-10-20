@@ -1,8 +1,8 @@
 """
-Part 3 — Discovery layer.
+Discovery layer: search engines in, shop URLs out.
 
 Only used for domains WITHOUT a dedicated scraper — brand/manufacturer
-sites, and anything Part 6's expand_search retry step turns up. Amazon and
+sites, and anything the expand_search retry step turns up. Amazon and
 Flipkart bypass this entirely via their own direct search (see
 scrapers/amazon.py, scrapers/flipkart.py).
 
@@ -128,7 +128,7 @@ def _is_indian_retail(domain: str) -> bool:
 
 @dataclass
 class DiscoveryResult:
-    """One call = one query. Part 6 calls this once per normalized query
+    """One call = one query. The pipeline calls this once per normalized query
     and merges the filtered_urls across calls. raw_urls / filtered_urls
     kept separate (not just deduped-and-merged) because that's the
     "what was searched vs what survived filtering" half of the trace/
@@ -681,7 +681,7 @@ def discover_for_queries(
     session: Optional[requests.Session] = None,
 ) -> list[DiscoveryResult]:
     """Runs discover_candidates for each query with a polite delay between
-    them. This is what Part 6 actually calls — one DiscoveryResult per
+    them. This is what the pipeline actually calls — one DiscoveryResult per
     query, so the trace shows exactly what was searched and what survived
     filtering for each one, not just a flattened final list."""
     results = []

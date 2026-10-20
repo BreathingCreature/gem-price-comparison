@@ -1,4 +1,4 @@
-"""Where the seconds and the LLM calls went, read from the traces (kit 20).
+"""Where the seconds and the LLM calls went, read from the traces.
 
     python tools/profile_runs.py --results eval/results/baseline.jsonl
     python tools/profile_runs.py --last 5

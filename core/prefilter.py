@@ -1,5 +1,5 @@
 """
-Part 6 helper — the cheap pre-LLM filter (GEM_PREFILTER_TOP).
+The cheap pre-LLM filter (GEM_PREFILTER_TOP).
 
 A search page often returns 20-40 listings and most of them obviously are
 not the product (accessories, other models, pads for a mouse). Each one
@@ -12,7 +12,7 @@ Two deliberate choices:
   - Listings with no title are ALWAYS kept — there is nothing to compare,
     and an untitled page could still be the right one.
   - Whatever gets dropped is returned so the pipeline can save it in the
-    trace: the filter must be auditable, not a black box (kit 3's
+    trace: the filter must be auditable, not a black box (the
     eval/analyze_misses.py reads the trace to check whether a real match
     was cut, and the safe N is chosen from that, not by guessing).
 """
@@ -172,9 +172,6 @@ MAX_MODEL_HITS_PER_SHOP = 20
 # by score anyway. A filtered-out true match is worse than a few wasted
 # calls, and a shop with zero listings must never look like "not found".
 SAFETY_NET_KEEP = 3
-
-# Kept for older callers/tests that used the old tier-1 multiplier name.
-MODEL_HIT_CAP_FACTOR = MAX_MODEL_HITS_PER_SHOP
 
 
 def has_identity_clues(product) -> bool:

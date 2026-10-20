@@ -98,7 +98,7 @@ def test_normalize_product_uses_llm_output():
         "title": "Logitech M650 Wireless Mouse",
         "category_slug": "computer-mouse",
         "product_slug": "logitech-m650-mouse-bt-usb",
-        "brand": "Logitech",  # Part 1's rough guess
+        "brand": "Logitech",  # the GeM extractor's rough guess
         "model": None,
         "specs": {"Connectivity": "Bluetooth + USB"},
     }
@@ -120,7 +120,7 @@ def test_normalize_product_falls_back_to_gem_fields_when_llm_returns_null():
         "specs": {},
     }
     result = llm_client.normalize_product(gem_product, client=fake)
-    # LLM gave null brand -> falls back to Part 1's guess, not left empty
+    # LLM gave null brand -> falls back to the extractor's guess, not left empty
     assert result["brand"] == "Unbranded"
     assert result["canonical_name"] == "Unbranded Office Chair"  # falls back to raw title
     assert result["search_queries"] == ["Unbranded Office Chair"]  # falls back to title as a last resort

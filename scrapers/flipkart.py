@@ -1,5 +1,5 @@
 """
-Part 4 — Flipkart scraper.
+Flipkart scraper.
 
 Searches Flipkart directly for a query and parses result cards. Fast path
 first: one plain HTTP GET of the search page (curl_cffi TLS impersonation,
@@ -33,7 +33,6 @@ from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_dr
 DEBUG_DIR = CACHE_DIR.parent / "debug_html"
 DEBUG_DIR.mkdir(exist_ok=True)
 
-PRICE_RE = re.compile(r"₹\s?([\d,]+)")
 
 _BLOCK_PHRASES = ["flipkart recaptcha", "recaptcha", "please verify you are a human", "not a robot"]
 

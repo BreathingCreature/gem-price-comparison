@@ -46,8 +46,6 @@ TRACKING_EXACT = {
 
 TRACKING_PREFIXES = ("utm_", "pf_rd_", "pd_rd_", "cv_ct_")
 
-VARIANT_PARAMS = {"variant", "pid", "lid", "color", "size", "th"}
-
 _ASIN_RE = r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})"
 _FLIPKART_ITM_RE = r"/p/(itm[a-z0-9]+)"
 

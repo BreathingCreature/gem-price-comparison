@@ -1,12 +1,12 @@
 """
-Part 5 — matcher.
+The matcher: verdicts in, honest matches out.
 
 Intentionally thin, per the build spec: a loop over candidates plus a
-filter. All the real judgment lives in Part 2's verify_or_extract prompt.
+filter. All the real judgment lives in the verify_or_extract prompt.
 
 One addition beyond the original sketch: returns BOTH the full set of
 decisions (matched and rejected) and the confirmed subset, not just the
-confirmed list. Part 8's trace viewer wants to show what happened with
+confirmed list. The trace wants to show what happened with
 every candidate, not just the ones that survived — rejecting something is
 as much a "decision made" as confirming it.
 """
@@ -62,7 +62,6 @@ class MatchBatchResult:
 OUTCOME_MATCH = "match"
 OUTCOME_POSSIBLE = "possible"
 OUTCOME_NO_MATCH = "no_match"
-OUTCOME_NOT_CHECKED = "not_checked"
 
 # The fields that make up one verdict. A reused verdict keeps these and takes
 # the current listing's URL/domain, so a cross-shop reuse cannot show the
@@ -178,7 +177,7 @@ def _price_number(value) -> float | None:
 def match_candidates(normalized: dict, candidates: list, *, client=None, verdict_cache=None) -> MatchBatchResult:
     """normalized: a NormalizedProduct dict (from llm_client.normalize_product).
     candidates: a list of CandidateResult objects or dicts (from any of the
-    Part 4 scrapers — flipkart.search()/amazon.search()'s .candidates, or
+    The shop scrapers — flipkart.search()/amazon.search()'s .candidates, or
     generic.scrape()'s single result wrapped in a list).
 
     Listings are verified LLM_WORKERS at a time (GEM_LLM_WORKERS, default 4).

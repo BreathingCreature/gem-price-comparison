@@ -1,4 +1,4 @@
-"""Kit 20: every real match that was missed gets a reason (eval/analyze_misses.py).
+"""Every real match that was missed gets a reason (eval/analyze_misses.py).
 
 Reasons are read from the trace, not guessed: was the listing ever returned
 by a search, was it cut by the prefilter, did the LLM say no, did the safety

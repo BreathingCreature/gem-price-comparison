@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from tools import doctor
 
 
@@ -25,10 +27,13 @@ def test_a_check_that_crashes_is_reported_as_a_failure_not_a_crash(monkeypatch):
 def test_the_demo_check_passes_and_restores_the_delay(monkeypatch):
     from api import demo
 
+    slept = []
     monkeypatch.setattr(demo, "DEMO_DELAY", 0.5)
+    monkeypatch.setattr(demo.time, "sleep", lambda s: slept.append(s))
     status, _ = doctor.check_demo_run()
     assert status == doctor.PASS
-    assert demo.DEMO_DELAY == 0.5
+    assert slept == []  # the delay was 0 for the whole check, so it never slept
+    assert demo.DEMO_DELAY == 0.5  # and the real delay is back
 
 
 def test_the_llm_check_warns_when_nothing_is_usable(monkeypatch):
@@ -90,3 +95,95 @@ def test_failover_check_is_skipped_with_a_single_endpoint(monkeypatch):
     monkeypatch.setattr(router, "load_endpoints", lambda: ([only], "failover"))
     [(status, message)] = doctor.check_live_failover()
     assert status == doctor.WARN and "two usable endpoints" in message
+
+
+def test_the_engine_canary_reports_each_engine(monkeypatch):
+    from discovery import discover
+
+    monkeypatch.setattr(discover, "_active_engines", lambda: {
+        "one": lambda query, session: (["https://a.test/x"], False),
+        "two": lambda query, session: ([], True),
+        "three": lambda query, session: ([], False),
+    })
+    rows = doctor.check_live_engines()
+    statuses = [status for status, _ in rows]
+    assert statuses == [doctor.PASS, doctor.WARN, doctor.WARN]
+    assert "1 link" in rows[0][1]
+
+
+def test_a_crashing_engine_is_a_failure_not_a_crash(monkeypatch):
+    from discovery import discover
+
+    def explode(query, session):
+        raise RuntimeError("engine gone")
+
+    monkeypatch.setattr(discover, "_active_engines", lambda: {"bad": explode})
+    [(status, message)] = doctor.check_live_engines()
+    assert status == doctor.FAIL and "engine gone" in message
+
+
+def test_the_shop_canary_passes_when_a_card_parses(monkeypatch):
+    from scrapers import amazon, flipkart
+    from scrapers._base import CandidateResult, SearchScrapeResult
+
+    card = CandidateResult(source_domain="shop.test", url="https://shop.test/x", scraper_used="test",
+                           structured_fields={"title": "Cable", "price": "399"}, raw_page_text=None)
+    found = SearchScrapeResult(source_domain="shop.test", query="q", candidates=[card])
+    monkeypatch.setattr(flipkart, "search", lambda query, **kw: found)
+    monkeypatch.setattr(amazon, "search", lambda query, **kw: found)
+    rows = doctor.check_live_shops()
+    assert [status for status, _ in rows] == [doctor.PASS, doctor.PASS]
+
+
+def test_a_failed_canary_saves_the_page_and_names_it(monkeypatch, tmp_path):
+    from scrapers import amazon, flipkart
+    from scrapers._base import SearchScrapeResult
+
+    empty = SearchScrapeResult(source_domain="shop.test", query="q", candidates=[], blocked=True)
+    monkeypatch.setattr(flipkart, "search", lambda query, **kw: empty)
+    monkeypatch.setattr(amazon, "search", lambda query, **kw: empty)
+    monkeypatch.setattr(doctor, "DEBUG_HTML_DIR", tmp_path)
+    monkeypatch.setattr(doctor, "_canary_page_html", lambda shop, query: "<html>blocked</html>")
+    rows = doctor.check_live_shops()
+    assert [status for status, _ in rows] == [doctor.WARN, doctor.WARN]
+    saved = sorted(tmp_path.glob("*.html"))
+    assert len(saved) == 2 and "blocked" in saved[0].read_text(encoding="utf-8")
+    for _, message in rows:
+        assert "page saved: " in message
+        assert Path(message.split("page saved: ")[1].rstrip(")")).exists()
+
+
+def test_clean_removes_only_old_files(monkeypatch, tmp_path):
+    import os
+    import time
+
+    from core import pipeline, runs
+
+    old = tmp_path / "old.json"
+    new = tmp_path / "new.json"
+    old.write_text("{}", encoding="utf-8")
+    new.write_text("{}", encoding="utf-8")
+    stamp = time.time() - 40 * 86400
+    os.utime(old, (stamp, stamp))
+    monkeypatch.setattr(pipeline, "TRACES_DIR", tmp_path)
+    monkeypatch.setattr(runs, "runs_dir", lambda: tmp_path / "no-runs-here")
+    monkeypatch.setattr(doctor, "DEBUG_HTML_DIR", tmp_path / "no-debug-here")
+
+    rows = doctor.clean_old_files(30)
+    assert not old.exists() and new.exists()
+    assert rows[0][0] == doctor.PASS and "removed 1 old trace" in rows[0][1]
+
+
+def test_live_is_the_umbrella_for_every_live_check(monkeypatch):
+    import sys
+
+    seen = {}
+
+    def fake_run_checks(**kwargs):
+        seen.update(kwargs)
+        return [(doctor.PASS, "ok")]
+
+    monkeypatch.setattr(doctor, "run_checks", fake_run_checks)
+    monkeypatch.setattr(sys, "argv", ["doctor.py", "--live"])
+    assert doctor.main() == 0
+    assert all(seen[name] for name in ("live_llm", "live_engines", "live_shops", "live_failover", "live_scrape"))

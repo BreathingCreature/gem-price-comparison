@@ -289,3 +289,44 @@ eason. A page
 - **A link that is not GeM exits 2 before anything runs.** Both the API and the
   CLI use `core/gem_url.looks_like_gem_url`; the CLI prints one line to stderr
   and does not import the pipeline (so `--strict` can set `GEM_STRICT` first).
+
+## Stage 9 - tools, CI, docs, cleanup
+
+- **`--live` is one switch, the old single checks stay.** The owner runs
+  `tools/doctor.py --live` and sees LLM endpoints, search engines and shop
+  canaries in one go; `--live-llm`, `--live-engines`, `--live-shops`,
+  `--live-scrape` and `--live-failover` still work so a single failing part
+  does not force a full live run. A failed canary saves the page under
+  `debug_html/` and prints the path, because a CAPTCHA page and a changed
+  layout need different fixes.
+- **`--clean` is opt-in.** Rotation already bounds `traces/` and
+  `cache/runs/`; `--clean` exists for a manual tidy-up and uses
+  `GEM_TRACE_MAX_AGE_DAYS` unless `--older-than` says otherwise. Deleting
+  files is never part of a normal check.
+- **`requirements.txt` is fully pinned; `ddgs` became a comment.** Every
+  installed version comes from the environment where the suite is green. The
+  `ddgs` discovery engine is imported defensively and is not needed for tests,
+  and pinning a version that was never installed would be a guess, so it is a
+  commented opt-in line instead.
+- **CI runs Windows and Linux on Python 3.12.** Windows is the owner's
+  machine; Linux catches accidental path assumptions. `compileall` runs after
+  the suite so a module that no test imports still gets byte-compiled.
+- **`tools/try_flipkart_fast.py` was deleted.** Its question ("can Flipkart
+  search be fetched without a browser?") is answered in the scraper now
+  (`_fetch_light_page`, `_light_page_usable`, `_search_light`), and the tool
+  was an experiment that could drift away from the real path.
+- **`docs/fast-profile.md` merged into `docs/settings.md`.** Every switch it
+  recommended is now a default, so a separate page would have told the reader
+  to turn on what is already on. `docs/settings.md` is now the one table for
+  every setting.
+- **`scrapers/__init__` no longer uses `eval(name)`.** The lazy GeM exports
+  are looked up with `getattr` on the module, so a module attribute name can
+  never reach the built-in evaluator.
+- **Old `Part N` / `kit N` docstring labels were replaced with plain names.**
+  They described the build order, not the code, and a reader without that
+  history learned nothing from them. A double-encoded em dash in
+  `core/pipeline.py` (from an old PowerShell edit) was repaired at the same
+  time.
+- **The evaluation reader accepts v1 and v2 matches.** `eval/run_eval.py`
+  reads the v1 keys and falls back to the v2 names (`url`/`shop`/`price`), so
+  old `eval/results/*.jsonl` files still score.

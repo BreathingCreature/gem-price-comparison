@@ -1,4 +1,4 @@
-"""Kit 20: record the shops once, replay the same listings many times.
+"""Record the shops once, replay the same listings many times.
 
 A replay run must never touch a shop: the wrapped functions answer from the
 recording. If the pipeline asks for something the recording has no answer to

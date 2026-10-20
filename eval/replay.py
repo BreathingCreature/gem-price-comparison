@@ -1,4 +1,4 @@
-"""Record the shops once, replay the same listings many times (kit 20).
+"""Record the shops once, replay the same listings many times.
 
     python -m eval.replay --key eval/answer_key.csv --record baseline
     python -m eval.replay --key eval/answer_key.csv --replay baseline --label parallel-on

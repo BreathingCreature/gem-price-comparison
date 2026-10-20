@@ -7,13 +7,10 @@ from __future__ import annotations
 
 from core.result import SHOP_INCOMPLETE, SHOP_NOT_SEARCHED, SHOP_NOT_FOUND, SHOP_TIMED_OUT
 
-MAX_RETRIES_PER_SHOP = 1
-
 # Retry is for shops we did not get a clean answer from. `not_found` is also
 # retried when the whole round found nothing (a different phrasing may work).
-RETRY_STATUSES = (SHOP_NOT_SEARCHED, SHOP_INCOMPLETE, SHOP_TIMED_OUT, SHOP_NOT_FOUND)
-
-
+# Exactly one retry per shop is allowed; the `retried` flag on the card is what
+# enforces it.
 def retryable_shops(shops: dict, *, nothing_found: bool) -> list[str]:
     """Shop names worth one retry, in card order. A shop already retried is
     never retried again in the same run, and the card's own `retryable` flag
