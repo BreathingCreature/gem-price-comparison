@@ -1,13 +1,12 @@
 """
 Part 4 — Flipkart scraper.
 
-Searches Flipkart directly for a query and parses result cards — ported
-from the old repo's flipkart_scraper.py, which was tested and documented
-getting a hard 403+reCAPTCHA from plain requests, hence headless Chrome via
-base.build_stealth_driver(). Adapted here to return CandidateResult /
-SearchScrapeResult instead of writing straight to CSV, and to plug into
-this project's contracts — the scraping logic itself (selectors, scroll
-pattern, block detection) is carried over as-is.
+Searches Flipkart directly for a query and parses result cards. Fast path
+first: one plain HTTP GET of the search page (curl_cffi TLS impersonation,
+no browser at all) when GEM_FLIPKART_LIGHT is on, which is the default. If
+that page looks real it is used; otherwise the page is re-checked once, and
+only then does headless Chrome via base.build_stealth_driver() take over.
+The fast path exists because Chrome startup dominates a run's wall time.
 
 Selectors WILL drift over time (Flipkart changes markup periodically) —
 these were correct as of the old repo's last test, not guaranteed current.
@@ -36,7 +35,25 @@ DEBUG_DIR.mkdir(exist_ok=True)
 
 PRICE_RE = re.compile(r"₹\s?([\d,]+)")
 
-_BLOCK_PHRASES = ["flipkart recaptcha"]
+_BLOCK_PHRASES = ["flipkart recaptcha", "recaptcha", "please verify you are a human", "not a robot"]
+
+# Flipkart says this when the query genuinely has no products.
+_NO_RESULTS_PHRASES = ["no products found", "no results found", "didn't find any products"]
+
+# MRP / struck-out price containers — never the selling price.
+_MRP_CLASSES = ("div._3I9_wc", "div.yRaY8j", "div._3auQ3N")
+
+_OUT_OF_STOCK_PHRASES = ["sold out", "out of stock", "currently unavailable"]
+
+
+def _in_stock(card_text: str) -> bool:
+    low = card_text.lower()
+    return not any(phrase in low for phrase in _OUT_OF_STOCK_PHRASES)
+
+
+def _genuine_no_results(html: str) -> bool:
+    low = html.lower()
+    return any(phrase in low for phrase in _NO_RESULTS_PHRASES)
 
 
 def _scroll_to_load_cards(driver, *, max_rounds: int = 8, stop_when_over: int = 50) -> None:
@@ -146,6 +163,12 @@ def parse_cards_from_html(html: str) -> list[dict]:
             name = name.split("₹")[0].strip()[:200]
             name = name.replace("Add to Compare", "").strip()
 
+        # Struck-out MRP containers are never the selling price — remove them
+        # before ANY price read, so the fallback cannot grab the MRP just
+        # because the selling-price class drifted to an unknown name.
+        for mrp in card.select(", ".join(_MRP_CLASSES)):
+            mrp.decompose()
+
         price = None
         price_el = card.select_one("div.hZ3P6w.DeU9vF, div.hZ3P6w, div.Nx9bqj, div._30jeq3")
         if price_el:
@@ -171,7 +194,14 @@ def parse_cards_from_html(html: str) -> list[dict]:
 
         if not name or not price or not link:
             continue
-        out.append({"name": name, "price": price, "link": link, "card_text": card.get_text(" ", strip=True)[:1000]})
+        card_text = card.get_text(" ", strip=True)[:1000]
+        out.append({
+            "name": name,
+            "price": price,
+            "link": link,
+            "card_text": card_text,
+            "in_stock": _in_stock(card_text),
+        })
 
     seen, uniq = set(), []
     for r in out:
@@ -180,6 +210,142 @@ def parse_cards_from_html(html: str) -> list[dict]:
             seen.add(key)
             uniq.append(r)
     return uniq
+
+
+_LIGHT_IMPERSONATE = "chrome150"
+_LIGHT_TIMEOUT_SECONDS = 25
+
+
+def _looks_like_wall(html: str) -> bool:
+    low = html.lower()
+    return any(phrase in low for phrase in _BLOCK_PHRASES)
+
+
+def _fetch_light_page(query: str, page: int = 1) -> str | None:
+    """One plain HTTP GET of a Flipkart search page (no browser).
+
+    Returns None when curl_cffi is missing, the request errors, the status is
+    not 200, or the page is a bot-wall — the caller then uses Chrome. One
+    attempt only: the spec's cost model is a single cheap request, not a
+    fingerprint tournament that can burn a minute before Chrome starts.
+    """
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        logger.info("curl_cffi not installed — skipping the Flipkart fast path.")
+        return None
+
+    url = f"https://www.flipkart.com/search?q={quote_plus(query)}&page={page}"
+    headers = {"Accept-Language": "en-IN,en;q=0.9"}
+    try:
+        response = curl_requests.get(
+            url, impersonate=_LIGHT_IMPERSONATE, timeout=_LIGHT_TIMEOUT_SECONDS,
+            headers=headers, allow_redirects=True,
+        )
+    except Exception as e:
+        logger.warning(
+            "Flipkart fast path failed for %r: %s: %s",
+            query, type(e).__name__, str(e)[:160],
+        )
+        return None
+    if response.status_code != 200:
+        logger.info("Flipkart fast path got HTTP %s for %r.", response.status_code, query)
+        return None
+    html = response.text
+    if _looks_like_wall(html):
+        _save_debug(html, "flipkart_light_block")
+        return None
+    return html
+
+
+def _light_page_is_usable(html: str) -> bool:
+    """A fast-path page counts only when it clearly is a results page: the
+    genuine no-results message, or at least three parsed cards. Anything
+    else (login wall, captcha shell, layout flip) goes to Chrome."""
+    if _genuine_no_results(html):
+        return True
+    return len(parse_cards_from_html(html)) >= 3
+
+
+def _candidate_from_card(card: dict) -> CandidateResult:
+    return CandidateResult(
+        source_domain="flipkart.com",
+        url=card["link"],
+        scraper_used="flipkart",
+        structured_fields={
+            "title": card["name"],
+            "price": float(card["price"]) if card["price"] else None,
+            "currency": "INR",
+            "seller": None,
+            "image_url": None,
+            "in_stock": bool(card.get("in_stock", True)),
+        },
+        raw_page_text=card["card_text"],
+    )
+
+
+def _search_light(
+    query: str,
+    *,
+    max_results: int = 15,
+    max_pages: int = 3,
+    product: set[str] | None = None,
+    fetch_page=None,
+) -> SearchScrapeResult | None:
+    """Browser-free Flipkart search. Returns a finished result, or None to
+    say 'fast path inconclusive, use Chrome'."""
+    fetch_page = fetch_page or _fetch_light_page
+    candidates: list[CandidateResult] = []
+    seen: set[tuple] = set()
+    pages_scraped = 0
+    relevant = 0
+
+    for page in range(1, max_pages + 1):
+        if len(candidates) >= max_results or (product is not None and relevant >= prefilter.ENOUGH_RELEVANT):
+            break
+        html = fetch_page(query, page)
+        if html is None:
+            if page == 1:
+                return None  # page 1 decides: Chrome takes over
+            break  # page 1 was good; keep what it gave us
+        if page == 1 and not _light_page_is_usable(html):
+            logger.info("Flipkart fast path for %r does not look real — using Chrome.", query)
+            return None
+        if page > 1 and not _light_page_is_usable(html) and not _genuine_no_results(html):
+            break  # page 1 was fine; a later page being odd only stops paging
+        cards = parse_cards_from_html(html)
+        pages_scraped += 1
+        if not cards:
+            break
+        for card in cards:
+            key = (card["name"], card["link"])
+            if key in seen or len(candidates) >= max_results:
+                continue
+            seen.add(key)
+            candidates.append(_candidate_from_card(card))
+            if product is not None and prefilter.relevant_title(card["name"], product):
+                relevant += 1
+
+    logger.info("Flipkart (fast path) got %d candidates from %d page(s) for %r.", len(candidates), pages_scraped, query)
+    return SearchScrapeResult(
+        source_domain="flipkart.com",
+        query=query,
+        candidates=candidates,
+        blocked=False,
+        pages_scraped=pages_scraped,
+        error=None,
+        status="ok",
+        reason=None if candidates else "Flipkart reported no results",
+    )
+
+
+def _save_debug(html: str, prefix: str) -> None:
+    path = DEBUG_DIR / f"{prefix}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
+    try:
+        path.write_text(html, encoding="utf-8")
+        logger.warning("Saved Flipkart page to %s", path)
+    except Exception:
+        pass
 
 
 def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
@@ -193,6 +359,7 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
     candidates: list[CandidateResult] = []
     seen: set[tuple] = set()
     blocked = False
+    parser_empty = False
     pages_scraped = 0
     error: str | None = None
     relevant = 0
@@ -240,7 +407,11 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
 
             pages_scraped += 1
             if not cards:
-                logger.info("Flipkart page %d for %r: no cards parsed (selectors may have drifted).", page, query)
+                if _genuine_no_results(html):
+                    logger.info("Flipkart page %d for %r: Flipkart reports no results.", page, query)
+                else:
+                    parser_empty = True
+                    logger.info("Flipkart page %d for %r: no cards parsed (selectors may have drifted).", page, query)
                 break
 
             for c in cards:
@@ -248,22 +419,7 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
                 if key in seen or len(candidates) >= max_results:
                     continue
                 seen.add(key)
-                candidates.append(
-                    CandidateResult(
-                        source_domain="flipkart.com",
-                        url=c["link"],
-                        scraper_used="flipkart",
-                        structured_fields={
-                            "title": c["name"],
-                            "price": float(c["price"]) if c["price"] else None,
-                            "currency": "INR",
-                            "seller": None,
-                            "image_url": None,
-                            "in_stock": True,
-                        },
-                        raw_page_text=c["card_text"],
-                    )
-                )
+                candidates.append(_candidate_from_card(c))
                 if product is not None and prefilter.relevant_title(c["name"], product):
                     relevant += 1
             # The pause between pages only exists to be polite to Flipkart —
@@ -274,6 +430,16 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
         error = f"{type(e).__name__}: {e}"
         logger.error("Flipkart search failed for %r: %s", query, error)
 
+    if error:
+        status, reason = None, None
+    elif blocked:
+        status, reason = "blocked", "captcha or robot check"
+    elif parser_empty:
+        status, reason = "parser_empty", "the page had no product cards"
+        error = "parser_empty: the page had no product cards"
+    else:
+        status, reason = "ok", None if candidates else "Flipkart reported no results"
+
     return SearchScrapeResult(
         source_domain="flipkart.com",
         query=query,
@@ -281,13 +447,20 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
         blocked=blocked,
         pages_scraped=pages_scraped,
         error=error,
+        status=status,
+        reason=reason,
     )
 
 
 def search(query: str, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
-    """One-off search: builds its own Chrome and quits it afterwards (the
-    tools and older callers use this). A whole run uses FlipkartBrowser
-    instead, so one Chrome serves every query and the retry."""
+    """One-off search: plain HTTP first (GEM_FLIPKART_LIGHT), then its own
+    Chrome which is quit afterwards (tools and older callers use this). A
+    whole run uses FlipkartBrowser instead, so one Chrome serves every query
+    and the retry."""
+    if FLIPKART_LIGHT:
+        light = _search_light(query, max_results=max_results, max_pages=max_pages, product=product)
+        if light is not None:
+            return light
     driver = build_stealth_driver(light=FLIPKART_LIGHT)
     try:
         return _search_with_driver(driver, query, max_results=max_results, max_pages=max_pages, product=product)
@@ -300,6 +473,22 @@ def search(query: str, max_results: int = 15, max_pages: int = 3, product: set[s
 
 def _build_default_driver():
     return build_stealth_driver(light=FLIPKART_LIGHT)
+
+
+_DEAD_DRIVER_MARKERS = (
+    "invalid session id",
+    "session deleted",
+    "no such window",
+    "chrome not reachable",
+    "disconnected",
+    "target window already closed",
+    "web view not found",
+)
+
+
+def _driver_died(exc: BaseException | None = None, text: str | None = None) -> bool:
+    blob = f"{type(exc).__name__ if exc else ''} {exc or ''} {text or ''}".lower()
+    return any(marker in blob for marker in _DEAD_DRIVER_MARKERS)
 
 
 class FlipkartBrowser:
@@ -320,6 +509,7 @@ class FlipkartBrowser:
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._closed = False
+        self._rebuilt = False
 
     def start(self) -> None:
         """Build the driver in the background. Calling it twice is harmless."""
@@ -338,11 +528,41 @@ class FlipkartBrowser:
             self._ready.set()
 
     def search(self, query: str, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
+        # Fast path first: a plain HTTP page that looks real means Chrome is
+        # never started for this run (GEM_FLIPKART_LIGHT).
+        if FLIPKART_LIGHT:
+            light = _search_light(query, max_results=max_results, max_pages=max_pages, product=product)
+            if light is not None:
+                return light
+
         self.start()
         self._ready.wait()
         if self._start_error is not None:
             raise self._start_error
+        try:
+            result = _search_with_driver(self._driver, query, max_results=max_results, max_pages=max_pages, product=product)
+        except Exception as e:
+            if self._rebuilt or not _driver_died(e):
+                raise
+            self._rebuild()
+            return _search_with_driver(self._driver, query, max_results=max_results, max_pages=max_pages, product=product)
+        if self._rebuilt or not _driver_died(text=result.error or ""):
+            return result
+        # The driver died under us (window closed, session gone). One rebuild
+        # per run: a second death is a real failure, not a hiccup.
+        self._rebuild()
         return _search_with_driver(self._driver, query, max_results=max_results, max_pages=max_pages, product=product)
+
+    def _rebuild(self) -> None:
+        self._rebuilt = True
+        old = self._driver
+        if old is not None:
+            try:
+                old.quit()
+            except Exception:
+                pass
+        logger.warning("Flipkart Chrome died — rebuilding it once for this run.")
+        self._driver = self._build_driver()
 
     def close(self) -> None:
         if self._closed:

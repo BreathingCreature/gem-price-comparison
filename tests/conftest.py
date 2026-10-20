@@ -1,4 +1,5 @@
 import socket
+import sys
 
 import pytest
 
@@ -16,6 +17,12 @@ def isolated_runtime_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(flipkart, "DEBUG_DIR", tmp_path / "debug_html")
     monkeypatch.setattr(amazon, "DEBUG_DIR", tmp_path / "debug_html")
+    # The fast paths use curl_cffi, whose sockets bypass Python's socket
+    # module (so the guard below cannot see it). Hide the package so both
+    # fast paths log "not installed" and fall back, and stub the Flipkart
+    # fetch outright; tests that exercise a fast path install their own fake.
+    monkeypatch.setitem(sys.modules, "curl_cffi", None)
+    monkeypatch.setattr(flipkart, "_fetch_light_page", lambda query, page=1: None)
 
 
 _LOCAL_NAMES = {"localhost", "::1", ""}

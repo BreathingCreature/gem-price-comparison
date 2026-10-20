@@ -40,8 +40,18 @@ class GemProduct:
     gem_price: Optional[float]
     gem_price_type: str  # "fixed" | "range" | "L1_rate" | "unknown"
     currency: str = "INR"
+    # {"low", "high", "kind"} where kind is fixed | l1 | range | unknown.
+    # gem_price stays the low end so old callers keep one number.
+    price: Optional[dict] = None
+    # Which CSS selector produced the price — a trace field, so a layout
+    # change can be seen without guessing.
+    price_selector: str = ""
 
     def to_dict(self) -> dict:
+        price = self.price
+        if price is None:
+            kind = {"L1_rate": "l1"}.get(self.gem_price_type, self.gem_price_type)
+            price = {"low": self.gem_price, "high": self.gem_price, "kind": kind}
         return {
             "url": self.url,
             "category_slug": self.category_slug,
@@ -52,6 +62,8 @@ class GemProduct:
             "specs": self.specs,
             "gem_price": self.gem_price,
             "gem_price_type": self.gem_price_type,
+            "price": price,
+            "price_selector": self.price_selector,
             "currency": self.currency,
         }
 
@@ -131,6 +143,23 @@ def classify_price(text: str) -> tuple[Optional[float], str]:
     return None, "unknown"
 
 
+def classify_price_range(text: str) -> dict:
+    """The same price as classify_price, plus the range high end and a
+    result-friendly kind name: {"low", "high", "kind"} with kind fixed,
+    l1, range or unknown. gem_price stays the low end."""
+    low, price_type = classify_price(text)
+    high = low
+    if price_type == "range" and low is not None:
+        match = _RANGE_RE.search(text or "")
+        if match:
+            try:
+                high = float(match.group(2).rstrip(",").replace(",", ""))
+            except ValueError:
+                high = low
+    kind = "l1" if price_type == "L1_rate" else price_type
+    return {"low": low, "high": high, "kind": kind}
+
+
 # --- HTML extraction -----------------------------------------------------------
 # Price selectors in priority order, proven against the live detail template
 # (2026-09): the page exposes .final-price / .our_price / .offer_price /
@@ -157,14 +186,15 @@ def _first_text(soup: BeautifulSoup, selector: str) -> str:
     return el.get_text(" ", strip=True) if el else ""
 
 
-def _extract_price_text(soup: BeautifulSoup) -> str:
-    """First priority selector whose text contains a digit. Digit check
-    matters: some price elements exist as empty placeholders pre-render."""
+def _extract_price_text(soup: BeautifulSoup) -> tuple[str, str]:
+    """First priority selector whose text contains a digit, plus the
+    selector's name. Digit check matters: some price elements exist as
+    empty placeholders pre-render."""
     for selector in _PRICE_SELECTORS_PRIORITY:
         text = _first_text(soup, selector)
         if text and re.search(r"\d", text):
-            return text
-    return ""
+            return text, selector
+    return "", ""
 
 
 def _extract_specs(soup: BeautifulSoup) -> dict:
@@ -191,6 +221,14 @@ def _extract_specs(soup: BeautifulSoup) -> dict:
                 specs[kt] = vt
 
     return specs
+
+
+def _spec_value(specs: dict, names: set) -> Optional[str]:
+    """The first spec row whose key is one of names (case-insensitive)."""
+    for key, value in specs.items():
+        if str(key).strip().lower() in names and value:
+            return str(value).strip()
+    return None
 
 
 def _guess_brand_model(title: str) -> tuple[Optional[str], Optional[str]]:
@@ -265,14 +303,18 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
     soup = BeautifulSoup(resp.text, "lxml")
 
     title = _first_text(soup, _NAME_SELECTORS)
-    price_text = _extract_price_text(soup)
+    price_text, price_selector = _extract_price_text(soup)
     seller = _first_text(soup, _SELLER_SELECTORS) or None
     specs = _extract_specs(soup)
     if seller:
         specs.setdefault("seller", seller)
 
     price_value, price_type = classify_price(price_text)
+    price_detail = classify_price_range(price_text)
     brand, model = _guess_brand_model(title)
+    # The header often has no brand/model but the specification table does.
+    brand = brand or _spec_value(specs, {"brand", "brand name", "make"})
+    model = model or _spec_value(specs, {"model", "model number", "model no", "model name"})
 
     # A page with neither a title nor a price is a block page, a captcha or
     # a changed layout — an empty product here would just burn LLM calls on
@@ -300,6 +342,8 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
         gem_price=price_value,
         gem_price_type=price_type,
         currency="INR",
+        price=price_detail,
+        price_selector=price_selector,
     )
 
 

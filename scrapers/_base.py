@@ -21,7 +21,6 @@ changes how those parts get wired, even though they're not built yet.
 """
 from __future__ import annotations
 
-import os
 import random
 import re
 import time
@@ -86,6 +85,12 @@ class SearchScrapeResult:
     blocked: bool = False
     pages_scraped: int = 0
     error: Optional[str] = None
+    # "ok" | "blocked" | "parser_empty" — blocked means the shop said no to
+    # the robot, parser_empty means the page loaded but no card matched the
+    # selectors. They are different failures and the run reports them
+    # differently ("not searched" vs "not found").
+    status: Optional[str] = None
+    reason: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -95,6 +100,8 @@ class SearchScrapeResult:
             "blocked": self.blocked,
             "pages_scraped": self.pages_scraped,
             "error": self.error,
+            "status": self.status,
+            "reason": self.reason,
         }
 
 
@@ -107,16 +114,6 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 )
-
-# undetected-chromedriver is OFF by default on this machine (2026-09):
-# Chrome 151 + uc 3.5.5 headless sessions start then immediately die with
-# NoSuchWindowException ("web view not found"), and uc's chromedriver
-# download is flaky behind this network (SSL/EOF errors). Plain Selenium
-# with the CDP webdriver-mask has been reliably serving Flipkart, and
-# Amazon no longer needs a browser at all (curl_cffi path in amazon.py).
-# Flip a local override if uc ever gets its act together:
-#   $env:GEM_USE_UC = "1"
-_USE_UC = False if os.getenv("GEM_USE_UC", "0") != "1" else None
 
 
 def _plain_chrome_options(light: bool = False):
@@ -154,54 +151,12 @@ def build_stealth_driver(light: bool = False):
     CAPTCHA is even triggered. If a site still blocks it, detect_block()
     below is what notices, and the caller stops rather than fighting it.
 
-    Primary path: undetected-chromedriver (free, the standard open-source
-    answer to Amazon's soft bot-walls — patches the chromedriver binary so
-    Chrome doesn't announce automation). Fallback: plain Selenium with CDP
-    webdriver-mask, which is what always worked for Flipkart.
+    Plain Selenium with the CDP webdriver-mask. undetected-chromedriver was
+    removed in stage 3: it dies with Chrome 151 headless on this machine, so
+    it was dead weight that only made startup slower.
 
-    light=True (GEM_FLIPKART_LIGHT) skips images and stops at the DOM —
-    opt-in because an eager page load changes what detect_block() can see."""
-    global _USE_UC
-    if _USE_UC is not False:
-        try:
-            import undetected_chromedriver as uc
-
-            def _uc_options():
-                # Fresh object per attempt — uc consumes/mutates options, and
-                # reusing one raises "you cannot reuse the ChromeOptions object".
-                o = uc.ChromeOptions()
-                o.add_argument("--headless=new")
-                o.add_argument("--no-sandbox")
-                o.add_argument("--no-first-run")
-                o.add_argument("--no-default-browser-check")
-                o.add_argument("--disable-gpu")
-                o.add_argument("--window-size=1366,2000")
-                o.add_argument(f"user-agent={UA}")
-                if light:
-                    o.add_argument("--blink-settings=imagesEnabled=false")
-                    o.page_load_strategy = "eager"
-                return o
-
-            try:
-                driver = uc.Chrome(options=_uc_options(), use_subprocess=True)
-            except Exception as first_exc:
-                # uc's auto version detection misses on very new Chrome
-                # ("Current browser version is 151.x" appears in the error) —
-                # parse the major version and retry with it pinned.
-                m = re.search(r"browser version is (\d+)", str(first_exc))
-                if not m:
-                    raise
-                driver = uc.Chrome(options=_uc_options(), use_subprocess=True, version_main=int(m.group(1)))
-            driver.set_page_load_timeout(45)
-            driver.set_script_timeout(30)
-            _USE_UC = True
-            return driver
-        except Exception as e:
-            from core.config import logger
-
-            logger.warning("undetected-chromedriver failed (%s: %s) — falling back to plain Selenium.", type(e).__name__, e)
-            _USE_UC = False
-
+    light=True (GEM_FLIPKART_LIGHT) skips images and stops at the DOM.
+    """
     from selenium import webdriver
 
     driver = webdriver.Chrome(options=_plain_chrome_options(light=light))

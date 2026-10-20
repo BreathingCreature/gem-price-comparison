@@ -1,7 +1,12 @@
 from tools import doctor
 
 
-def test_the_offline_checks_find_nothing_broken():
+def test_the_offline_checks_find_nothing_broken(monkeypatch):
+    # The autouse fixture hides curl_cffi so no test can reach the network
+    # through libcurl; the package check must see the real installed module.
+    import sys
+
+    monkeypatch.delitem(sys.modules, "curl_cffi", raising=False)
     results = doctor.run_checks()
     failures = [message for status, message in results if status == doctor.FAIL]
     assert not failures, failures
