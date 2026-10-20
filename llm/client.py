@@ -509,6 +509,89 @@ def expand_search(normalized: dict, tried_queries: list[str], tried_domains: lis
     }
 
 
+# --- 4. find_similar -----------------------------------------------------------
+
+_SIMILAR_SYSTEM = """The reference product below was NOT found on any of the listed
+marketplace pages. Pick the listings that are a genuinely similar kind of product
+— same category and roughly the same job to be done (a different model is fine, a
+different type of product is not). Never pick the reference product itself: if a
+listing is the same product, leave it out.
+
+Return JSON only:
+{"similar": [{"index": 1, "why": "<at most 8 words>"}]}
+
+Rules:
+- "index" is the 1-based number of the listing below. At most 5 entries.
+- "why" says in plain words why it is a similar product, for example "same type, smaller capacity".
+- If nothing is genuinely similar, return {"similar": []}.
+- No markdown fences, no other text."""
+
+
+def find_similar(normalized: dict, listings: list[dict], *, client=None) -> list[dict]:
+    """One LLM call (Stage 6.5): pick, out of the listings a run already
+    fetched, the ones that are a similar product rather than the same one.
+    Returns [{shop, title, price, url, why}] cheapest first. The caller only
+    runs this when nothing matched at all, and the result is never used for
+    the cheapest-price arithmetic."""
+    if not listings:
+        return []
+
+    rows = []
+    for index, item in enumerate(listings, start=1):
+        fields = item.get("structured_fields")
+        fields = fields if isinstance(fields, dict) else {}
+        rows.append(
+            {
+                "index": index,
+                "title": (fields.get("title") or item.get("title") or "").strip(),
+                "price": item.get("price") or fields.get("price"),
+                "shop": item.get("source_domain") or "",
+            }
+        )
+
+    user_content = json.dumps({"reference_product": normalized, "listings": rows}, ensure_ascii=False)
+    data = _call_llm(_SIMILAR_SYSTEM, user_content, max_tokens=400, client=client, purpose="similar")
+
+    picked = []
+    seen: set = set()
+    for entry in data.get("similar") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            index = int(entry.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if index < 1 or index > len(listings) or index in seen:
+            continue
+        seen.add(index)
+        item = listings[index - 1]
+        fields = item.get("structured_fields")
+        fields = fields if isinstance(fields, dict) else {}
+        picked.append(
+            {
+                "shop": item.get("source_domain") or "",
+                "title": (fields.get("title") or item.get("title") or "").strip(),
+                "price": item.get("price") or fields.get("price"),
+                "url": item.get("url") or "",
+                "why": str(entry.get("why") or "").strip(),
+            }
+        )
+
+    return sorted(picked, key=lambda row: (_price_sort_value(row["price"]) is None, _price_sort_value(row["price"]) or 0.0))[:5]
+
+
+def _price_sort_value(text) -> float | None:
+    """Sort helper: '₹1,299' -> 1299.0, anything unparseable -> None (sorts
+    last). Imported lazily so this module keeps no scraper dependency."""
+    if text is None:
+        return None
+    digits = "".join(ch for ch in str(text) if ch.isdigit() or ch == ".")
+    try:
+        return float(digits) if digits else None
+    except ValueError:
+        return None
+
+
 if __name__ == "__main__":
     import sys
 

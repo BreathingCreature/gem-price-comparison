@@ -107,13 +107,14 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 | `LLM_CACHE` | `0` | `1` remembers LLM answers on disk, see below |
 | `LLM_CACHE_DIR` | `cache/llm` | Where the remembered answers live |
 | `LLM_PROVIDERS_FILE` | `llm_providers.json` | Which LLM endpoints are used |
-| `GEM_LLM_WORKERS` | `1` | How many listings are checked at once. Above 1 it uses the providers in parallel — keep each provider polite with `max_concurrent` and `daily_limit` in `llm_providers.json` (see docs/llm-providers.md) |
-| `GEM_PREFILTER_TOP` | `0` | Keep only the best N titled listings per shop before the LLM. `0` is off; the safe N comes from section 9 |
-| `GEM_PRICE_PREGATE` | `0` | `1` drops listings whose card price is already outside the band before the LLM call |
-| `GEM_REUSE_VERDICTS` | `0` | `1` keeps the first pass's verdicts on the retry instead of asking the LLM again |
+| `GEM_LLM_WORKERS` | `4` | How many listings are checked at once (`1` = one at a time). Above 1 it uses the providers in parallel — keep each provider polite with `max_concurrent` and `daily_limit` in `llm_providers.json` (see docs/llm-providers.md) |
+| `GEM_PREFILTER_TOP` | `10` | Keep only the best N titled listings per shop before the LLM, plus hard caps (10 non-model-code listings, 20 model-code hits) and a 3-listing safety net when the caps empty a shop. `0` is off; the safe N comes from section 9 |
+| `GEM_STRICT` | `0` | `1` is the old behaviour: no pre-filter at all, every listing sent to the LLM, and one listing checked at a time |
+| `GEM_PRICE_PREGATE` | `1` | `1` drops listings whose card price is already outside the band before the LLM call |
+| `GEM_REUSE_VERDICTS` | `1` | `1` keeps an answer for the same (product, listing title, price) instead of asking the LLM twice — within a shop and across shops in the same run |
 | `GEM_SLIM_REFERENCE` | `0` | `1` sends only the reference's identity fields (brand, model, canonical name, key identifiers, price) in verify calls instead of the full spec table and search queries |
 | `GEM_DISCOVERY` | `1` | `0` skips the other-shops discovery and the brand-site fetches |
-| `GEM_FLIPKART_LIGHT` | `0` | `1` makes Flipkart's browser skip images and stop loading early. For timing, not for accuracy runs |
+| `GEM_FLIPKART_LIGHT` | `1` | `1` makes Flipkart's browser skip images and stop loading early. For timing, not for accuracy runs |
 | `GEM_DISCOVERY_TIME_LIMIT` | `25.0` | Seconds one discovery call may take before giving up on the slow ones |
 
 Set them for one run only.

@@ -19,6 +19,7 @@ Two deliberate choices:
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from core import events
 
@@ -151,13 +152,43 @@ def tier(title: str, product) -> int:
 # next to a mouse scores near 0.15; the same mouse scores near 1.0.
 RELEVANT_MIN_SCORE = 0.5
 
+# A product with no brand and no model code has fewer words to match, so the
+# same real listing scores lower. The bar drops for it instead of punishing
+# the listing for data the GeM page never had (Stage 6).
+NO_CLUE_RELEVANT_MIN_SCORE = 0.4
+
 # C6: enough relevant cards on a page mean the next Flipkart page cannot add
 # much — stop paging there (10-30 s saved on easy products).
 ENOUGH_RELEVANT = 5
 
-# How many model-code hits one shop may keep beyond N (times N). Pages full of
-# accessories "for Logitech M650" must not send everything to the LLM.
-MODEL_HIT_CAP_FACTOR = 3
+# Hard cap per shop before the LLM (Stage 6). Tier-1 listings (the model code
+# is in the title) are kept beyond the normal cap, up to their own cap; when
+# there are more than that, the 20 nearest the GeM price are kept. More than
+# 10 ordinary listings per shop was only ever worth LLM calls by accident.
+MAX_NON_MODEL_PER_SHOP = 10
+MAX_MODEL_HITS_PER_SHOP = 20
+
+# Safety net: if a shop would send NOTHING after the caps, send its best few
+# by score anyway. A filtered-out true match is worse than a few wasted
+# calls, and a shop with zero listings must never look like "not found".
+SAFETY_NET_KEEP = 3
+
+# Kept for older callers/tests that used the old tier-1 multiplier name.
+MODEL_HIT_CAP_FACTOR = MAX_MODEL_HITS_PER_SHOP
+
+
+def has_identity_clues(product) -> bool:
+    """True when the product has a brand or a model code to match on."""
+    return bool(getattr(product, "brand_words", None)) or bool(getattr(product, "model_keys", None))
+
+
+def min_relevant_score(product) -> float:
+    """The relevance bar for this product. Lower when there is no brand and no
+    model to match on (Stage 6.1e): the product has fewer words to share with a
+    real title, so the same real listing scores lower."""
+    if has_identity_clues(product):
+        return RELEVANT_MIN_SCORE
+    return NO_CLUE_RELEVANT_MIN_SCORE
 
 
 def relevant_title(title: str, product) -> bool:
@@ -169,7 +200,7 @@ def relevant_title(title: str, product) -> bool:
         return True
     if tier(title, product) == 1:
         return True
-    return similarity(title, product) >= RELEVANT_MIN_SCORE
+    return similarity(title, product) >= min_relevant_score(product)
 
 
 def relevant_candidate(candidate, product: set[str]) -> bool:
@@ -180,19 +211,63 @@ def relevant_candidate(candidate, product: set[str]) -> bool:
     return relevant_title(title, product)
 
 
+def _candidate_price(candidate) -> Optional[object]:
+    """The structured price as it arrived (number or string), or None."""
+    d = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
+    fields = d.get("structured_fields")
+    if not isinstance(fields, dict):
+        return None
+    return fields.get("price")
+
+
+def _price_number(value) -> Optional[float]:
+    """A number from the card price, for the tier-1 cap only. Anything that
+    cannot be read is None (never guess)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = re.sub(r"[^0-9.]", "", value)
+        try:
+            return float(cleaned) if cleaned else None
+        except ValueError:
+            return None
+    return None
+
+
+def _gem_price(normalized: dict) -> Optional[float]:
+    value = normalized.get("gem_price") if isinstance(normalized, dict) else None
+    return _price_number(value)
+
+
+def _price_distance(price, gem_price: Optional[float]) -> float:
+    """How far a listing's price is from the GeM price, relative. Unknown on
+    either side sorts last (infinity)."""
+    if price is None or gem_price is None or gem_price <= 0:
+        return float("inf")
+    return abs(price - gem_price) / gem_price
+
+
 def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[list, list]:
-    """Keep the best `top` titled listings per source_domain. Ranking: model
-    code in the title first, then brand in the title, then the rest; inside
-    a group by the share of the product's words (higher first), then by the
-    shorter title. Listings with the model code may go beyond `top` (up to
-    MODEL_HIT_CAP_FACTOR x top). Untitled listings are always kept. Returns
-    (kept, dropped) — kept keeps the candidates' original order, dropped is
-    a list of small dicts (url, source_domain, title, score, tier) for the
-    trace. top <= 0 means off: everything is kept."""
+    """Keep the listings worth an LLM call, per source_domain (Stage 6).
+
+    The normal cap is `top` per shop (default 10), never more than
+    MAX_NON_MODEL_PER_SHOP. Listings whose title carries the model code
+    (tier 1) are always kept, beyond that cap, up to MAX_MODEL_HITS_PER_SHOP;
+    when there are more than that, the 20 whose price sits closest to the
+    GeM price win. If a shop would keep nothing after the caps, its best
+    SAFETY_NET_KEEP listings go through anyway.
+
+    Untitled listings are always kept — there is nothing to compare.
+    Returns (kept, dropped): kept keeps the original order; dropped entries
+    carry {title, url, price, score, tier, rule} for the trace. top <= 0
+    means off: everything is kept."""
     if top <= 0 or not candidates:
         return list(candidates), []
 
     product = product_tokens(normalized)
+    gem_price = _gem_price(normalized)
     titles: list[str] = []
     by_shop: dict[str, list[int]] = {}
     for index, candidate in enumerate(candidates):
@@ -202,30 +277,50 @@ def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[lis
         titles.append(title)
         by_shop.setdefault(str(d.get("source_domain") or "?"), []).append(index)
 
+    # A negative GEM_PREFILTER_TOP cannot happen (config clamps it), but the
+    # arithmetic is written so the cap can never exceed the hard limit.
+    non_model_limit = min(max(top, 0), MAX_NON_MODEL_PER_SHOP)
     keep: set[int] = set()
     dropped: list[dict] = []
     for indexes in by_shop.values():
         titled = [i for i in indexes if titles[i]]
         keep.update(i for i in indexes if not titles[i])  # no title -> nothing to compare, always kept
-        if len(titled) <= top:
-            keep.update(titled)
+        if not titled:
             continue
         scores = {i: similarity(titles[i], product) for i in titled}
         tiers = {i: tier(titles[i], product) for i in titled}
+        prices = {i: _price_number(_candidate_price(candidates[i])) for i in titled}
+        min_score = min_relevant_score(normalized)
         ranked = sorted(titled, key=lambda i: (tiers[i], -scores[i], len(_tokens(titles[i])), i))
         model_hits = [i for i in ranked if tiers[i] == 1]
-        keep.update(ranked[:top])
-        keep.update(model_hits[: top * MODEL_HIT_CAP_FACTOR])
+        others = [i for i in ranked if tiers[i] != 1 and scores[i] >= min_score]
+        keep.update(others[:non_model_limit])
+        if len(model_hits) > MAX_MODEL_HITS_PER_SHOP:
+            # More model-code hits than the cap: keep the ones priced nearest
+            # the GeM product. Unknown prices sort last, not first.
+            model_hits = sorted(model_hits, key=lambda i: (_price_distance(prices[i], gem_price), -scores[i], i))
+        keep.update(model_hits[:MAX_MODEL_HITS_PER_SHOP])
+        if not any(i in keep for i in titled):
+            # SAFETY NET (Stage 6.1c): the caps just emptied this shop.
+            keep.update(sorted(titled, key=lambda i: (-scores[i], tiers[i], len(_tokens(titles[i])), i))[:SAFETY_NET_KEEP])
         for i in ranked:
             if i in keep:
                 continue
             d = candidates[i].to_dict() if hasattr(candidates[i], "to_dict") else candidates[i]
+            if tiers[i] == 1:
+                rule = "over_model_cap"
+            elif scores[i] < min_score:
+                rule = "not_relevant"
+            else:
+                rule = "over_shop_cap"
             dropped.append({
                 "url": d.get("url"),
                 "source_domain": d.get("source_domain"),
                 "title": titles[i],
+                "price": _candidate_price(candidates[i]),
                 "score": round(scores[i], 3),
                 "tier": tiers[i],
+                "rule": rule,
             })
 
     events.emit("prefilter_finished", kept=len(keep), dropped=len(dropped), top=top)

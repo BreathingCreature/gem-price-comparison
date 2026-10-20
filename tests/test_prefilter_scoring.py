@@ -45,8 +45,12 @@ def test_the_real_long_title_survives_a_page_of_short_wrong_titles():
     real = _cand("amazon.in", "REAL", LONG_REAL_TITLE)
     page = wrong[:10] + [real] + wrong[10:]
     kept, dropped = prefilter.filter_candidates(page, M221, top=8)
-    assert "REAL" in [c.url for c in kept]
-    assert len(kept) == 8
+    # Stage 6: the real title carries the model code, so it is kept no matter
+    # how many short titles surround it; the short ones do not clear the 0.4
+    # relevant bar for a product with a brand AND a model.
+    assert [c.url for c in kept] == ["REAL"]
+    assert len(dropped) == 25
+    assert {d["rule"] for d in dropped} == {"not_relevant"}
     assert all("tier" in d for d in dropped)
 
 
@@ -61,8 +65,10 @@ def test_model_code_matches_with_dashes_and_spaces():
 def test_model_hits_beyond_n_are_still_kept_but_capped():
     hits = [_cand("flipkart.com", f"hit{i}", f"Cover for Logitech M221 case {i}") for i in range(30)]
     kept, dropped = prefilter.filter_candidates(hits, M221, top=2)
-    assert len(kept) == 2 * prefilter.MODEL_HIT_CAP_FACTOR
+    # Stage 6: one absolute per-shop ceiling, not top * factor.
+    assert len(kept) == prefilter.MAX_MODEL_HITS_PER_SHOP == 20
     assert len(dropped) == 30 - len(kept)
+    assert {d["rule"] for d in dropped} == {"over_model_cap"}
 
 
 def test_generic_or_guessed_brand_is_ignored():
