@@ -1,5 +1,5 @@
 """
-Part 6 â€” orchestrator.
+Part 6 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â orchestrator.
 
 run_pipeline(gem_url) is the one function everything else in this project
 exists to support: GeM URL in, price comparison out. Sequence:
@@ -24,20 +24,20 @@ an overridable keyword argument defaulting to the real implementation;
 flipkart_search_fn's default is None because the pipeline itself builds the
 run's one-Chrome browser and injects its search method (any injected search
 function takes over and no browser is started).
-That's not incidental â€” it's what makes this module's own orchestration
+That's not incidental ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it's what makes this module's own orchestration
 logic (sequencing, the retry trigger, cache, trace shape, not_found_on
 computation) testable in isolation from whether the real scrapers/LLM
 calls work, the same way the previous parts were tested independently.
 
 Scope note on the retry step: expand_search's new_queries feed BOTH the
-direct Flipkart/Amazon scrapers (not just discovery â€” a bad primary
+direct Flipkart/Amazon scrapers (not just discovery ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a bad primary
 phrasing used to never get the LLM's own alternate tried on the working
 marketplaces) and discovery+generic for sites those scrapers don't cover.
 
 Scope note on the trace: it captures structured input/output at each
 stage (queries used, candidates found, match decisions with their
 reasons) via the to_dict() every Part 1-5 object already has. It does NOT
-capture the raw LLM prompt/response text â€” doing that would mean
+capture the raw LLM prompt/response text ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â doing that would mean
 reworking Part 2's already-tested functions to expose it, which felt like
 scope creep on an already-built, working part. The "reason" field on each
 match decision is the closest thing to "why" without that deeper
@@ -94,7 +94,7 @@ from scrapers import flipkart as flipkart_scraper
 from scrapers import amazon as amazon_scraper
 from scrapers import generic as generic_scraper
 
-# A direct search is "enough" once it has this many RELEVANT candidates â€”
+# A direct search is "enough" once it has this many RELEVANT candidates ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 # stop trying further normalized queries so a 3-query normalize doesn't cost
 # 3 Selenium runs when the first query already returned a full page of
 # results, while junk from query 1 no longer ends the loop (C7).
@@ -126,7 +126,7 @@ from core.searches import (  # noqa: E402
 
 def _str_list(value) -> list[str]:
     """Coerce to a list of non-empty strings. LLM fields sometimes arrive as
-    a bare string â€” queries[0] on a string is the first CHARACTER, and
+    a bare string ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â queries[0] on a string is the first CHARACTER, and
     discovery would iterate per character. Never trust model types."""
     if isinstance(value, str):
         value = [value]
@@ -144,6 +144,10 @@ def _emit_finished(result: dict) -> None:
         cheapest=comparison.get("cheapest_match_price"),
         savings=comparison.get("savings_vs_gem"),
         trace_id=result.get("trace_id"),
+        # The first honest result travels with the event: the CLI prints its
+        # first block from here, and the page can show it without a second
+        # request. The same object is also in the run record on disk.
+        result=result,
     )
 
 
@@ -176,7 +180,7 @@ def _guarded_match(match_fn, warnings: list):
     """A match batch whose LLM is unavailable must not kill the run: every
     listing in that batch is reported as skipped (the honest 'not checked')
     and one warning says why. Busy means 'retry later' and used-up means
-    'not today' â€” both are the same to the current report."""
+    'not today' ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â both are the same to the current report."""
 
     def guarded(normalized, candidates, **kwargs):
         try:
@@ -207,6 +211,10 @@ def _save_run_record(gem_url: str, result: dict, trace_id: str, state: str = "do
         "cheapest_price": comparison.get("cheapest_match_price"),
         "match_count": len(result.get("matches") or []),
         "from_cache": bool(result.get("from_cache")),
+        # The full v2 result, so "recent runs" can reopen it after a restart
+        # without keeping every trace in memory. summarize() hides it from
+        # the list itself.
+        "result": result,
     }
     try:
         runs_store.save_run(record)
@@ -258,7 +266,7 @@ def _cache_get(gem_url: str) -> Optional[dict]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Cache read failed for %s: %s â€” treating as a miss.", gem_url, e)
+        logger.warning("Cache read failed for %s: %s ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â treating as a miss.", gem_url, e)
         return None
     if time.time() - payload.get("cached_at", 0) > CACHE_TTL_SECONDS:
         return None
@@ -277,7 +285,7 @@ def _cache_set(gem_url: str, result: dict) -> None:
         )
         os.replace(tmp, path)
     except OSError as e:
-        logger.warning("Cache write failed for %s: %s â€” continuing without caching this result.", gem_url, e)
+        logger.warning("Cache write failed for %s: %s ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â continuing without caching this result.", gem_url, e)
 
 
 # --- trace ------------------------------------------------------------------------
@@ -311,12 +319,12 @@ def _write_trace(trace: dict) -> str:
     trace_id = trace["trace_id"]
     path = TRACES_DIR / f"{trace_id}.json"
     try:
-        # E7: compact JSON â€” nothing reads traces by eye (the API serves them
+        # E7: compact JSON ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â nothing reads traces by eye (the API serves them
         # parsed); indent=2 only added air to 100-200KB files. Keys are
         # scrubbed here because the trace is also served by the API.
         path.write_text(json.dumps(redact_obj(trace), ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
-        logger.warning("Trace write failed for %s: %s â€” pipeline result is still valid, just unlogged.", trace_id, e)
+        logger.warning("Trace write failed for %s: %s ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pipeline result is still valid, just unlogged.", trace_id, e)
         return trace_id
     _trace_writes_since_rotation += 1
     if _trace_writes_since_rotation < TRACE_ROTATE_EVERY:
@@ -563,9 +571,9 @@ def _aggregate(
     verify_incomplete = sorted((tried_domains - matched_domains) & skipped_domains)
     not_found_on = sorted(tried_domains - matched_domains - skipped_domains - possible_domains)
     for domain in verify_incomplete:
-        search_issues.append(f"{domain}: candidates skipped (verify incomplete) â€” not counted as 'not found'")
+        search_issues.append(f"{domain}: candidates skipped (verify incomplete) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not counted as 'not found'")
     for domain in sorted((tried_domains - matched_domains) & possible_domains):
-        search_issues.append(f"{domain}: possibly the same product (not confirmed) â€” not counted as 'not found'")
+        search_issues.append(f"{domain}: possibly the same product (not confirmed) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not counted as 'not found'")
 
     seen_issues: set = set()
     deduped = [i for i in search_issues if not (i in seen_issues or seen_issues.add(i))]
@@ -573,7 +581,7 @@ def _aggregate(
 
     gem_price = gem_product_dict.get("gem_price")
     if gem_price is None:
-        message = "GeM price not extracted â€” price-sanity gate is OFF and savings comparison unavailable."
+        message = "GeM price not extracted ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â price-sanity gate is OFF and savings comparison unavailable."
         if message not in warnings:
             warnings.append(message)
     for match in confirmed:
@@ -612,7 +620,7 @@ def _aggregate(
 def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: str):
     """One lane's own listings, checked the moment they arrive (GEM_PARALLEL=1).
     The prefilter trims weak titles per shop first. An empty lane never
-    reaches the matcher â€” there is nothing to check. Returns
+    reaches the matcher ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â there is nothing to check. Returns
     (match_result, dropped_by_prefilter)."""
     usable = [c for c in candidates if _usable(c)]
     kept, dropped = _prefilter_candidates(usable, normalized)
@@ -635,8 +643,8 @@ def _run_first_pass_lanes(
     lane_errors: Optional[list] = None,
     lane_seconds: Optional[dict] = None,
 ) -> list:
-    """GEM_PARALLEL=1 first pass: three lanes â€” Flipkart, Amazon and
-    discovery+generic â€” run at the same time, and each lane verifies its own
+    """GEM_PARALLEL=1 first pass: three lanes ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Flipkart, Amazon and
+    discovery+generic ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â run at the same time, and each lane verifies its own
     candidates as soon as its search returns, so the LLM work of a fast lane
     overlaps the slow Flipkart lane instead of waiting for every search to
     finish. Returns one (results, candidates, match_result) tuple per lane,
@@ -718,7 +726,7 @@ def _run_first_pass_lanes(
 def _merge_match_results(lane_results: list):
     """Merge the per-lane match batches (GEM_PARALLEL=1). The same listing can
     be checked by two lanes (a Flipkart URL arriving from both the direct
-    search and discovery), so decisions are deduped by _listing_key â€” the
+    search and discovery), so decisions are deduped by _listing_key ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
     first lane's copy wins. Confirmed matches are re-sorted cheapest first,
     like the matcher does within one batch."""
     kept: list = []
@@ -747,7 +755,7 @@ def _merge_match_results(lane_results: list):
     for lane in lane_results:
         matches = lane.get("confirmed_matches") if isinstance(lane, dict) else getattr(lane, "confirmed_matches", None)
         # A lane's confirmed entry is the SAME dict object as its all_decisions
-        # entry â€” a duplicate dropped above must not reappear here.
+        # entry ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a duplicate dropped above must not reappear here.
         for d in matches or []:
             if id(d) in kept_ids:
                 confirmed.append(d)
@@ -799,7 +807,7 @@ def _merge_rows(first: list, second: list) -> list:
 
 
 def _merge_decisions(first: list, second: list) -> list:
-    """Same for decision rows â€” a retry must not duplicate a first-pass verdict."""
+    """Same for decision rows ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a retry must not duplicate a first-pass verdict."""
     return _merge_rows(first, second)
 
 
@@ -817,9 +825,10 @@ def _run_pipeline(
     generic_scrape_fn=generic_scraper.scrape,
     match_fn=matcher.match_candidates,
     expand_search_fn=llm_client.expand_search,
+    use_cache: bool = True,
 ) -> dict:
     events.emit("run_started", gem_url=gem_url, refresh=refresh)
-    if not refresh:
+    if not refresh and use_cache:
         cached = _cache_get(gem_url)
         if cached is not None:
             result = dict(cached)
@@ -843,7 +852,7 @@ def _run_pipeline(
     flipkart_browser = None
     try:
         if flipkart_search_fn is None:
-            # One Chrome for the whole run â€” every query and the retry â€” and it
+            # One Chrome for the whole run ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â every query and the retry ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and it
             # starts building NOW, so the 3-8 s startup hides behind the GeM
             # page fetch and the LLM normalize instead of delaying the first
             # search. Tests and the replay tool pass their own search function,
@@ -894,7 +903,7 @@ def _run_pipeline(
             fallback = (normalized.get("canonical_name") or gem_product_dict.get("title") or "").strip()
             queries = [fallback] if fallback else [gem_product_dict.get("category_slug") or "product"]
 
-        # Stage 6.3: verdicts are shared across the lanes of one run â€” the
+        # Stage 6.3: verdicts are shared across the lanes of one run ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
         # same listing title + price for the same product is one question.
         if match_fn is matcher.match_candidates and REUSE_VERDICTS:
             match_fn = partial(match_fn, verdict_cache={})
@@ -905,7 +914,7 @@ def _run_pipeline(
 
         if flipkart_browser is not None:
             # C6: the Flipkart page loop stops early when page 1 already holds
-            # enough relevant cards â€” give it the product's words to judge by.
+            # enough relevant cards ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â give it the product's words to judge by.
             flipkart_search_fn = partial(flipkart_browser.search, product=prefilter.product_tokens(normalized))
 
         # --- stage 3/4 first pass: Flipkart + Amazon direct search -----------------------
@@ -917,8 +926,8 @@ def _run_pipeline(
         # the pre-filter off and the verifier back to one listing at a time.
         lane_mode = PARALLEL_SEARCH or STRICT_MODE
         if lane_mode:
-            # GEM_PARALLEL=1: three lanes â€” Flipkart, Amazon and discovery+generic
-            # â€” search at the same time, each checking its own listings the moment
+            # GEM_PARALLEL=1: three lanes ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Flipkart, Amazon and discovery+generic
+            # ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â search at the same time, each checking its own listings the moment
             # they arrive (so a fast lane's LLM work overlaps the slow Flipkart lane).
             (
                 (flipkart_results, flipkart_candidates, flipkart_match, flipkart_dropped),
@@ -990,7 +999,7 @@ def _run_pipeline(
         all_candidates = _dedup(
             [c for c in list(flipkart_candidates) + list(amazon_candidates) + generic_candidates if _usable(c)]
         )
-        # Everything the run ever saw as a usable listing â€” the similar-products
+        # Everything the run ever saw as a usable listing ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the similar-products
         # call (Stage 6.5) draws from this, retry results included.
         similar_pool = list(all_candidates)
 
@@ -1047,8 +1056,10 @@ def _run_pipeline(
         )
         for name, entry in first_shops.items():
             events.emit("shop_finished", shop=name, **entry)
-        _emit_finished(first_result)
+        # Saved before the event so a listener that reads the record (the CLI)
+        # never races the write.
         _save_run_record(gem_url, first_result, trace_id, state="shown")
+        _emit_finished(first_result)
 
         # --- retry: only the shops that are honestly retryable ---------------------------
         retry_trace = {"triggered": False}
@@ -1061,7 +1072,7 @@ def _run_pipeline(
             retry_trace["shops"] = sorted(retry_shops)
             events.emit("retry_started", shops=sorted(retry_shops))
             events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
-            # expand_search is OPTIONAL logic â€” if it throws (bad JSON, 429,
+            # expand_search is OPTIONAL logic ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â if it throws (bad JSON, 429,
             # timeout) the run must survive on its first-pass results. It
             # previously propagated and destroyed a fully successful run.
             try:
@@ -1083,7 +1094,7 @@ def _run_pipeline(
 
             retry_queries = retry_module.fresh_queries(expansion, queries)
             # Strict-mode Indian filter: the prompt asks for Indian domains but
-            # doesn't enforce it â€” a foreign suggestion (bestbuy.com) must not
+            # doesn't enforce it ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a foreign suggestion (bestbuy.com) must not
             # reopen open-mode .com discovery.
             retry_domains = [d for d in _str_list(expansion.get("suggested_domains")) if discovery._is_indian_retail(d)] or None  # None -> open discovery
 
@@ -1092,7 +1103,7 @@ def _run_pipeline(
                 # cards can honestly say `retried`.
                 retried_shops = set(retry_shops)
                 retry_trace["triggered"] = True
-                # Re-search the two DIRECT scrapers with the expanded queries â€”
+                # Re-search the two DIRECT scrapers with the expanded queries ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
                 # expansion used to feed only the (dead) Google discovery path,
                 # so a bad primary query on the working marketplaces was never
                 # retried with the LLM's better phrasing. All retry_queries are
@@ -1162,7 +1173,7 @@ def _run_pipeline(
 
                 # Re-match EVERYTHING still in play: first-pass candidates
                 # (including any skipped by a transient LLM failure) plus the
-                # retry's new ones â€” previously retry discarded pass-1 candidates
+                # retry's new ones ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â previously retry discarded pass-1 candidates
                 # entirely.
                 retry_pool = _dedup(
                     [c for c in list(all_candidates) + list(retry_flipkart_candidates) + list(retry_amazon_candidates)
@@ -1177,7 +1188,7 @@ def _run_pipeline(
                     trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
 
                 # GEM_REUSE_VERDICTS: the first pass already asked the LLM about
-                # these listings and the answers will not change â€” only ask about
+                # these listings and the answers will not change ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â only ask about
                 # what is genuinely new. A listing whose first check was SKIPPED
                 # never got a verdict, so it stays in the pool and is asked again.
                 reused_decisions: list = []
@@ -1194,7 +1205,7 @@ def _run_pipeline(
                     retry_match_result = matcher.MatchBatchResult()
                 if reused_decisions:
                     # final all_decisions must still show what happened with the
-                    # reused listings â€” only the confirmed/skipped come from the
+                    # reused listings ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â only the confirmed/skipped come from the
                     # retry itself. Possible verdicts from the first pass are
                     # still possible; do not lose them.
                     retry_match_result = matcher.MatchBatchResult(
@@ -1207,7 +1218,7 @@ def _run_pipeline(
                     )
                 retry_trace["matching"] = retry_match_result.to_dict() if hasattr(retry_match_result, "to_dict") else retry_match_result
 
-                # Stage 7.4: keep what the first pass already confirmed â€” a
+                # Stage 7.4: keep what the first pass already confirmed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a
                 # retry caused by one unfinished shop must not erase another
                 # shop's match.
                 final_match_result = matcher.MatchBatchResult(
@@ -1234,7 +1245,7 @@ def _run_pipeline(
         final_possible = list(getattr(final_match_result, "possible_matches", []) or [])
 
         # --- stage 6.5: similar products --------------------------------------------------
-        # Only when the run found nothing at all â€” not one confirmed match and
+        # Only when the run found nothing at all ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not one confirmed match and
         # not one possible one. A "similar" product is a different thing at a
         # different price, so it never feeds the cheapest/savings arithmetic.
         similar: list = []
@@ -1259,7 +1270,7 @@ def _run_pipeline(
         )
         trace["stages"]["shops"] = final_shops
 
-        # --- comparison arithmetic â€” the actual point of the project ----------------------
+        # --- comparison arithmetic ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the actual point of the project ----------------------
         result, confirmed, final_possible = _aggregate(
             gem_url=gem_url,
             gem_product_dict=gem_product_dict,
@@ -1292,7 +1303,9 @@ def _run_pipeline(
         trace["events"] = events.snapshot()
         _write_trace(trace)
         _save_run_record(gem_url, result, trace_id, state="done")
-        if search_issues:
+        if not use_cache:
+            logger.info("Not caching this run: cache disabled (demo).")
+        elif search_issues:
             logger.info("Not caching this run: %d search issue(s) reported.", len(search_issues))
         else:
             _cache_set(gem_url, result)

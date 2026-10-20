@@ -1,13 +1,15 @@
 """HTTP layer. Start it with:
 
-    python -m uvicorn api.server:app --port 8000
+    python -m uvicorn api.server:app --host 127.0.0.1 --port 8000
 
-Then open http://localhost:8000 (the frontend/ folder is served from there).
-Set GEM_DEMO=1 to run a fake pipeline, handy for working on the frontend
-without scraping anything or spending LLM calls. Set GEM_JOBS=2 to run two
-comparisons at the same time (queued beyond that)
+Then open http://127.0.0.1:8000 (the frontend/ folder is served from there).
+The server binds to 127.0.0.1 by default: it is a personal tool, not a
+public service. Set GEM_DEMO=1 to run the real pipeline with fake shops,
+handy for working on the frontend without scraping anything or spending LLM
+calls. Set GEM_JOBS=2 to run two comparisons at the same time (queued beyond
+that).
 
-The contract (routes, event types) is written down in docs/api.md.
+The contract (routes, event types, result v2) is written down in docs/api.md.
 """
 from __future__ import annotations
 
@@ -17,7 +19,6 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,12 +27,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from api.jobs import JobManager
-from core import pipeline
+from core import pipeline, runs as runs_store
 from core.config import BASE_DIR, logger
 from core.errors import redact
+from core.gem_url import looks_like_gem_url
 
 FRONTEND_DIR = BASE_DIR / "frontend"
 SSE_HEARTBEAT_SECONDS = 15.0
+TRACE_TEXT_LIMIT = 1000
+_TRACE_TEXT_KEYS = ("raw_page_text", "page_text", "html", "raw_html")
 
 
 class RunRequest(BaseModel):
@@ -63,12 +67,65 @@ def _warm_up() -> None:
         logger.warning("Chrome driver warm-up failed: %s: %s", type(exc).__name__, exc)
 
 
-def _looks_like_gem_url(url: str) -> bool:
-    parts = urlparse(url.strip())
-    host = (parts.hostname or "").lower()
-    return parts.scheme in ("http", "https") and (
-        host == "gem.gov.in" or host.endswith(".gem.gov.in")
-    )
+def _trim_text(value, limit: int):
+    """Recursively shorten saved page text in a trace. Everything else (the
+    verdicts, prices, URLs) stays exactly as it was; only the raw HTML/text
+    snapshots shrink, because 2 MB of a shop's page is not a debugging aid
+    when the phone is reading the JSON."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key in _TRACE_TEXT_KEYS and isinstance(item, str) and len(item) > limit:
+                out[key] = item[:limit] + f"... [{len(item) - limit} chars trimmed]"
+            else:
+                out[key] = _trim_text(item, limit)
+        return out
+    if isinstance(value, list):
+        return [_trim_text(item, limit) for item in value]
+    return value
+
+
+def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
+    """Live jobs first, then the saved records (so the list survives a
+    restart). One entry per run id; the live job wins because it is newer."""
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for job in manager.recent(limit):
+        entries.append(
+            {
+                "id": job["id"],
+                "gem_url": job.get("gem_url"),
+                "title": job.get("title"),
+                "state": job.get("status"),
+                "status": job.get("status"),
+                "cheapest_price": job.get("cheapest_price"),
+                "match_count": job.get("match_count"),
+                "checked_at": None,
+                "from_cache": False,
+                "live": True,
+            }
+        )
+        seen.add(job["id"])
+    for record in runs_store.list_runs(limit):
+        run_id = str(record.get("run_id") or "")
+        if not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        entries.append(
+            {
+                "id": run_id,
+                "gem_url": record.get("gem_url"),
+                "title": record.get("title"),
+                "state": record.get("state") or "done",
+                "status": record.get("state") or "done",
+                "cheapest_price": record.get("cheapest_price"),
+                "match_count": record.get("match_count"),
+                "checked_at": record.get("checked_at"),
+                "from_cache": bool(record.get("from_cache")),
+                "live": False,
+            }
+        )
+    return entries[:limit]
 
 
 def create_app(
@@ -119,21 +176,49 @@ def create_app(
 
     @app.post("/api/runs", status_code=202)
     def start_run(body: RunRequest):
-        if not demo and not _looks_like_gem_url(body.gem_url):
+        if not demo and not looks_like_gem_url(body.gem_url):
             raise HTTPException(status_code=422, detail="That does not look like a GeM product link (gem.gov.in).")
         job = manager.submit(body.gem_url.strip(), body.refresh)
         return {"run_id": job.id, "status": job.status}
 
     @app.get("/api/runs")
     def list_runs():
-        return {"runs": manager.recent()}
+        return {"runs": _recent_runs(manager)}
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str):
         job = manager.get(run_id)
-        if job is None:
+        if job is not None:
+            summary = job.summary()
+            result = job.result
+            state = (result or {}).get("state") or job.status
+            return {
+                **summary,
+                "id": job.id,
+                "state": state,
+                "result": result,
+                "error": redact(job.error) if job.error else None,
+                "live": True,
+            }
+        # Not in memory: a run saved before this process started. The record
+        # holds the full v2 result (see pipeline._save_run_record).
+        record = runs_store.get_run(run_id)
+        if record is None:
             raise HTTPException(status_code=404, detail="No such run.")
-        return {**job.summary(), "result": job.result, "error": redact(job.error) if job.error else None}
+        result = record.get("result")
+        return {
+            "id": record.get("run_id"),
+            "gem_url": record.get("gem_url"),
+            "status": record.get("state") or "done",
+            "state": record.get("state") or "done",
+            "created": None,
+            "started": None,
+            "finished": None,
+            "event_count": 0,
+            "result": result,
+            "error": None,
+            "live": False,
+        }
 
     @app.get("/api/runs/{run_id}/events")
     def stream_events(run_id: str, request: Request, after: int = 0):
@@ -176,7 +261,10 @@ def create_app(
         path: Path = pipeline.TRACES_DIR / f"{trace_id}.json"
         if not path.exists():
             raise HTTPException(status_code=404, detail="No such trace.")
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if os.getenv("GEM_DEBUG") != "1":
+            data = _trim_text(data, TRACE_TEXT_LIMIT)
+        return data
 
     if FRONTEND_DIR.exists():
         # Mounted last so it never hides the /api routes above.

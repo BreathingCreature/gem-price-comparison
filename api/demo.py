@@ -1,125 +1,244 @@
-"""A pretend pipeline run, for building and testing the frontend.
+"""Demo mode: the REAL pipeline with fake shops, a fake LLM and a fake GeM page.
 
-It emits the same events, in the same order, as the real pipeline, with
-made-up products and short pauses. No network, no LLM, no browser.
+    GEM_DEMO=1 python -m uvicorn api.server:app --host 127.0.0.1 --port 8000
 
-    GEM_DEMO=1 python -m uvicorn api.server:app --port 8000
+Every event comes from core/pipeline.py, so the page is exercised exactly as
+it is in a live run: a shop cards fills in when its search ends, one shop is
+blocked and then found on the retry, one shop is honestly "not found". Short
+pauses make the cards fill one by one instead of all at once.
 
-GEM_DEMO_SPEED=0 removes the pauses (the tests use that); 2 makes it twice
-as slow, and so on.
+No network, no LLM, no browser. The demo never reads or writes the result
+cache (a fake answer must not be served to a real run later).
 """
 from __future__ import annotations
 
-import os
 import time
 
-from core import events
+from core import events, pipeline
+from llm import match as matcher
+from scrapers._base import CandidateResult, SearchScrapeResult
 
-DEMO_URL_TITLE = "Logitech M650 Wireless Mouse (Demo)"
+DEMO_URL_TITLE = "Logitech M650 Signature Wireless Mouse (Demo)"
 GEM_PRICE = 1299.0
+DEMO_DELAY = 0.35  # seconds per fake step; tests set this to 0
+
+FIRST_QUERY = "logitech m650 wireless mouse"
+RETRY_QUERY = "logitech m650 signature wireless mouse"
+DEMO_FLIPKART_PRICE = 1149.0
+DEMO_AMAZON_PRICE = 1199.0
+DEMO_OTHER_PRICE = 699.0
 
 
-def _pause(seconds: float) -> None:
-    speed = float(os.getenv("GEM_DEMO_SPEED", "1"))
-    if speed > 0:
-        time.sleep(seconds * speed)
+def _pause(seconds: float = DEMO_DELAY) -> None:
+    if DEMO_DELAY > 0:
+        time.sleep(min(seconds, DEMO_DELAY))
+
+
+def _gem_product(gem_url: str) -> dict:
+    return {
+        "url": gem_url,
+        "title": DEMO_URL_TITLE,
+        "gem_price": GEM_PRICE,
+        "gem_price_type": "fixed",
+        "brand": "Logitech",
+        "model": "M650",
+        "category_slug": "computer-mouse",
+        "specs": {"Connectivity": "Bluetooth", "Colour": "Graphite"},
+    }
+
+
+def _normalize(product: dict) -> dict:
+    _pause()
+    events.emit(
+        "llm_call",
+        endpoint="demo/normalize-model",
+        provider="demo",
+        model="demo-model",
+        purpose="normalize",
+        seconds=round(DEMO_DELAY, 2),
+        ok=True,
+    )
+    _pause()
+    return {
+        "canonical_name": "Logitech M650 Signature Wireless Mouse",
+        "brand": "Logitech",
+        "model": "M650",
+        "search_queries": [FIRST_QUERY, "logitech m650 bluetooth mouse"],
+        "key_identifiers": ["Logitech", "M650"],
+        "gem_price": GEM_PRICE,
+        "described_by": "llm",
+    }
+
+
+def _candidate(domain: str, url: str, title: str, price: float) -> CandidateResult:
+    return CandidateResult(
+        source_domain=domain,
+        url=url,
+        scraper_used=domain.split(".")[0],
+        structured_fields={"title": title, "price": price, "currency": "INR", "in_stock": True},
+        raw_page_text=None,
+    )
+
+
+def _blocked(domain: str, query: str) -> SearchScrapeResult:
+    _pause()
+    return SearchScrapeResult(
+        source_domain=domain,
+        query=query,
+        candidates=[],
+        blocked=True,
+        status="blocked",
+        reason="demo: the site showed a CAPTCHA",
+    )
+
+
+def _flipkart_search(query: str) -> SearchScrapeResult:
+    if query != RETRY_QUERY:
+        return _blocked("flipkart.com", query)
+    _pause()
+    return SearchScrapeResult(
+        source_domain="flipkart.com",
+        query=query,
+        candidates=[
+            _candidate("flipkart.com", "https://www.flipkart.com/demo-m650", "Logitech M650 Wireless Mouse", DEMO_FLIPKART_PRICE)
+        ],
+        pages_scraped=1,
+        status="ok",
+    )
+
+
+def _amazon_search(query: str) -> SearchScrapeResult:
+    _pause()
+    return SearchScrapeResult(
+        source_domain="amazon.in",
+        query=query,
+        candidates=[
+            _candidate(
+                "amazon.in",
+                "https://www.amazon.in/demo-m650",
+                "Logitech M650 Signature Wireless Mouse",
+                DEMO_AMAZON_PRICE,
+            ),
+            _candidate("amazon.in", "https://www.amazon.in/demo-m221", "Logitech M221 Silent Wireless Mouse", 799.0),
+        ],
+        pages_scraped=1,
+        status="ok",
+    )
+
+
+def _discover(queries, allowed_domains):
+    _pause()
+    from discovery.discover import DiscoveryResult
+
+    return [
+        DiscoveryResult(
+            query=queries[0] if queries else FIRST_QUERY,
+            raw_urls=["https://www.example-shop.in/m221"],
+            filtered_urls=["https://www.example-shop.in/m221"],
+        )
+    ]
+
+
+def _generic_scrape(url: str) -> CandidateResult:
+    _pause()
+    return _candidate("example-shop.in", url, "Logitech M221 Silent Mouse", DEMO_OTHER_PRICE)
+
+
+def _expand_search(normalized, queries, domains):
+    _pause()
+    events.emit(
+        "llm_call",
+        endpoint="demo/expand-model",
+        provider="demo",
+        model="demo-model",
+        purpose="expand",
+        seconds=round(DEMO_DELAY, 2),
+        ok=True,
+    )
+    return {"new_queries": [RETRY_QUERY], "suggested_domains": [], "notes": "demo: one more try"}
+
+
+def _demo_match(normalized, candidates, **_kwargs) -> matcher.MatchBatchResult:
+    """A fake verifier that follows the prompt rules: same model number and a
+    sensible price means "match", a different model means "no match". It emits
+    the same checking/verdict events the real matcher emits."""
+    decisions = []
+    confirmed = []
+    total = len(candidates)
+    for position, candidate in enumerate(candidates, start=1):
+        data = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
+        fields = data.get("structured_fields") if isinstance(data.get("structured_fields"), dict) else {}
+        title = fields.get("title") or ""
+        price = fields.get("price")
+        is_match = "M650" in title and "M221" not in title
+        confidence = 0.94 if is_match else 0.9
+        reason = "Same model number and a plausible price." if is_match else "Different model (M221)."
+        events.emit(
+            "candidate_checking",
+            url=data.get("url"),
+            domain=data.get("source_domain"),
+            title=title,
+            price=price,
+            index=position,
+            total=total,
+        )
+        _pause()
+        events.emit(
+            "llm_call",
+            endpoint="demo/verify-model",
+            provider="demo",
+            model="demo-model",
+            purpose="verify",
+            seconds=round(DEMO_DELAY, 2),
+            ok=True,
+        )
+        decision = {
+            "candidate_url": data.get("url"),
+            "source_domain": data.get("source_domain"),
+            "is_match": is_match,
+            "confidence": confidence,
+            "reason": reason,
+            "price_used": price if is_match else None,
+            "extraction_source": "scraper",
+            "structured_fields": fields,
+            "outcome": "match" if is_match else "no_match",
+        }
+        decisions.append(decision)
+        if is_match:
+            confirmed.append(decision)
+        events.emit(
+            "candidate_verdict",
+            url=data.get("url"),
+            domain=data.get("source_domain"),
+            is_match=is_match,
+            confidence=confidence,
+            reason=reason,
+            price=price if is_match else None,
+        )
+    confirmed.sort(key=lambda d: d["price_used"])
+    return matcher.MatchBatchResult(
+        all_decisions=decisions,
+        confirmed_matches=confirmed,
+        skipped=[],
+        possible_matches=[],
+        not_checked=[],
+    )
 
 
 def demo_runner(gem_url: str, refresh: bool, on_event) -> dict:
-    with events.capture(on_event):
-        e = events.emit
-        e("run_started", gem_url=gem_url, refresh=refresh)
-
-        e("stage", name="extract", label="Reading the GeM product page")
-        _pause(1.5)
-        e("gem_product", title=DEMO_URL_TITLE, price=GEM_PRICE, price_type="fixed", brand="Logitech",
-          model="M650", category="computer-mouse", specs={"Connectivity": "Bluetooth", "Colour": "Graphite"})
-
-        e("stage", name="normalize", label="Working out what the product really is")
-        _pause(0.8)
-        e("llm_call", endpoint="nvidia/nemotron-3-super-120b-a12b", provider="nvidia",
-          model="nemotron-3-super-120b-a12b", purpose="normalize", seconds=2.4, ok=True)
-        e("normalized", canonical_name="Logitech M650 Signature Wireless Mouse", brand="Logitech", model="M650",
-          queries=["logitech m650 wireless mouse", "logitech m650 bluetooth mouse"],
-          key_identifiers=["Logitech", "M650"])
-
-        flipkart_items = [
-            {"title": "Logitech M650 Wireless Mouse", "price": 1349.0, "url": "https://www.flipkart.com/demo-1", "domain": "flipkart.com"},
-            {"title": "Logitech M650 L Left Wireless Mouse", "price": 1799.0, "url": "https://www.flipkart.com/demo-2", "domain": "flipkart.com"},
-            {"title": "Logitech M221 Silent Wireless Mouse", "price": 699.0, "url": "https://www.flipkart.com/demo-3", "domain": "flipkart.com"},
-        ]
-        amazon_items = [
-            {"title": "Logitech M650 Signature Wireless Mouse", "price": 1199.0, "url": "https://www.amazon.in/demo-1", "domain": "amazon.in"},
-            {"title": "Logitech M650 Wireless Mouse, Graphite", "price": 1249.0, "url": "https://www.amazon.in/demo-2", "domain": "amazon.in"},
-        ]
-        for label, name, query, items in (
-            ("flipkart", "Searching Flipkart", "logitech m650 wireless mouse", flipkart_items),
-            ("amazon", "Searching Amazon", "logitech m650 wireless mouse", amazon_items),
-        ):
-            e("stage", name=f"search_{label}", label=name)
-            e("search_started", marketplace=label, query=query)
-            _pause(2.0)
-            e("search_finished", marketplace=label, query=query, count=len(items), blocked=False, error=None, candidates=items)
-
-        e("stage", name="discovery", label="Looking for other shops")
-        _pause(1.0)
-        e("discovery_finished", queries=["logitech m650 wireless mouse"], urls=["https://www.example-shop.in/m650"])
-        e("scrape_started", url="https://www.example-shop.in/m650")
-        _pause(1.0)
-        other = {"title": "Logitech M650 Wireless Mouse", "price": 1450.0, "url": "https://www.example-shop.in/m650",
-                 "domain": "example-shop.in", "error": None}
-        e("scrape_finished", **other)
-
-        everything = flipkart_items + amazon_items + [other]
-        e("stage", name="match", label="Checking which listings are the same product")
-        e("candidates_total", count=len(everything))
-        verdicts = {
-            "flipkart-1": (True, 0.93, "Same brand and model, price in range."),
-            "flipkart-2": (False, 0.9, "Left-handed variant, not the same product."),
-            "flipkart-3": (False, 0.95, "Different model (M221)."),
-            "amazon-1": (True, 0.96, "Same model, Signature edition is the M650."),
-            "amazon-2": (True, 0.9, "Same model, colour differs only."),
-            "other-1": (True, 0.82, "Same model number on the page."),
-        }
-        keys = ["flipkart-1", "flipkart-2", "flipkart-3", "amazon-1", "amazon-2", "other-1"]
-        matches = []
-        for position, (key, item) in enumerate(zip(keys, everything), start=1):
-            e("candidate_checking", url=item["url"], domain=item["domain"], title=item["title"],
-              price=item["price"], index=position, total=len(everything))
-            _pause(0.9)
-            is_match, confidence, reason = verdicts[key]
-            provider = "nvidia" if position % 3 else "backup"
-            if position == 4:
-                e("llm_call", endpoint="nvidia/nemotron-3-super-120b-a12b", provider="nvidia",
-                  model="nemotron-3-super-120b-a12b", purpose="verify", seconds=0.4, ok=False, status=429,
-                  error="RateLimitError: 429 too many requests")
-                e("llm_cooldown", endpoint="nvidia/nemotron-3-super-120b-a12b", seconds=30.0, reason="429")
-                provider = "backup"
-            e("llm_call", endpoint=f"{provider}/demo-model", provider=provider, model="demo-model",
-              purpose="verify", seconds=1.7, ok=True)
-            e("candidate_verdict", url=item["url"], domain=item["domain"], is_match=is_match,
-              confidence=confidence, reason=reason, price=item["price"] if is_match else None)
-            if is_match:
-                matches.append({"candidate_url": item["url"], "source_domain": item["domain"], "is_match": True,
-                                "confidence": confidence, "reason": reason, "price_used": item["price"],
-                                "extraction_source": "scraper", "delta_vs_gem": item["price"] - GEM_PRICE,
-                                "cheaper_than_gem": item["price"] < GEM_PRICE})
-        matches.sort(key=lambda m: m["price_used"])
-
-        cheapest = matches[0]["price_used"]
-        result = {
-            "gem_product": {"url": gem_url, "title": DEMO_URL_TITLE, "gem_price": GEM_PRICE, "gem_price_type": "fixed",
-                            "brand": "Logitech", "model": "M650", "category_slug": "computer-mouse", "specs": {}},
-            "matches": matches,
-            "not_found_on": [],
-            "search_issues": [],
-            "skipped": [],
-            "warnings": [],
-            "comparison": {"gem_price": GEM_PRICE, "gem_price_type": "fixed", "cheapest_match_price": cheapest,
-                           "savings_vs_gem": GEM_PRICE - cheapest},
-            "from_cache": False,
-            "trace_id": "0000000000demo0",
-        }
-        e("run_finished", from_cache=False, matches=len(matches), cheapest=cheapest,
-          savings=GEM_PRICE - cheapest, trace_id=result["trace_id"])
-        return result
+    """One fake comparison through the real pipeline (same events, same
+    result shape, same retry rules). The demo never caches."""
+    return pipeline.run_pipeline(
+        gem_url,
+        refresh=refresh,
+        on_event=on_event,
+        extract_fn=_gem_product,
+        normalize_fn=_normalize,
+        flipkart_search_fn=_flipkart_search,
+        amazon_search_fn=_amazon_search,
+        discover_fn=_discover,
+        generic_scrape_fn=_generic_scrape,
+        match_fn=_demo_match,
+        expand_search_fn=_expand_search,
+        use_cache=False,
+    )

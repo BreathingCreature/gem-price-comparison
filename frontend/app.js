@@ -1,49 +1,21 @@
 // GeM Price Comparison frontend. Plain JavaScript, no build step.
-// It talks to the backend only through the routes in docs/api.md.
+// It talks to the backend only through the routes in docs/api.md and uses
+// frontend/render.js for every formatted string. All text goes in through
+// h() / textContent; scraped pages never get to inject markup.
 (function () {
   "use strict";
 
   var API = window.GEM_API_BASE || "";
+  var R = window.GemRender;
   var $ = function (id) { return document.getElementById(id); };
-
-  // Steps we expect, in order. Unknown steps from the backend get appended.
-  var STEP_LABELS = {
-    extract: "Reading the GeM product page",
-    normalize: "Working out what the product really is",
-    search_flipkart: "Searching Flipkart",
-    search_amazon: "Searching Amazon",
-    search_both: "Searching Flipkart, Amazon and other shops at the same time",
-    discovery: "Looking for other shops",
-    match: "Checking which listings are the same product",
-    match_flipkart: "Checking the Flipkart listings",
-    match_amazon: "Checking the Amazon listings",
-    match_other_shops: "Checking other shops' listings",
-    retry: "Nothing matched yet, asking the LLM for better search words",
-    retry_flipkart: "Searching Flipkart again",
-    retry_amazon: "Searching Amazon again",
-    match_retry: "Checking the new listings"
-  };
-  var EXPECTED = ["extract", "normalize", "search_flipkart", "search_amazon", "discovery", "match"];
-
-  // B1/B2 (GEM_PARALLEL=1): the first pass runs three lanes at the same
-  // time and their stage events arrive in any order. These steps must not
-  // finish each other on arrival — that was the flicker. They stay active
-  // together until a normal step (or the run itself) closes them all.
-  var PHASE_STEPS = {
-    search_both: true,
-    discovery: true,
-    match_flipkart: true,
-    match_amazon: true,
-    match_other_shops: true
-  };
 
   var state;
 
   function freshState() {
     return {
-      runId: null, startedAt: null, finished: false, source: null, events: [],
-      steps: [], parallel: false, activeSteps: [], lastEventAt: null, lastText: "Starting...",
-      llmCalls: [], checks: {}, searchRows: {}, timerId: null, finalElapsed: null, traceId: null
+      runId: null, source: null, active: false, finished: false,
+      result: null, retrying: [], cards: {}, lastText: "Waiting for the first update...",
+      traceLoaded: null, timerId: null, startedAt: null, elapsed: 0
     };
   }
   state = freshState();
@@ -55,6 +27,7 @@
     Object.keys(attrs).forEach(function (k) {
       if (k === "class") el.className = attrs[k];
       else if (k === "text") el.textContent = attrs[k];
+      else if (k === "hidden") el.hidden = !!attrs[k];
       else el.setAttribute(k, attrs[k]);
     });
     for (var i = 2; i < arguments.length; i++) {
@@ -64,429 +37,340 @@
     }
     return el;
   }
-  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
-
-  function money(v) {
-    if (v == null || v === "" || isNaN(Number(v))) return "-";
-    return "₹" + Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 });
-  }
-  function mmss(seconds) {
-    seconds = Math.max(0, Math.floor(seconds));
-    var m = Math.floor(seconds / 60), s = seconds % 60;
-    return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
-  }
-  function shortHost(url) {
-    try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return url || ""; }
-  }
-  function safeHref(url) {
-    // Scraped URLs are untrusted: only real web schemes become links,
-    // everything else renders as plain text (never javascript:, data:, ...)
-    if (typeof url !== "string") return null;
-    var u = url.trim();
-    return /^https?:\/\//i.test(u) ? u : null;
-  }
-
-  // ---- clock and the "right now" line ----
-  function tick() {
-    if (state.startedAt == null) return;
-    var secs = state.finalElapsed != null ? state.finalElapsed : (Date.now() - state.startedAt) / 1000;
-    $("elapsed").textContent = mmss(secs);
-    if (!state.finished && state.lastEventAt) {
-      var idle = Math.floor((Date.now() - state.lastEventAt) / 1000);
-      var extra = idle >= 8 ? " (still working, last news " + idle + "s ago)" : "";
-      $("now").textContent = state.lastText + extra;
-    }
-  }
-  function startClock() {
-    stopClock();
-    state.timerId = setInterval(tick, 250);
-  }
-  function stopClock() {
-    if (state.timerId) clearInterval(state.timerId);
-    state.timerId = null;
+  function clear(el) { while (el && el.firstChild) el.removeChild(el.firstChild); }
+  function linkOrText(url) {
+    var href = R.safeHref(url);
+    if (href) return h("a", { href: href, target: "_blank", rel: "noopener noreferrer", text: "Open" });
+    return h("span", { class: "muted", text: url || "-" });
   }
   function setPill(text, kind) {
     var pill = $("status-pill");
     pill.textContent = text;
     pill.className = "pill" + (kind ? " " + kind : "");
   }
+  function money(value) { return R.money(value); }
 
-  // ---- timeline ----
-  function ensureStep(name) {
-    var found = state.steps.filter(function (s) { return s.name === name; })[0];
-    if (found) return found;
-    var step = { name: name, label: STEP_LABELS[name] || name, status: "pending", start: null, secs: null };
-    state.steps.push(step);
-    return step;
-  }
-  function enterStep(name, label, t) {
-    var opensPhase = name === "search_both";
-    if (opensPhase) {
-      // The parallel first pass replaces the one-shop steps entirely.
-      state.parallel = true;
-      dropPending(["search_flipkart", "search_amazon"]);
-    }
-    var soft = !opensPhase && state.parallel && PHASE_STEPS[name];
-    if (soft && name.indexOf("match_") === 0) dropPending(["match"]);
-    if (!soft) finishActiveSteps(t);
-    var step = ensureStep(name);
-    if (label) step.label = label;
-    step.status = "active";
-    step.start = t;
-    step.secs = null;
-    state.activeSteps.push(step);
-    renderTimeline();
-  }
-  function dropPending(names) {
-    state.steps = state.steps.filter(function (s) {
-      return !(s.status === "pending" && names.indexOf(s.name) >= 0);
-    });
-  }
-  function finishActiveSteps(t, failed) {
-    state.activeSteps.forEach(function (s) {
-      s.status = failed ? "failed" : "done";
-      s.secs = Math.max(0, t - (s.start || 0));
-    });
-    state.activeSteps = [];
-  }
-  function renderTimeline() {
-    var ol = $("timeline");
-    clear(ol);
-    state.steps.forEach(function (s) {
-      var li = h("li", { class: s.status },
-        h("span", { class: "dot" }),
-        h("span", { text: s.label }),
-        h("span", { class: "secs", text: s.secs != null ? s.secs.toFixed(1) + "s" : "" }));
-      ol.appendChild(li);
-    });
-    renderStageTimes();
-  }
-  function renderStageTimes() {
-    var body = $("stage-times").querySelector("tbody");
-    clear(body);
-    state.steps.forEach(function (s) {
-      if (s.secs == null) return;
-      body.appendChild(h("tr", null, h("td", { text: s.label }), h("td", { text: s.secs.toFixed(1) })));
-    });
-  }
-
-  // ---- cards ----
-  function showGemProduct(e) {
-    var card = $("gem-card");
-    clear(card);
-    card.hidden = false;
-    var dl = h("dl", { class: "kv" });
-    function row(k, v) { if (v) { dl.appendChild(h("dt", { text: k })); dl.appendChild(h("dd", { text: String(v) })); } }
-    row("Product", e.title);
-    row("GeM price", e.price != null ? money(e.price) + " (" + (e.price_type || "unknown") + ")" : "not found on the page");
-    row("Brand", e.brand);
-    row("Model", e.model);
-    row("Category", e.category);
-    card.appendChild(h("h2", { text: "Found the GeM product" }));
-    card.appendChild(dl);
-  }
-  function showNormalized(e) {
-    var card = $("gem-card");
-    var dl = h("dl", { class: "kv" });
-    dl.appendChild(h("dt", { text: "Understood as" }));
-    dl.appendChild(h("dd", { text: e.canonical_name || "" }));
-    dl.appendChild(h("dt", { text: "Searching for" }));
-    dl.appendChild(h("dd", { text: (e.queries || []).join("  |  ") }));
-    card.appendChild(dl);
-  }
-  function searchCard(key, title) {
-    var id = "search-" + key;
-    var card = $(id);
-    if (!card) {
-      card = h("section", { class: "card", id: id }, h("h2", { text: title }));
-      $("searches").appendChild(card);
-    }
-    return card;
-  }
-  function onSearchStarted(e) {
-    var card = searchCard(e.marketplace, e.marketplace ? e.marketplace.charAt(0).toUpperCase() + e.marketplace.slice(1) : "Search");
-    var status = h("span", { class: "muted", text: "searching..." });
-    var list = h("ul", { class: "list" });
-    card.appendChild(h("div", { class: "q" }, "Query: " + e.query + " ", status));
-    card.appendChild(list);
-    state.searchRows[e.marketplace + "|" + e.query] = { status: status, list: list };
-  }
-  function onSearchFinished(e) {
-    var row = state.searchRows[e.marketplace + "|" + e.query];
-    if (!row) { onSearchStarted(e); row = state.searchRows[e.marketplace + "|" + e.query]; }
-    var text = e.blocked ? "blocked by the site (CAPTCHA)" : e.error ? "error: " + e.error : "found " + e.count + " product" + (e.count === 1 ? "" : "s");
-    row.status.textContent = text;
-    row.status.className = e.blocked || e.error ? "bad" : "ok";
-    clear(row.list);
-    (e.candidates || []).slice(0, 8).forEach(function (c) {
-      row.list.appendChild(h("li", null, h("span", { text: c.title || c.url || "(no title)" }), h("span", { class: "price", text: money(c.price) })));
-    });
-    if ((e.candidates || []).length > 8) row.list.appendChild(h("li", { class: "muted" }, "+ " + (e.candidates.length - 8) + " more"));
-  }
-  function onDiscovery(e) {
-    var card = searchCard("other", "Other shops");
-    card.appendChild(h("div", { class: "q", text: (e.urls || []).length + " page(s) worth opening" }));
-    var list = h("ul", { class: "list" });
-    (e.urls || []).forEach(function (u) { list.appendChild(h("li", null, h("span", { text: u }))); });
-    card.appendChild(list);
-  }
-  function onScrapeFinished(e) {
-    var card = searchCard("other", "Other shops");
-    var line = e.error ? "could not read: " + e.error : (e.title || "(no title)");
-    card.appendChild(h("div", { class: "q", text: shortHost(e.url) + ": " + line + (e.price != null ? "  " + money(e.price) : "") }));
-  }
-
-  // ---- candidate checks ----
-  function checkItem(url) {
-    var item = state.checks[url];
-    if (!item) {
-      var li = h("li", { class: "checking" });
-      $("check-list").appendChild(li);
-      item = state.checks[url] = { li: li };
-      $("checks").hidden = false;
-    }
-    return item;
-  }
-  function paintCheck(item, cls, head, verdict, why) {
-    item.li.className = cls;
-    clear(item.li);
-    item.li.appendChild(h("div", null, h("span", { class: "verdict", text: verdict ? verdict + "  " : "" }), head));
-    if (why) item.li.appendChild(h("div", { class: "why", text: why }));
-  }
-  function onChecking(e) {
-    var item = checkItem(e.url);
-    item.head = (e.title || e.url) + (e.price != null ? "  " + money(e.price) : "") + "  on " + (e.domain || shortHost(e.url));
-    paintCheck(item, "checking", item.head + "  (" + e.index + " of " + e.total + ")", "Checking...", "");
-  }
-  function onVerdict(e) {
-    var item = checkItem(e.url);
-    var pct = Math.round((e.confidence || 0) * 100) + "%";
-    item.head = item.head || (e.url);
-    paintCheck(item, e.is_match ? "match" : "reject", item.head, e.is_match ? "Same product (" + pct + ")" : "Not the same (" + pct + ")", e.reason);
-  }
-  function onGateRejected(e) {
-    var item = checkItem(e.url);
-    paintCheck(item, "reject", item.head || e.url, "Rejected by a safety check", e.reason);
-  }
-  function onSkipped(e) {
-    var item = checkItem(e.url);
-    paintCheck(item, "skip", item.head || e.url, "Skipped", e.reason);
-  }
-
-  // ---- final result ----
-  function showFinal(result, run) {
-    var card = $("final");
-    clear(card);
-    card.hidden = false;
-    var gem = result.gem_product || {};
-    var cmp = result.comparison || {};
-    var matches = result.matches || [];
-    card.appendChild(h("h2", { text: "Result" }));
-    if (result.from_cache) {
-      var again = h("button", { type: "button", text: "Run it fresh" });
-      again.addEventListener("click", function () { startRun(gem.url || $("gem-url").value, true); });
-      card.appendChild(h("p", { class: "warn" }, "This is a saved result from an earlier run. ", again));
-    }
-    if (!matches.length) {
-      card.appendChild(h("p", { text: "No confirmed matches on any marketplace." }));
-    } else if (cmp.gem_price != null && cmp.cheapest_match_price != null) {
-      var saving = cmp.savings_vs_gem;
-      var msg = saving >= 0 ? "Cheaper elsewhere by " + money(saving) : "GeM is cheaper by " + money(-saving);
-      card.appendChild(h("div", { class: "big " + (saving >= 0 ? "ok" : "warn"), text: msg }));
-      card.appendChild(h("p", { class: "muted", text: "GeM " + money(cmp.gem_price) + "  vs  cheapest match " + money(cmp.cheapest_match_price) }));
-    }
-    if (matches.length) {
-      var table = h("table", { class: "grid" }, h("thead", null, h("tr", null,
-        h("th", { text: "Shop" }), h("th", { text: "Price" }), h("th", { text: "Vs GeM" }), h("th", { text: "Match" }), h("th", { text: "Link" }))));
-      var body = h("tbody");
-      matches.forEach(function (m) {
-        var href = safeHref(m.candidate_url);
-        var link = href
-          ? h("a", { href: href, target: "_blank", rel: "noopener noreferrer", text: "open" })
-          : h("span", { class: "muted", text: m.candidate_url || "-" });
-        var delta = m.delta_vs_gem == null ? "-" : (m.delta_vs_gem <= 0 ? "-" : "+") + money(Math.abs(m.delta_vs_gem));
-        body.appendChild(h("tr", null, h("td", { text: m.source_domain }), h("td", { text: money(m.price_used) }),
-          h("td", { class: m.cheaper_than_gem ? "ok" : "", text: delta }),
-          h("td", { text: Math.round((m.confidence || 0) * 100) + "%" }), h("td", null, link)));
+  // ---- start screen ----
+  function loadRecent() {
+    fetch(API + "/api/runs").then(function (r) { return r.json(); }).then(function (body) {
+      var list = $("recent-runs");
+      clear(list);
+      var runs = (body && body.runs) || [];
+      $("recent-empty").hidden = runs.length > 0;
+      runs.forEach(function (run) {
+        var price = run.cheapest_price != null ? "cheapest " + money(run.cheapest_price) : "not found";
+        var when = run.checked_at ? String(run.checked_at).replace("T", " ").slice(0, 16) : (run.live ? "now" : "");
+        var button = h("button", { type: "button", class: "recent-item" },
+          h("span", { class: "recent-title", text: run.title || run.gem_url || "(untitled run)" }),
+          h("span", { class: "muted", text: price + (when ? "  \u00b7  " + when : "") }));
+        button.addEventListener("click", function () { openSavedRun(run.id); });
+        list.appendChild(h("li", null, button));
       });
-      table.appendChild(body);
-      card.appendChild(table);
-    }
-    if ((result.not_found_on || []).length) card.appendChild(h("p", { class: "muted", text: "Searched, nothing matching: " + result.not_found_on.join(", ") }));
-    (result.search_issues || []).forEach(function (t) { card.appendChild(h("p", { class: "warn", text: "Search problem: " + t })); });
-    (result.warnings || []).forEach(function (t) { card.appendChild(h("p", { class: "warn", text: "Warning: " + t })); });
+    }).catch(function () { /* the list simply stays empty */ });
   }
 
-  // ---- advanced view ----
-  function renderLlmCalls() {
-    var body = $("llm-calls").querySelector("tbody");
-    clear(body);
-    var failed = 0, total = 0, secs = 0, perEndpoint = {};
-    state.llmCalls.forEach(function (c) {
-      total++; secs += c.seconds || 0;
-      if (!c.ok) failed++;
-      perEndpoint[c.endpoint] = (perEndpoint[c.endpoint] || 0) + 1;
-      body.appendChild(h("tr", null, h("td", { text: String(c.t) }), h("td", { text: c.endpoint }), h("td", { text: c.purpose || "" }),
-        h("td", { text: String(c.seconds) }), h("td", { class: c.ok ? "ok" : "bad", text: c.ok ? "ok" : (c.error || "failed") })));
+  // ---- result screen ----
+  function showScreen(which) {
+    $("start-screen").hidden = which !== "start";
+    $("result-screen").hidden = which !== "result";
+  }
+
+  function renderHeader(result) {
+    if (!result) return;
+    var gem = result.gem || {};
+    $("result-title").textContent = gem.title || "Product";
+    var price = gem.price || {};
+    var kind = price.kind || "unknown";
+    $("result-price").textContent = price.low != null
+      ? "GeM price " + money(price.low) + (price.high != null && price.high !== price.low ? " to " + money(price.high) : "") + " (" + kind + ")"
+      : "GeM price not found on the page";
+    $("result-state").textContent = R.stateLabel(result, state.finished ? "done" : "running");
+    $("result-state").className = "pill " + (result.from_cache ? "cached" : "running");
+    $("cheapest-line").textContent = R.cheapestLine(result);
+  }
+
+  function cardFor(shop) {
+    if (state.cards[shop]) return state.cards[shop];
+    var title = h("h3", { text: shop });
+    var line = h("p", { class: "muted", text: "searching\u2026" });
+    var reason = h("p", { class: "reason muted" });
+    var extra = h("div", { class: "drop" });
+    var card = h("article", { class: "shop-card shop-running" }, title, line, reason, extra);
+    card.addEventListener("click", function () { loadTrace(shop); });
+    $("shop-cards").appendChild(card);
+    state.cards[shop] = { el: card, line: line, reason: reason };
+    return state.cards[shop];
+  }
+
+  function fillCard(shop, entry) {
+    var card = cardFor(shop);
+    card.line.textContent = R.shopSummary(entry);
+    card.reason.textContent = R.shopNeedsReason(entry) ? (entry.reason || "") : "";
+    var retry = R.retryLabel(shop, state.retrying);
+    if (retry) {
+      card.reason.textContent = retry + " " + (entry.reason || "");
+    }
+    card.el.className = "shop-card " + R.statusClass(entry.status) + (retry ? " shop-retrying" : "");
+    card.el.dataset.shop = shop;
+  }
+
+  function renderMatches(result) {
+    result = result || {};
+    var rows = R.matchRows(result);
+    clear($("matches-body"));
+    rows.forEach(function (row) {
+      $("matches-body").appendChild(h("tr", { class: row.inStock ? "" : "out-of-stock" },
+        h("td", { text: row.shop }),
+        h("td", { text: row.priceText }),
+        h("td", { class: row.cheaper ? "ok" : "", text: row.vsGem }),
+        h("td", { text: row.confidence }),
+        h("td", { text: row.reason }),
+        h("td", null, linkOrText(row.url))));
     });
-    if (total) {
-      var parts = Object.keys(perEndpoint).map(function (k) { return k + ": " + perEndpoint[k]; });
-      $("llm-summary").textContent = total + " call(s), " + failed + " failed, " + secs.toFixed(1) + "s waiting in total.  " + parts.join("   ");
-    }
-  }
-  function addLogRow(e) {
-    var filter = $("event-filter").value;
-    var body = $("event-log").querySelector("tbody");
-    if (filter && e.type.indexOf(filter) !== 0) return;
-    var copy = {};
-    Object.keys(e).forEach(function (k) { if (["seq", "t", "type"].indexOf(k) < 0) copy[k] = e[k]; });
-    var details = JSON.stringify(copy);
-    if (details.length > 300) details = details.slice(0, 300) + "...";
-    body.appendChild(h("tr", null, h("td", { text: String(e.t) }), h("td", { text: String(e.seq) }), h("td", { text: e.type }), h("td", { text: details })));
-  }
-  function rebuildLog() {
-    clear($("event-log").querySelector("tbody"));
-    state.events.forEach(addLogRow);
-  }
-  function refreshDownload() {
-    var blob = new Blob([JSON.stringify(state.events, null, 2)], { type: "application/json" });
-    var a = $("download-events");
-    if (a.dataset.url) URL.revokeObjectURL(a.dataset.url);
-    a.dataset.url = URL.createObjectURL(blob);
-    a.href = a.dataset.url;
-  }
-  function loadProviders() {
-    fetch(API + "/api/llm/status").then(function (r) { return r.json(); }).then(function (data) {
-      var body = $("providers").querySelector("tbody");
-      clear(body);
-      $("llm-strategy").textContent = data.error ? "Config problem: " + data.error : "Strategy: " + data.strategy;
-      (data.endpoints || []).forEach(function (e) {
-        var note = e.state === "disabled" ? e.reason : e.state === "cooling" ? "resting " + e.cooldown_remaining + "s. " + (e.last_error || "") : (e.last_error || "");
-        var cls = e.state === "ready" ? "ok" : e.state === "cooling" ? "warn" : "bad";
-        body.appendChild(h("tr", null, h("td", { text: e.endpoint }), h("td", { class: cls, text: e.state }), h("td", { text: String(e.calls) }),
-          h("td", { text: String(e.errors) }), h("td", { text: e.avg_seconds == null ? "-" : String(e.avg_seconds) }), h("td", { text: note })));
-      });
-    }).catch(function () { /* the panel just stays as it was */ });
+    $("matches-section").hidden = rows.length === 0 && !state.active;
+    $("matches-empty").hidden = rows.length > 0;
+
+    var possible = R.possibleRows(result);
+    clear($("possible-body"));
+    possible.forEach(function (row) {
+      $("possible-body").appendChild(h("tr", null,
+        h("td", { text: row.shop }),
+        h("td", { text: row.title }),
+        h("td", { text: row.priceText }),
+        h("td", { text: row.why }),
+        h("td", null, linkOrText(row.url))));
+    });
+    $("possible-section").hidden = possible.length === 0;
+
+    var similar = R.similarRows(result);
+    clear($("similar-list"));
+    similar.forEach(function (row) {
+      $("similar-list").appendChild(h("li", null,
+        h("span", { text: row.title + "  (" + row.shop + ")" }),
+        h("span", { class: "price", text: row.priceText }),
+        linkOrText(row.url)));
+    });
+    // The similar list is only for a run with nothing at all; a match makes
+    // "similar" noise.
+    $("similar-section").hidden = !(R.showsSimilar(result) && !state.active);
+
+    var warnings = result.warnings || [];
+    clear($("warnings-list"));
+    warnings.forEach(function (text) { $("warnings-list").appendChild(h("li", { text: text })); });
+    $("warnings-section").hidden = warnings.length === 0;
   }
 
-  // ---- event handling ----
-  var DESCRIBE = {
-    run_started: function () { return "Starting the run..."; },
-    cache_hit: function () { return "Found a saved result for this product."; },
-    stage: function (e) { return (e.label || e.name) + "..."; },
-    gem_product: function (e) { return "Found the GeM product: " + (e.title || ""); },
-    normalized: function (e) { return "Understood the product as " + (e.canonical_name || "?"); },
-    search_started: function (e) { return "Searching " + e.marketplace + " for \"" + e.query + "\"..."; },
-    search_finished: function (e) { return e.marketplace + " returned " + e.count + " product(s)."; },
-    discovery_finished: function (e) { return "Found " + (e.urls || []).length + " other page(s) to look at."; },
-    scrape_started: function (e) { return "Opening " + shortHost(e.url) + "..."; },
-    scrape_finished: function (e) { return "Read " + shortHost(e.url) + "."; },
-    candidates_total: function (e) { return "Comparing " + e.count + " listing(s) with the GeM product..."; },
-    candidate_checking: function (e) { return "Checking listing " + e.index + " of " + e.total + ": " + (e.title || e.url); },
-    candidate_verdict: function (e) { return (e.is_match ? "Match: " : "Not a match: ") + (e.reason || ""); },
-    retry_plan: function (e) { return "Trying again with: " + (e.new_queries || []).join(" | "); },
-    llm_call: function (e) { return e.ok ? "LLM answered (" + e.endpoint + ")" : "LLM endpoint " + e.endpoint + " failed, switching..."; },
-    llm_cooldown: function (e) { return "Resting " + e.endpoint + " for " + e.seconds + "s."; }
-  };
-
-  function handle(e) {
-    state.events.push(e);
-    state.lastEventAt = Date.now();
-    var describe = DESCRIBE[e.type];
-    if (describe) state.lastText = describe(e);
-
-    switch (e.type) {
-      case "stage": enterStep(e.name, e.label, e.t); break;
-      case "gem_product": showGemProduct(e); break;
-      case "normalized": showNormalized(e); break;
-      case "search_started": onSearchStarted(e); break;
-      case "search_finished": onSearchFinished(e); break;
-      case "discovery_finished": onDiscovery(e); break;
-      case "scrape_finished": onScrapeFinished(e); break;
-      case "candidate_checking": onChecking(e); break;
-      case "candidate_verdict": onVerdict(e); break;
-      case "candidate_gate_rejected": onGateRejected(e); break;
-      case "candidate_skipped": onSkipped(e); break;
-      case "llm_call": state.llmCalls.push(e); renderLlmCalls(); break;
-      case "run_finished":
-        finishActiveSteps(e.t);
-        state.traceId = e.trace_id || null;
-        state.finalElapsed = e.t;
-        state.lastText = "Done in " + mmss(e.t) + ".";
-        renderTimeline();
-        break;
-      case "run_failed":
-        finishActiveSteps(e.t, true);
-        state.finalElapsed = e.t;
-        state.lastText = "The run failed: " + e.error;
-        renderTimeline();
-        break;
-    }
-    addLogRow(e);
-    tick();
+  function renderResult(result) {
+    if (!result) return;
+    state.result = result;
+    renderHeader(result);
+    Object.keys(result.shops || {}).forEach(function (shop) { fillCard(shop, result.shops[shop]); });
+    renderMatches(result);
   }
 
-  function finishRun(status) {
-    state.finished = true;
-    stopClock();
-    tick();
-    $("now").textContent = state.lastText;
-    setPill(status, status === "done" ? "done" : "failed");
-    $("run-btn").disabled = false;
-    refreshDownload();
-    loadProviders();
-    if (state.traceId && state.traceId.indexOf("demo") < 0) {
-      var link = $("trace-link");
-      link.href = API + "/api/traces/" + state.traceId;
-      link.hidden = false;
-    }
-    if (state.source) { state.source.close(); state.source = null; }
-    fetch(API + "/api/runs/" + state.runId).then(function (r) { return r.json(); }).then(function (run) {
-      if (run.result) showFinal(run.result, run);
-      if (run.error) {
-        $("form-error").textContent = run.error;
-        $("form-error").hidden = false;
+  function renderRetrying() {
+    state.retrying.forEach(function (shop) {
+      if (state.cards[shop]) {
+        state.cards[shop].line.textContent = "\u21bb retrying\u2026";
       }
     });
   }
 
-  function resetScreen() {
+  // ---- trace drawer: whatever the drop log and the verdicts decided ----
+  function loadTrace(shop) {
+    var traceId = state.result && state.result.trace_id;
+    if (!traceId || state.traceLoaded === traceId) return;
+    state.traceLoaded = traceId;
+    fetch(API + "/api/traces/" + traceId).then(function (r) { return r.ok ? r.json() : null; }).then(function (trace) {
+      if (!trace) return;
+      var panel = h("details", { class: "trace" }, h("summary", { text: "What happened (drop log and verdicts)" }));
+      var stages = trace.stages || {};
+      var matching = stages.matching || {};
+      var decisions = matching.all_decisions || [];
+      if (decisions.length) {
+        var body = h("ul", { class: "plain" });
+        decisions.forEach(function (d) {
+          body.appendChild(h("li", null,
+            h("span", { class: "muted", text: (d.source_domain || "?") + ": " }),
+            h("span", { text: d.is_match ? "same product" : "not the same" }),
+            h("span", { class: "muted", text: " \u2014 " + (d.reason || "") }),
+            linkOrText(d.candidate_url)));
+        });
+        panel.appendChild(h("p", { class: "muted", text: "Verdicts" }));
+        panel.appendChild(body);
+      }
+      var prefilter = stages.prefilter || {};
+      if (prefilter.dropped && prefilter.dropped.length) {
+        panel.appendChild(h("p", { class: "muted", text: "Dropped before the LLM (" + prefilter.dropped.length + ")" }));
+        var dropped = h("ul", { class: "plain muted" });
+        prefilter.dropped.slice(0, 20).forEach(function (item) {
+          dropped.appendChild(h("li", { text: typeof item === "string" ? item : (item.title || item.url || "listing") }));
+        });
+        panel.appendChild(dropped);
+      }
+      var retry = stages.retry || {};
+      if (retry.state || retry.skipped_reason) {
+        panel.appendChild(h("p", { class: "muted", text: "Retry: " + (retry.state || retry.skipped_reason) }));
+      }
+      if (shop) {
+        panel.appendChild(h("p", { class: "muted", text: "Showing the whole run, not only " + shop + "." }));
+      }
+      $("shop-cards").appendChild(panel);
+    }).catch(function () { /* the drawer is optional */ });
+  }
+
+  // ---- LLM status ----
+  function loadProviders() {
+    fetch(API + "/api/llm/status").then(function (r) { return r.json(); }).then(function (data) {
+      clear($("providers-body"));
+      $("llm-strategy").textContent = data.error ? "Config problem: " + data.error : "Strategy: " + data.strategy;
+      (data.endpoints || []).forEach(function (endpoint) {
+        $("providers-body").appendChild(h("tr", null,
+          h("td", { text: endpoint.endpoint }),
+          h("td", { class: endpoint.state === "ready" ? "ok" : endpoint.state === "limit" ? "bad" : "warn", text: endpoint.state }),
+          h("td", { text: String(endpoint.calls) }),
+          h("td", { text: String(endpoint.errors) }),
+          h("td", { text: endpoint.reason || endpoint.last_error || "" })));
+      });
+    }).catch(function () { /* the panel just stays as it was */ });
+  }
+
+  // ---- clock ----
+  function tick() {
+    if (!state.active || !state.startedAt) return;
+    state.elapsed = (Date.now() - state.startedAt) / 1000;
+  }
+  function startClock() { stopClock(); state.timerId = setInterval(tick, 500); }
+  function stopClock() { if (state.timerId) clearInterval(state.timerId); state.timerId = null; }
+
+  // ---- events ----
+  function handle(event) {
+    switch (event.type) {
+      case "run_started":
+        state.startedAt = Date.now();
+        state.active = true;
+        $("run-btn").disabled = true;
+        setPill("running", "running");
+        break;
+      case "gem_product":
+        $("result-title").textContent = event.title || "Product";
+        break;
+      case "shop_started":
+        cardFor(event.shop);
+        break;
+      case "shop_finished":
+        fillCard(event.shop, event);
+        break;
+      case "shop_updated":
+        state.retrying = state.retrying.filter(function (s) { return s !== event.shop; });
+        fillCard(event.shop, event);
+        break;
+      case "retry_started":
+        state.retrying = event.shops || [];
+        renderRetrying();
+        renderHeader((state.result || {}));
+        $("result-state").textContent = "updating\u2026";
+        break;
+      case "run_finished":
+        state.result = event.result || state.result;
+        if (state.result) renderResult(state.result);
+        state.finished = event.result && event.result.state !== "shown";
+        break;
+      case "run_updated":
+        state.result = event.result || state.result;
+        state.retrying = [];
+        if (state.result) renderResult(state.result);
+        break;
+      case "similar_ready":
+        if (state.result) {
+          state.result.similar = event.similar || [];
+          renderMatches(state.result);
+        }
+        break;
+      case "cache_hit":
+        state.lastText = "Using the saved result for this product.";
+        break;
+      case "done":
+        finishRun(event.state === "done" ? "done" : "done");
+        break;
+      case "run_failed":
+        finishRun("failed");
+        showFailure(event.error || "The run failed.");
+        break;
+      default:
+        break; // unknown event types are ignored on purpose
+    }
+  }
+
+  function showFailure(message) {
+    $("form-error").textContent = message;
+    $("form-error").hidden = false;
+  }
+
+  function finishRun(kind) {
+    state.finished = true;
+    state.active = false;
+    stopClock();
+    $("run-btn").disabled = false;
+    setPill(kind === "failed" ? "failed" : "done", kind);
+    if (state.result) {
+      renderHeader(state.result);
+      renderMatches(state.result);
+    }
+    if (state.source) { state.source.close(); state.source = null; }
+    loadRecent();
+  }
+
+  function attach(runId) {
+    state.runId = runId;
+    if (state.source) state.source.close();
+    var source = new EventSource(API + "/api/runs/" + runId + "/events");
+    state.source = source;
+    source.onmessage = function (msg) {
+      var event;
+      try { event = JSON.parse(msg.data); } catch (e) { return; }
+      // One malformed or unexpected event must never blank the page.
+      try { handle(event); } catch (e) {
+        if (window.console && console.warn) console.warn("event handler failed", e);
+      }
+    };
+    source.addEventListener("done", function (msg) {
+      var payload = {};
+      try { payload = JSON.parse(msg.data); } catch (e) { payload = {}; }
+      finishRun(payload.status === "failed" ? "failed" : "done");
+    });
+    source.onerror = function () {
+      // EventSource reconnects on its own and sends Last-Event-ID, so the
+      // stream continues exactly after the last event this page saw.
+      if (state.finished) source.close();
+    };
+    startClock();
+    tick();
+  }
+
+  function resetRun() {
     if (state.source) state.source.close();
     stopClock();
     state = freshState();
-    ["timeline", "searches", "check-list", "gem-card", "final"].forEach(function (id) { clear($(id)); });
-    $("gem-card").hidden = true; $("final").hidden = true; $("checks").hidden = true;
-    $("trace-link").hidden = true;
-    clear($("event-log").querySelector("tbody"));
-    clear($("llm-calls").querySelector("tbody"));
-    clear($("stage-times").querySelector("tbody"));
-    $("llm-summary").textContent = "No calls yet.";
+    clear($("shop-cards"));
+    clear($("matches-body"));
+    clear($("possible-body"));
+    clear($("similar-list"));
+    clear($("warnings-list"));
+    ["matches-section", "possible-section", "similar-section", "warnings-section"].forEach(function (id) { $(id).hidden = true; });
     $("form-error").hidden = true;
-    EXPECTED.forEach(ensureStep);
-    renderTimeline();
-  }
-
-  function attach(runId, startedAtMs) {
-    state.runId = runId;
-    state.startedAt = startedAtMs || Date.now();
-    state.lastEventAt = Date.now();
-    state.lastText = "Waiting for the first update...";
     setPill("running", "running");
-    $("run-btn").disabled = true;
-    startClock();
-    tick();
-    try { history.replaceState(null, "", "?run=" + runId); } catch (e) { /* not important */ }
-    var source = new EventSource(API + "/api/runs/" + runId + "/events");
-    state.source = source;
-    source.onmessage = function (msg) { handle(JSON.parse(msg.data)); };
-    source.addEventListener("done", function (msg) { finishRun(JSON.parse(msg.data).status); });
-    source.onerror = function () { if (state.finished) source.close(); };
-    loadProviders();
   }
 
   function startRun(url, refresh) {
-    resetScreen();
+    resetRun();
+    showScreen("result");
     $("gem-url").value = url;
+    $("result-title").textContent = "Starting\u2026";
+    $("result-price").textContent = "";
+    $("result-state").textContent = "running";
+    $("cheapest-line").textContent = "";
+    $("result-state").className = "pill running";
     fetch(API + "/api/runs", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ gem_url: url, refresh: !!refresh })
@@ -494,45 +378,64 @@
       return r.json().then(function (body) { return { ok: r.ok, body: body }; });
     }).then(function (res) {
       if (!res.ok) {
-        $("form-error").textContent = typeof res.body.detail === "string" ? res.body.detail : "The server did not accept that link.";
-        $("form-error").hidden = false;
+        showFailure(typeof res.body.detail === "string" ? res.body.detail : "The server did not accept that link.");
+        $("run-btn").disabled = false;
         return;
       }
-      attach(res.body.run_id, Date.now());
+      try { history.replaceState(null, "", "?run=" + res.body.run_id); } catch (e) { /* not important */ }
+      attach(res.body.run_id);
     }).catch(function () {
-      $("form-error").textContent = "Could not reach the server. Is it running?";
-      $("form-error").hidden = false;
+      showFailure("Could not reach the server. Is it running?");
+      $("run-btn").disabled = false;
     });
   }
 
+  function openSavedRun(runId) {
+    resetRun();
+    showScreen("result");
+    setPill("saved", "cached");
+    fetch(API + "/api/runs/" + runId).then(function (r) { return r.ok ? r.json() : null; }).then(function (run) {
+      if (!run || !run.result) {
+        showFailure("That saved run could not be opened.");
+        return;
+      }
+      state.runId = run.id;
+      state.result = run.result;
+      state.finished = true;
+      if (run.result.from_cache === false) run.result.from_cache = true;
+      $("gem-url").value = run.gem_url || "";
+      renderResult(run.result);
+      renderHeader(run.result);
+      setPill("cached", "cached");
+    }).catch(function () { showFailure("Could not reach the server. Is it running?"); });
+  }
+
   // ---- page setup ----
-  document.querySelectorAll(".tab").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      document.querySelectorAll(".tab").forEach(function (b) { b.classList.toggle("active", b === btn); });
-      $("view-progress").hidden = btn.dataset.tab !== "progress";
-      $("view-advanced").hidden = btn.dataset.tab !== "advanced";
-      if (btn.dataset.tab === "advanced") loadProviders();
-    });
-  });
-  $("event-filter").addEventListener("change", rebuildLog);
   $("run-form").addEventListener("submit", function (ev) {
     ev.preventDefault();
-    startRun($("gem-url").value.trim(), $("refresh").checked);
+    var url = $("gem-url").value.trim();
+    if (!/^https?:\/\/[^/]*gem\.gov\.in\//i.test(url)) {
+      showFailure("That does not look like a GeM product link (gem.gov.in).");
+      return;
+    }
+    startRun(url, $("refresh").checked);
   });
-  setInterval(function () {
-    if (!$("view-advanced").hidden && !state.finished) loadProviders();
-  }, 3000);
+  $("llm-toggle").addEventListener("click", function () {
+    var body = $("llm-body");
+    body.hidden = !body.hidden;
+    $("llm-toggle").textContent = body.hidden ? "Show LLM endpoints" : "Hide LLM endpoints";
+    if (!body.hidden) loadProviders();
+  });
 
-  resetScreen();
-  fetch(API + "/api/health").then(function (r) { return r.json(); }).then(function (h) { $("demo-badge").hidden = !h.demo; }).catch(function () {});
+  loadRecent();
+  fetch(API + "/api/health").then(function (r) { return r.json(); }).then(function (body) {
+    $("demo-badge").hidden = !body.demo;
+  }).catch(function () {});
 
   var existing = new URLSearchParams(location.search).get("run");
   if (existing) {
-    fetch(API + "/api/runs/" + existing).then(function (r) { return r.ok ? r.json() : null; }).then(function (run) {
-      if (run) {
-        $("gem-url").value = run.gem_url;
-        attach(run.id, run.started ? run.started * 1000 : Date.now());
-      }
-    });
+    openSavedRun(existing);
+  } else {
+    showScreen("start");
   }
 })();
