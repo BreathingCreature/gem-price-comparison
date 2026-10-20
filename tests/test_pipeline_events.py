@@ -73,11 +73,12 @@ def test_a_normal_run_reports_every_step_in_order():
     types = _types(seen)
 
     assert types[0] == "run_started"
-    assert types[-1] == "run_finished"
+    assert types[-1] == "done"
+    assert "run_finished" in types
     order = ["gem_product", "normalized", "search_started", "search_finished", "candidates_total"]
     positions = [types.index(t) for t in order]
     assert positions == sorted(positions)
-    assert [e["name"] for e in seen if e["type"] == "stage"][:4] == ["extract", "normalize", "search_flipkart", "search_amazon"]
+    assert [e["name"] for e in seen if e["type"] == "stage"][:3] == ["extract", "normalize", "search_both"]
 
 
 def test_gem_product_and_search_details_are_in_the_events():
@@ -95,12 +96,15 @@ def test_gem_product_and_search_details_are_in_the_events():
 
 def test_run_finished_carries_the_headline_numbers():
     result, seen = _run()
-    done = seen[-1]
-    assert done["matches"] == 2
-    assert done["cheapest"] == 900.0
-    assert done["savings"] == 100.0
+    headline = next(e for e in seen if e["type"] == "run_finished")
+    assert headline["matches"] == 2
+    assert headline["cheapest"] == 900.0
+    assert headline["savings"] == 100.0
+    assert headline["trace_id"] == result["trace_id"]
+    assert headline["from_cache"] is False
+    done = next(e for e in seen if e["type"] == "done")
+    assert done["state"] == "done"
     assert done["trace_id"] == result["trace_id"]
-    assert done["from_cache"] is False
 
 
 def test_a_cache_hit_says_so_and_still_finishes():
@@ -108,7 +112,8 @@ def test_a_cache_hit_says_so_and_still_finishes():
     _, seen = _run(url=GEM_URL + "?cache-test")
 
     types = _types(seen)
-    assert types == ["run_started", "cache_hit", "run_finished"]
+    assert types == ["run_started", "cache_hit", "run_finished", "done"]
+    assert seen[2]["from_cache"] is True
     assert seen[-1]["from_cache"] is True
 
 
@@ -130,7 +135,8 @@ def test_the_events_are_saved_inside_the_trace():
     result, _ = _run(url=GEM_URL + "?trace-test")
     trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))
     types = [e["type"] for e in trace["events"]]
-    assert types[0] == "run_started" and types[-1] == "run_finished"
+    assert types[0] == "run_started" and types[-1] == "done"
+    assert "run_finished" in types
 
 
 def test_running_without_a_listener_still_works():

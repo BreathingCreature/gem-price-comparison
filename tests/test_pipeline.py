@@ -190,7 +190,7 @@ def test_retry_triggers_on_zero_matches_and_finds_one_via_expanded_discovery():
         expand_search_fn=expand_search_fn,
     )
 
-    assert call_count["match"] == 2  # empty first pass + successful retry pass
+    assert call_count["match"] == 1  # only the retry had listings to check
     assert len(result["matches"]) == 1
     assert result["matches"][0]["source_domain"] == "croma.com"
 
@@ -217,10 +217,10 @@ def test_retry_skipped_when_expand_search_has_no_new_queries():
     assert "amazon.in" in result["not_found_on"]
 
 
-def test_a_blocked_shop_is_not_asked_again_on_the_retry():
-    # A11: a shop that answered the first pass with nothing but a block gets
-    # the same block on the retry (the Flipkart CAPTCHA survives a fresh page
-    # load) — skip it and let the healthy lanes retry.
+def test_a_blocked_shop_is_retried_once_with_the_new_words():
+    # Stage 7.2/7.4: a blocked shop is `not_searched` with retryable=True, so
+    # it gets exactly one retry with the expanded query. (Stage 6's A11 skipped
+    # it outright; the per-shop card now decides, and the cap is one retry.)
     url = "https://mkp.gem.gov.in/test/blocked-not-retried/p-13-13-cat.html"
     fk_calls, az_calls = [], []
     seen_events = []
@@ -233,7 +233,7 @@ def test_a_blocked_shop_is_not_asked_again_on_the_retry():
         az_calls.append(q)
         return SearchScrapeResult(source_domain="amazon.in", query=q, candidates=[])
 
-    pipeline.run_pipeline(
+    result = pipeline.run_pipeline(
         url, refresh=True, on_event=seen_events.append,
         extract_fn=_fake_gem_product, normalize_fn=lambda gp: _fake_normalized(),
         flipkart_search_fn=fk, amazon_search_fn=az,
@@ -243,9 +243,12 @@ def test_a_blocked_shop_is_not_asked_again_on_the_retry():
         expand_search_fn=lambda n, tq, td: {"new_queries": ["Logitech M650 buy"], "suggested_domains": [], "notes": ""},
     )
 
-    assert fk_calls == ["Logitech M650 wireless mouse"]  # first pass only — no pointless retry
-    assert az_calls == ["Logitech M650 wireless mouse", "Logitech M650 buy"]  # the healthy shop is still retried
-    assert any(e.get("type") == "stage" and e.get("name") == "retry_flipkart_skipped" for e in seen_events)
+    assert fk_calls == ["Logitech M650 wireless mouse", "Logitech M650 buy"]
+    assert az_calls == ["Logitech M650 wireless mouse", "Logitech M650 buy"]
+    assert result["shops"]["flipkart.com"]["retried"] is True
+    assert result["shops"]["flipkart.com"]["retryable"] is False
+    retry_event = next(e for e in seen_events if e.get("type") == "retry_started")
+    assert retry_event["shops"] == ["amazon.in", "flipkart.com", "other"]
 
 
 def test_a_shop_that_only_found_nothing_is_still_retried():
