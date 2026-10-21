@@ -41,6 +41,8 @@ run started), `type`, plus the fields below.
 | `search_health` | engine, ok, reason | a discovery engine worked or failed |
 | `discovery_finished` | queries, urls, issues | other shop pages worth opening |
 | `scrape_started` / `scrape_finished` | url / title, price, url, domain, error | one of those pages was opened |
+| `filter_finished` | shop, seen, dropped, sent | one lane's filter result: how many listings it saw, dropped and sent to the LLM |
+| `prefilter_finished` | kept, dropped, top | one pass of the early filter (also used for retry listings) |
 | `candidates_total` | count | how many listings go to the matcher |
 | `candidate_checking` | url, domain, title, price, index, total | the matcher started on one listing |
 | `candidate_verdict` | url, domain, is_match, confidence, reason, price | the LLM's verdict |
@@ -50,6 +52,8 @@ run started), `type`, plus the fields below.
 | `llm_call` | endpoint, provider, model, purpose, seconds, ok, status, error | one attempt on one LLM endpoint (`purpose` is normalize, verify, expand or similar) |
 | `llm_cache_hit` | purpose | an answer came from the saved-answer cache (`LLM_CACHE=1`), no LLM call was made |
 | `llm_cooldown` | endpoint, seconds, reason | an endpoint is resting after an error |
+| `llm_used_up` | endpoint, until, reason | an endpoint hit its daily limit and rests until `until` |
+| `llm_unavailable` | reason | no endpoint could answer, so listings are reported as not checked |
 | `llm_disabled` | endpoint, reason | an endpoint was switched off (bad key, unknown model) |
 | `shop_started` | shop | a shop (amazon.in, flipkart.com or other) entered the first pass |
 | `shop_finished` | shop, status, reason | that shop's first pass is over; `status` is one of found, possible, not_found, not_searched, incomplete, timed_out |

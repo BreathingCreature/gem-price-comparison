@@ -1,7 +1,8 @@
 // GeM Price Comparison frontend. Plain JavaScript, no build step.
 // It talks to the backend only through the routes in docs/api.md and uses
-// frontend/render.js for every formatted string. All text goes in through
-// h() / textContent; scraped pages never get to inject markup.
+// frontend/render.js for every formatted string and every sentence of the
+// live activity feed. All text goes in through h() / textContent; scraped
+// pages never get to inject markup.
 (function () {
   "use strict";
 
@@ -9,13 +10,15 @@
   var R = window.GemRender;
   var $ = function (id) { return document.getElementById(id); };
 
+  var MAX_FEED_LINES = 600;  // the browser stays fast on very long runs
+
   var state;
 
   function freshState() {
     return {
       runId: null, source: null, active: false, finished: false,
-      result: null, retrying: [], cards: {}, lastText: "Waiting for the first update...",
-      traceLoaded: null, timerId: null, startedAt: null, elapsed: 0
+      result: null, retrying: [], cards: {}, stats: R.newStats(),
+      feedLines: 0, hiddenLines: 0, timerId: null, startedAt: null
     };
   }
   state = freshState();
@@ -62,54 +65,117 @@
         var when = run.checked_at ? String(run.checked_at).replace("T", " ").slice(0, 16) : (run.live ? "now" : "");
         var button = h("button", { type: "button", class: "recent-item" },
           h("span", { class: "recent-title", text: run.title || run.gem_url || "(untitled run)" }),
-          h("span", { class: "muted", text: price + (when ? "  \u00b7  " + when : "") }));
+          h("span", { class: "muted", text: price + (when ? "  ·  " + when : "") }));
         button.addEventListener("click", function () { openSavedRun(run.id); });
         list.appendChild(h("li", null, button));
       });
     }).catch(function () { /* the list simply stays empty */ });
   }
 
-  // ---- result screen ----
   function showScreen(which) {
     $("start-screen").hidden = which !== "start";
     $("result-screen").hidden = which !== "result";
   }
 
+  // ---- the product box: what GeM says, what the LLM understood ----
   function renderHeader(result) {
-    if (!result) return;
-    var gem = result.gem || {};
-    $("result-title").textContent = gem.title || "Product";
-    var price = gem.price || {};
-    var kind = price.kind || "unknown";
-    $("result-price").textContent = price.low != null
-      ? "GeM price " + money(price.low) + (price.high != null && price.high !== price.low ? " to " + money(price.high) : "") + " (" + kind + ")"
-      : "GeM price not found on the page";
-    $("result-state").textContent = R.stateLabel(result, state.finished ? "done" : "running");
-    $("result-state").className = "pill " + (result.from_cache ? "cached" : "running");
-    $("cheapest-line").textContent = R.cheapestLine(result);
+    var gem = (result && result.gem) || {};
+    var seen = state.stats.gem || {};
+    var title = gem.title || seen.title;
+    if (title) $("result-title").textContent = title;
+    var price = gem.price || null;
+    var low = price ? price.low : seen.price;
+    var high = price ? price.high : null;
+    var kind = price ? (price.kind || "unknown") : (seen.priceType || "price");
+    if (low != null) {
+      $("result-price").textContent = "GeM price " + money(low) + (high != null && high !== low ? " to " + money(high) : "") + " (" + kind + ")";
+    } else if (result || state.stats.gem) {
+      $("result-price").textContent = "GeM price not found on the page";
+    }
+    if (result) {
+      $("result-state").textContent = R.stateLabel(result, state.finished ? "done" : "running");
+      $("result-state").className = "pill " + (result.from_cache ? "cached" : (state.finished ? "done" : "running"));
+      $("cheapest-line").textContent = result.matches && result.matches.length || result.cheapest ? R.cheapestLine(result) : "";
+    }
+    renderChips(gem);
+  }
+
+  function renderChips(gem) {
+    var box = $("product-chips");
+    clear(box);
+    var p = state.stats.product;
+    var brand = (p && p.brand) || gem.brand;
+    var model = (p && p.model) || gem.model;
+    if (p && p.name) box.appendChild(h("span", { class: "chip", text: "understood as: " + p.name }));
+    if (brand) box.appendChild(h("span", { class: "chip", text: "brand: " + brand }));
+    if (model) box.appendChild(h("span", { class: "chip", text: "model: " + model }));
+    if (p) p.queries.forEach(function (q) { box.appendChild(h("span", { class: "chip query", text: "search: " + q })); });
+  }
+
+  // ---- progress strip ----
+  function renderSteps() {
+    var list = $("steps");
+    clear(list);
+    R.STEPS.forEach(function (step) {
+      var cls = state.stats.doneSteps[step.id] ? "done" : (state.stats.step === step.id && !state.finished ? "active" : "");
+      list.appendChild(h("li", { class: cls, text: step.label }));
+    });
+  }
+
+  // ---- shop cards ----
+  function cardOrder(key) {
+    if (key === "flipkart.com") return 0;
+    if (key === "amazon.in") return 1;
+    if (key === "other") return 9;
+    return 5;
   }
 
   function cardFor(shop) {
     if (state.cards[shop]) return state.cards[shop];
-    var title = h("h3", { text: shop });
-    var line = h("p", { class: "muted", text: "searching\u2026" });
+    var badge = h("span", { class: "badge", text: "waiting" });
+    var big = h("p", { class: "big", text: "" });
+    var live = h("p", { class: "line", text: "" });
+    var doing = h("p", { class: "doing", text: "" });
     var reason = h("p", { class: "reason muted" });
-    var extra = h("div", { class: "drop" });
-    var card = h("article", { class: "shop-card shop-running" }, title, line, reason, extra);
-    card.addEventListener("click", function () { loadTrace(shop); });
-    $("shop-cards").appendChild(card);
-    state.cards[shop] = { el: card, line: line, reason: reason };
+    var fill = h("span");
+    var bar = h("div", { class: "bar" }, fill);
+    var el = h("article", { class: "shop-card shop-running", "data-order": String(cardOrder(shop)) },
+      h("div", { class: "row" }, h("h3", { text: shop === "other" ? "other shops" : shop }), badge),
+      big, live, doing, reason, bar);
+    var container = $("shop-cards");
+    var before = null;
+    for (var i = 0; i < container.children.length; i++) {
+      if (Number(container.children[i].getAttribute("data-order")) > cardOrder(shop)) { before = container.children[i]; break; }
+    }
+    container.insertBefore(el, before);
+    state.cards[shop] = { el: el, badge: badge, big: big, live: live, doing: doing, reason: reason, fill: fill, final: false };
     return state.cards[shop];
+  }
+
+  // Counters and "what it is doing now", from the event counters.
+  function paintLive(shop) {
+    var card = cardFor(shop);
+    var s = state.stats.shops[shop];
+    if (!s) return;
+    card.live.textContent = R.liveShopLine(s);
+    if (!card.final) {
+      card.doing.textContent = s.activity || "";
+      var total = Math.max(s.checking, s.judged, 1);
+      var pct = s.judged ? Math.round(100 * s.judged / total) : (s.queries ? Math.round(100 * s.queriesDone / s.queries / 2) : 0);
+      card.fill.style.width = Math.min(pct, 100) + "%";
+    }
   }
 
   function fillCard(shop, entry) {
     var card = cardFor(shop);
-    card.line.textContent = R.shopSummary(entry);
-    card.reason.textContent = R.shopNeedsReason(entry) ? (entry.reason || "") : "";
+    card.final = true;
+    card.badge.textContent = (entry.status || "unknown").replace(/_/g, " ");
     var retry = R.retryLabel(shop, state.retrying);
-    if (retry) {
-      card.reason.textContent = retry + " " + (entry.reason || "");
-    }
+    card.big.textContent = entry.matches > 0 && entry.price != null ? money(entry.price) : "";
+    card.live.textContent = R.shopSummary(entry);
+    card.doing.textContent = retry;
+    card.reason.textContent = R.shopNeedsReason(entry) ? (entry.reason || "") : "";
+    card.fill.style.width = "100%";
     card.el.className = "shop-card " + R.statusClass(entry.status) + (retry ? " shop-retrying" : "");
     card.el.dataset.shop = shop;
   }
@@ -163,60 +229,96 @@
   function renderResult(result) {
     if (!result) return;
     state.result = result;
-    renderHeader(result);
     Object.keys(result.shops || {}).forEach(function (shop) { fillCard(shop, result.shops[shop]); });
+    renderHeader(result);
     renderMatches(result);
   }
 
   function renderRetrying() {
     state.retrying.forEach(function (shop) {
-      if (state.cards[shop]) {
-        state.cards[shop].line.textContent = "\u21bb retrying\u2026";
+      var card = state.cards[shop];
+      if (card) {
+        card.doing.textContent = "↻ retrying…";
+        card.el.className = card.el.className + " shop-retrying";
+        card.final = false;
+        card.fill.style.width = "10%";
       }
     });
   }
 
-  // ---- trace drawer: whatever the drop log and the verdicts decided ----
-  function loadTrace(shop) {
-    var traceId = state.result && state.result.trace_id;
-    if (!traceId || state.traceLoaded === traceId) return;
-    state.traceLoaded = traceId;
+  // ---- live activity feed ----
+  var ICONS = { step: "▶", search: "⌕", filter: "≡", llm: "✶", verdict: "✔", shop: "■", retry: "↻", warn: "!", info: "i" };
+
+  function formatTime(seconds) {
+    return R.clock(seconds);
+  }
+
+  function addFeedLine(event) {
+    var line = R.describeEvent(event);
+    if (!line) return;
+    var feed = $("feed");
+    var main = h("span", { class: "main", text: line.text });
+    var body;
+    if (line.detail && line.detail.length) {
+      var sub = h("div", { class: "sub-lines" });
+      line.detail.forEach(function (text) { sub.appendChild(h("div", { text: text })); });
+      var details = h("details", null, h("summary", null, main), sub);
+      if ($("open-details").checked) details.open = true;
+      body = details;
+    } else {
+      body = main;
+    }
+    var cls = (line.level || "") + (line.key ? "" : " detail-only");
+    var item = h("li", { class: cls.trim() },
+      h("span", { class: "t", text: formatTime(event.t) }),
+      h("span", { class: "icon", text: ICONS[line.kind] || "•" }),
+      h("span", { class: "msg" }, body));
+    var follow = $("auto-scroll").checked;
+    feed.appendChild(item);
+    state.feedLines += 1;
+    while (feed.children.length > MAX_FEED_LINES) {
+      feed.removeChild(feed.firstChild);
+      state.hiddenLines += 1;
+    }
+    $("feed-empty").hidden = true;
+    $("activity-count").textContent = state.feedLines + " steps" + (state.hiddenLines ? " (older " + state.hiddenLines + " hidden)" : "");
+    if (follow) feed.scrollTop = feed.scrollHeight;
+  }
+
+  function renderLlmLine() {
+    var llm = state.stats.llm;
+    var text = "";
+    if (llm.calls || llm.cached) {
+      text = llm.calls + " LLM call" + (llm.calls === 1 ? "" : "s") + (llm.failed ? " (" + llm.failed + " failed)" : "") +
+        (llm.cached ? ", " + llm.cached + " reused" : "") + (llm.seconds ? ", " + llm.seconds.toFixed(1) + " s of waiting in total" : "");
+    }
+    $("llm-line").textContent = text;
+  }
+
+  function applyFeedMode() {
+    $("feed").className = "feed" + ($("show-all").checked ? "" : " compact");
+  }
+
+  // ---- saved runs: replay the events that the trace kept ----
+  function replayTrace(traceId) {
+    if (!traceId) return;
     fetch(API + "/api/traces/" + traceId).then(function (r) { return r.ok ? r.json() : null; }).then(function (trace) {
-      if (!trace) return;
-      var panel = h("details", { class: "trace" }, h("summary", { text: "What happened (drop log and verdicts)" }));
-      var stages = trace.stages || {};
-      var matching = stages.matching || {};
-      var decisions = matching.all_decisions || [];
-      if (decisions.length) {
-        var body = h("ul", { class: "plain" });
-        decisions.forEach(function (d) {
-          body.appendChild(h("li", null,
-            h("span", { class: "muted", text: (d.source_domain || "?") + ": " }),
-            h("span", { text: d.is_match ? "same product" : "not the same" }),
-            h("span", { class: "muted", text: " \u2014 " + (d.reason || "") }),
-            linkOrText(d.candidate_url)));
-        });
-        panel.appendChild(h("p", { class: "muted", text: "Verdicts" }));
-        panel.appendChild(body);
+      if (!trace || !trace.events || !trace.events.length) {
+        $("feed-empty").hidden = false;
+        return;
       }
-      var prefilter = stages.prefilter || {};
-      if (prefilter.dropped && prefilter.dropped.length) {
-        panel.appendChild(h("p", { class: "muted", text: "Dropped before the LLM (" + prefilter.dropped.length + ")" }));
-        var dropped = h("ul", { class: "plain muted" });
-        prefilter.dropped.slice(0, 20).forEach(function (item) {
-          dropped.appendChild(h("li", { text: typeof item === "string" ? item : (item.title || item.url || "listing") }));
-        });
-        panel.appendChild(dropped);
-      }
-      var retry = stages.retry || {};
-      if (retry.state || retry.skipped_reason) {
-        panel.appendChild(h("p", { class: "muted", text: "Retry: " + (retry.state || retry.skipped_reason) }));
-      }
-      if (shop) {
-        panel.appendChild(h("p", { class: "muted", text: "Showing the whole run, not only " + shop + "." }));
-      }
-      $("shop-cards").appendChild(panel);
-    }).catch(function () { /* the drawer is optional */ });
+      trace.events.forEach(function (event) {
+        try {
+          R.applyEvent(state.stats, event);
+          addFeedLine(event);
+        } catch (e) { /* one odd event must not stop the replay */ }
+      });
+      Object.keys(state.stats.shops).forEach(function (shop) { if (!state.cards[shop]) cardFor(shop); });
+      if (state.result) renderResult(state.result);
+      renderSteps();
+      renderLlmLine();
+      renderHeader(state.result);
+    }).catch(function () { $("feed-empty").hidden = false; });
   }
 
   // ---- LLM status ----
@@ -238,13 +340,22 @@
   // ---- clock ----
   function tick() {
     if (!state.active || !state.startedAt) return;
-    state.elapsed = (Date.now() - state.startedAt) / 1000;
+    $("clock").textContent = R.clock((Date.now() - state.startedAt) / 1000);
   }
-  function startClock() { stopClock(); state.timerId = setInterval(tick, 500); }
+  function startClock() { stopClock(); $("clock").hidden = false; state.timerId = setInterval(tick, 500); }
   function stopClock() { if (state.timerId) clearInterval(state.timerId); state.timerId = null; }
 
   // ---- events ----
   function handle(event) {
+    // Every event first updates the counters and adds a feed line; the cases
+    // below only do the extra work that some events need.
+    R.applyEvent(state.stats, event);
+    addFeedLine(event);
+    Object.keys(state.stats.shops).forEach(function (shop) { paintLive(shop); });
+    renderSteps();
+    renderLlmLine();
+    if (event.type === "gem_product" || event.type === "normalized") renderHeader(state.result);
+
     switch (event.type) {
       case "run_started":
         state.startedAt = Date.now();
@@ -252,29 +363,24 @@
         $("run-btn").disabled = true;
         setPill("running", "running");
         break;
-      case "gem_product":
-        $("result-title").textContent = event.title || "Product";
-        break;
       case "shop_started":
-        cardFor(event.shop);
+        cardFor(R.shopKey(event.shop));
         break;
       case "shop_finished":
-        fillCard(event.shop, event);
+        fillCard(R.shopKey(event.shop), event);
         break;
       case "shop_updated":
         state.retrying = state.retrying.filter(function (s) { return s !== event.shop; });
-        fillCard(event.shop, event);
+        fillCard(R.shopKey(event.shop), event);
         break;
       case "retry_started":
         state.retrying = event.shops || [];
         renderRetrying();
-        renderHeader((state.result || {}));
-        $("result-state").textContent = "updating\u2026";
+        $("result-state").textContent = "updating…";
         break;
       case "run_finished":
         state.result = event.result || state.result;
         if (state.result) renderResult(state.result);
-        state.finished = event.result && event.result.state !== "shown";
         break;
       case "run_updated":
         state.result = event.result || state.result;
@@ -287,15 +393,12 @@
           renderMatches(state.result);
         }
         break;
-      case "cache_hit":
-        state.lastText = "Using the saved result for this product.";
-        break;
       case "done":
-        finishRun(event.state === "done" ? "done" : "done");
+        finishRun("done");
         break;
       case "run_failed":
         finishRun("failed");
-        showFailure(event.error || "The run failed.");
+        showFailure(event.error || event.message || "The run failed.");
         break;
       default:
         break; // unknown event types are ignored on purpose
@@ -313,6 +416,7 @@
     stopClock();
     $("run-btn").disabled = false;
     setPill(kind === "failed" ? "failed" : "done", kind);
+    renderSteps();
     if (state.result) {
       renderHeader(state.result);
       renderMatches(state.result);
@@ -357,20 +461,28 @@
     clear($("possible-body"));
     clear($("similar-list"));
     clear($("warnings-list"));
+    clear($("feed"));
+    clear($("product-chips"));
+    $("feed-empty").hidden = false;
+    $("activity-count").textContent = "";
+    $("llm-line").textContent = "";
+    $("clock").hidden = true;
     ["matches-section", "possible-section", "similar-section", "warnings-section"].forEach(function (id) { $(id).hidden = true; });
     $("form-error").hidden = true;
     setPill("running", "running");
+    renderSteps();
   }
 
   function startRun(url, refresh) {
     resetRun();
     showScreen("result");
     $("gem-url").value = url;
-    $("result-title").textContent = "Starting\u2026";
+    $("result-title").textContent = "Starting…";
     $("result-price").textContent = "";
     $("result-state").textContent = "running";
     $("cheapest-line").textContent = "";
     $("result-state").className = "pill running";
+    $("clock").textContent = "00:00";
     fetch(API + "/api/runs", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ gem_url: url, refresh: !!refresh })
@@ -407,6 +519,7 @@
       renderResult(run.result);
       renderHeader(run.result);
       setPill("cached", "cached");
+      replayTrace(run.result.trace_id);
     }).catch(function () { showFailure("Could not reach the server. Is it running?"); });
   }
 
@@ -426,7 +539,15 @@
     $("llm-toggle").textContent = body.hidden ? "Show LLM endpoints" : "Hide LLM endpoints";
     if (!body.hidden) loadProviders();
   });
+  $("show-all").addEventListener("change", applyFeedMode);
+  $("open-details").addEventListener("change", function () {
+    var open = $("open-details").checked;
+    var all = $("feed").querySelectorAll("details");
+    for (var i = 0; i < all.length; i++) all[i].open = open;
+  });
 
+  renderSteps();
+  applyFeedMode();
   loadRecent();
   fetch(API + "/api/health").then(function (r) { return r.json(); }).then(function (body) {
     $("demo-badge").hidden = !body.demo;
