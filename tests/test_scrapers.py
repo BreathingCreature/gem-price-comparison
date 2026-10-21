@@ -729,3 +729,16 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_a_no_results_phrase_hidden_in_script_data_is_not_a_genuine_no_results():
+    """A page shell can carry the phrase inside its own script data without showing it.
+    Treating that as 'nothing exists' would give a false not_found that never retries."""
+    from scrapers import flipkart
+
+    shell = "<html><body><div id='root'></div><script>window.i18n={\"empty\":\"No results found\"}</script></body></html>"
+    shown = "<html><body><div class='x'>Sorry, no results found for your search</div></body></html>"
+    assert flipkart._genuine_no_results(shell) is False
+    assert flipkart._genuine_no_results(shown) is True
+    assert flipkart._light_page_is_usable(shell) is False  # so Chrome takes over
+    assert flipkart._light_page_is_usable(shown) is True

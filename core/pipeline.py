@@ -635,6 +635,7 @@ def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: st
     (match_result, dropped_by_prefilter)."""
     usable = [c for c in candidates if _usable(c)]
     kept, dropped = _prefilter_candidates(usable, normalized)
+    events.emit("filter_finished", shop=name, seen=len(usable), dropped=len(dropped), sent=len(kept))
     if not kept:
         return matcher.MatchBatchResult(), dropped
     events.emit("stage", name=f"match_{name}", label=f"Checking {label}")

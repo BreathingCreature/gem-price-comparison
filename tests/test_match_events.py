@@ -110,3 +110,21 @@ def test_matching_without_a_listener_is_unchanged(monkeypatch):
     result = match_candidates({"canonical_name": "Demo", "gem_price": 1000.0}, [_candidate("https://shop.example/a")], client=client)
 
     assert len(result.confirmed_matches) == 1
+
+
+def test_a_lane_reports_its_filter_result_for_the_page():
+    """Each lane says how many listings the filter saw, dropped and sent on (the page's shop counters)."""
+    from core import events, pipeline
+    from llm import match as matcher
+
+    cands = [
+        {"url": f"https://www.flipkart.com/p{i}", "source_domain": "flipkart.com",
+         "structured_fields": {"title": "Logitech M650 Wireless Mouse", "price": 1000.0 + i}}
+        for i in range(3)
+    ]
+    normalized = {"canonical_name": "Logitech M650 Wireless Mouse", "brand": "Logitech", "model": "M650", "search_queries": ["logitech m650"]}
+    with events.capture() as sink:
+        pipeline._verify_lane(normalized, cands, lambda n, c, **k: matcher.MatchBatchResult(), name="flipkart", label="the Flipkart listings")
+    found = [e for e in sink.events if e["type"] == "filter_finished"]
+    assert len(found) == 1
+    assert found[0]["shop"] == "flipkart" and found[0]["seen"] == 3 and found[0]["sent"] + found[0]["dropped"] == 3

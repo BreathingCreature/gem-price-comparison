@@ -4,16 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GeM Price Comparison</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top">
-    <div>
-      <h1>GeM Price Comparison</h1>
-      <p class="sub">Paste a GeM product link. The shops fill in as the search runs.</p>
+    <div class="brand">
+      <span class="logo" aria-hidden="true">GeM</span>
+      <div>
+        <h1>Price Comparison</h1>
+        <p class="sub">Paste a GeM product link and watch every step as it happens.</p>
+      </div>
     </div>
     <div class="top-right">
       <span id="demo-badge" class="pill demo" hidden>demo mode: fake data</span>
+      <span id="clock" class="clock" title="Time since the run started" hidden>00:00</span>
       <span id="status-pill" class="pill">idle</span>
     </div>
   </header>
@@ -33,52 +38,86 @@
     </section>
 
     <section id="result-screen" hidden>
-      <div class="card">
-        <h2 id="result-title">Product</h2>
-        <p class="muted" id="result-price"></p>
-        <p><span id="result-state" class="pill">running</span></p>
+
+      <section class="card product">
+        <div class="product-head">
+          <div>
+            <h2 id="result-title">Product</h2>
+            <p class="muted" id="result-price"></p>
+          </div>
+          <span id="result-state" class="pill">running</span>
+        </div>
+        <div id="product-chips" class="chips"></div>
         <p id="cheapest-line" class="cheapest"></p>
-      </div>
+      </section>
+
+      <ol id="steps" class="steps" aria-label="Progress"></ol>
 
       <div id="shop-cards" class="shops"></div>
 
-      <section id="matches-section" class="card" hidden>
-        <h2>Matches</h2>
-        <p id="matches-empty" class="muted" hidden>No confirmed match yet.</p>
-        <table class="grid">
-          <thead><tr><th>Shop</th><th>Price</th><th>Vs GeM</th><th>Confidence</th><th>Reason</th><th>Link</th></tr></thead>
-          <tbody id="matches-body"></tbody>
-        </table>
-      </section>
+      <div class="columns">
+        <section class="card activity">
+          <div class="activity-head">
+            <h2>Live activity</h2>
+            <span id="activity-count" class="muted"></span>
+          </div>
+          <div class="toggles">
+            <label class="check"><input id="show-all" type="checkbox" checked> Show every step</label>
+            <label class="check"><input id="open-details" type="checkbox"> Open all details</label>
+            <label class="check"><input id="auto-scroll" type="checkbox" checked> Follow the latest</label>
+          </div>
+          <div id="llm-line" class="llm-line muted"></div>
+          <ol id="feed" class="feed"></ol>
+          <p id="feed-empty" class="muted" hidden>Nothing yet. The steps appear here the moment they happen.</p>
+        </section>
 
-      <section id="possible-section" class="card" hidden>
-        <h2>Possible matches</h2>
-        <table class="grid">
-          <thead><tr><th>Shop</th><th>Title</th><th>Price</th><th>Why</th><th>Link</th></tr></thead>
-          <tbody id="possible-body"></tbody>
-        </table>
-      </section>
+        <div class="results">
+          <section id="matches-section" class="card" hidden>
+            <h2>Matches</h2>
+            <p id="matches-empty" class="muted" hidden>No confirmed match yet.</p>
+            <div class="scroll">
+              <table class="grid">
+                <thead><tr><th>Shop</th><th>Price</th><th>Vs GeM</th><th>Sure</th><th>Why</th><th>Link</th></tr></thead>
+                <tbody id="matches-body"></tbody>
+              </table>
+            </div>
+          </section>
 
-      <section id="similar-section" class="card" hidden>
-        <h2>Similar (not the same product)</h2>
-        <ul id="similar-list" class="plain"></ul>
-      </section>
+          <section id="possible-section" class="card" hidden>
+            <h2>Possible matches</h2>
+            <p class="muted">Looks right but something is missing. Check these by hand.</p>
+            <div class="scroll">
+              <table class="grid">
+                <thead><tr><th>Shop</th><th>Title</th><th>Price</th><th>Why</th><th>Link</th></tr></thead>
+                <tbody id="possible-body"></tbody>
+              </table>
+            </div>
+          </section>
 
-      <section id="warnings-section" class="card" hidden>
-        <h2>Warnings</h2>
-        <ul id="warnings-list" class="plain warn-list"></ul>
-      </section>
+          <section id="similar-section" class="card" hidden>
+            <h2>Similar (not the same product)</h2>
+            <ul id="similar-list" class="plain"></ul>
+          </section>
 
-      <section class="card">
-        <button id="llm-toggle" type="button" class="linkish">Show LLM endpoints</button>
-        <div id="llm-body" hidden>
-          <p class="muted" id="llm-strategy"></p>
-          <table class="grid">
-            <thead><tr><th>Endpoint</th><th>State</th><th>Calls</th><th>Errors</th><th>Note</th></tr></thead>
-            <tbody id="providers-body"></tbody>
-          </table>
+          <section id="warnings-section" class="card" hidden>
+            <h2>Warnings</h2>
+            <ul id="warnings-list" class="plain warn-list"></ul>
+          </section>
+
+          <section class="card">
+            <button id="llm-toggle" type="button" class="linkish">Show LLM endpoints</button>
+            <div id="llm-body" hidden>
+              <p class="muted" id="llm-strategy"></p>
+              <div class="scroll">
+                <table class="grid">
+                  <thead><tr><th>Endpoint</th><th>State</th><th>Calls</th><th>Errors</th><th>Note</th></tr></thead>
+                  <tbody id="providers-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </div>
-      </section>
+      </div>
     </section>
   </main>
 
