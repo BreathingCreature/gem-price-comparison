@@ -34,10 +34,28 @@ def _wait_limit() -> float:
         return DEFAULT_RETRY_WAIT_SECONDS
 
 
+def _price_number(value):
+    """A float for formatting, or None. Similar-product rows keep the
+    scraper's original string ('₹51,313.00'), which used to crash
+    format_price's :,.2f spec."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "").replace("\u20b9", "").replace("Rs.", "").replace("Rs", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def format_price(value) -> str:
     if value is None:
         return "\u2014"
-    return f"\u20b9{value:,.2f}"
+    number = _price_number(value)
+    if number is None:
+        return str(value)
+    return f"\u20b9{number:,.2f}"
 
 
 def _gem_view(result: dict) -> dict:

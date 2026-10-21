@@ -283,3 +283,32 @@ def test_main_passes_the_workers_flag_through(tmp_path, monkeypatch):
     captured.clear()
     run_eval.main(["--key", str(key), "--label", "workers", "--dir", str(tmp_path)])
     assert captured["workers"] == 1
+
+
+# --- a killed run leaves junk behind, and a resume must survive it --------
+
+def test_a_cut_off_line_in_the_old_results_does_not_stop_a_resume(tmp_path):
+    out = tmp_path / "r.jsonl"
+    out.write_text(
+        json.dumps({"id": "P1", "error": None}) + "\n" + '{"id": "P2", "err',
+        encoding="utf-8",
+    )
+
+    assert run_eval.run_all(ROWS, out, run_fn=_fake_run, log=lambda *_: None) == 2
+
+    # The junk line is dropped (it had no newline, so it would have glued
+    # itself onto the next record) and P1 stays done; P2 and P3 run.
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(x)["id"] for x in lines] == ["P1", "P2", "P3"]
+    assert all(len(x.splitlines()) == 1 for x in lines)
+
+
+def test_a_corrupt_meta_is_replaced(tmp_path, capsys):
+    meta = tmp_path / "x.meta.json"
+    meta.write_text("{not json", encoding="utf-8")
+
+    run_eval.write_meta(meta, "x")
+
+    assert "unreadable" in capsys.readouterr().out
+    saved = json.loads(meta.read_text(encoding="utf-8"))
+    assert isinstance(saved["settings"], dict) and "started" in saved

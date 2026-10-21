@@ -260,6 +260,48 @@ def test_a_lane_over_its_limit_is_timed_out(monkeypatch):
     assert "42" in entry["reason"] and entry["retryable"] is True
 
 
+def test_a_slow_lane_that_finished_reports_what_it_found(monkeypatch):
+    # Live run 5a8d4b7d...-style: the other-shops lane took 199 s (limit 150)
+    # because the LLM calls were slow, but every listing WAS checked. Calling
+    # those shops "timed out" hid the 90%/80% same-product verdicts and
+    # triggered a pointless second pass.
+    monkeypatch.setattr(pipeline, "LANE_TIME_LIMIT_SECONDS", 150.0)
+    same = _candidate_dict("locuscomp.in", "https://www.locuscomp.in/hp-desktop.html")
+    different = _candidate_dict("moglix.com", "https://www.moglix.com/hp-280-g9")
+    decisions = [
+        {"candidate_url": same["url"], "source_domain": "locuscomp.in", "outcome": "possible",
+         "is_match": False, "confidence": 0.9, "reason": "same, price unknown"},
+        {"candidate_url": different["url"], "source_domain": "moglix.com", "outcome": "no_match",
+         "is_match": False, "confidence": 0.95, "reason": "different RAM"},
+    ]
+    shops = pipeline._shop_entries(
+        flipkart_results=[], amazon_results=[], discovery_results=[],
+        flipkart_candidates=[], amazon_candidates=[],
+        generic_candidates=[same, different],
+        match_result=MatchBatchResult(all_decisions=decisions, possible_matches=[decisions[0]]),
+        prefilter_dropped=[], lane_errors=[], lane_seconds={"other_shops": 199.0}, nothing_found=False,
+    )
+    assert shops["locuscomp.in"]["status"] == result.SHOP_POSSIBLE
+    assert shops["locuscomp.in"]["matches"] == 0 and shops["locuscomp.in"]["checked"] == 1
+    assert shops["moglix.com"]["status"] == result.SHOP_NOT_FOUND
+    assert shops["other"]["status"] == result.SHOP_POSSIBLE
+    assert shops["other"]["retryable"] is False
+
+
+def test_a_slow_lane_with_no_verdict_at_all_is_timed_out(monkeypatch):
+    monkeypatch.setattr(pipeline, "LANE_TIME_LIMIT_SECONDS", 150.0)
+    candidate = _candidate_dict("slowshop.in", "https://www.slowshop.in/hp")
+    shops = pipeline._shop_entries(
+        flipkart_results=[], amazon_results=[], discovery_results=[],
+        flipkart_candidates=[], amazon_candidates=[], generic_candidates=[candidate],
+        match_result=MatchBatchResult(), prefilter_dropped=[],
+        lane_errors=[], lane_seconds={"other_shops": 199.0}, nothing_found=True,
+    )
+    assert shops["slowshop.in"]["status"] == result.SHOP_TIMED_OUT
+    assert "199" in shops["slowshop.in"]["reason"]
+    assert shops["slowshop.in"]["retryable"] is True
+
+
 def test_discovery_off_marks_other_not_searched_and_unretryable():
     shops = pipeline._shop_entries(
         flipkart_results=[], amazon_results=[], discovery_results=[],

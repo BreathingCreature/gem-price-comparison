@@ -254,8 +254,11 @@ eason. A page
 - 2026-10-20 - A shop card is honest about what happened: `found` needs at
   least one confirmed match; a blocked or empty search is `not_searched`; a
   listing the LLM could not judge is `incomplete` (never `not_found`); a
-  lane over `GEM_LANE_TIME_LIMIT` (150 s) is `timed_out`; possible-only is
-  `possible`. `retryable` is true only for statuses a second attempt could
+  slow lane that produced no verdict at all is `timed_out`; possible-only is
+  `possible`. A slow lane that DID finish is not `timed_out` - its shops show
+  the real `possible`/`not_found` (live run 2026-10-21: the other-shops lane
+  took 199 s over a 150 s limit and lost two same-product verdicts to the
+  label). `retryable` is true only for statuses a second attempt could
   change, and a lane that crashed is not retried (the same call would crash
   again). `build_result` enforces the same rules a second time, including
   "no cheapest without a priced in-stock match and a GeM price". (Stage 7)
@@ -300,10 +303,11 @@ eason. A page
   that module). Splitting the rest safely is Phase 2 work, not a behaviour
   change to slip in here. (Stage 7)
 
-- 2026-10-20 - `GEM_LANE_TIME_LIMIT` marks a shop `timed_out` but cannot stop
-  the lane's thread: the run stops waiting on that lane's answer by keeping
-  the rest of the result and writing the reason on the card. The retry then
-  gives that shop one more try. (Stage 7)
+- 2026-10-20 - `GEM_LANE_TIME_LIMIT` cannot stop the lane's thread: the run
+  still waits for it (earlier notes claimed it "stops waiting", which the code
+  never did). It is therefore only a label, and 2026-10-21 narrowed it to
+  shops whose lane ran over budget AND produced no verdict at all; retrying a
+  slow lane that already answered was a wasted second pass. (Stage 7)
 
 ## Stage 8 - interfaces (API, demo, frontend, CLI)
 

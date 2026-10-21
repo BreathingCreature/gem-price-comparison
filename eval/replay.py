@@ -63,8 +63,11 @@ class RecordingStore:
 
     def load(self) -> dict:
         if self.path.exists():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.responses.update(data.get("responses") or {})
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ReplayDivergence(f"cannot read the recording {self.path}: {exc}") from exc
+            self.responses.update((data or {}).get("responses") or {})
         return self.responses
 
     def save(self) -> None:

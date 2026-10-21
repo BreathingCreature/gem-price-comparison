@@ -139,11 +139,19 @@ def _jsonld_fields(soup: BeautifulSoup) -> dict:
         raw_price = offer.get("price")
         if raw_price is None:
             raw_price = offer.get("lowPrice")
+        spec = offer.get("priceSpecification")
+        if raw_price is None and isinstance(spec, dict):
+            raw_price = spec.get("price") or spec.get("lowPrice")
+        if isinstance(raw_price, dict):
+            # schema.org allows {"@type": "PriceSpecification", "price": ...}
+            raw_price = raw_price.get("price") or raw_price.get("lowPrice") or raw_price.get("value")
         if "price" not in fields and raw_price is not None:
             value, _kind = classify_price(str(raw_price))
             if value is not None:
                 fields["price"] = value
         currency = offer.get("priceCurrency")
+        if not currency and isinstance(spec, dict):
+            currency = spec.get("priceCurrency")
         if currency and "currency" not in fields:
             fields["currency"] = str(currency).strip().upper()
         availability = str(offer.get("availability") or "").lower()

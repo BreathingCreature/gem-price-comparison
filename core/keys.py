@@ -91,6 +91,13 @@ def _flipkart_key(host: str, path: str, parsed) -> str:
     return ""
 
 
+def host_matches(host: str, domain: str) -> bool:
+    """True for the domain itself and its real subdomains, never for a
+    lookalike ("amazon.in" matches "www.amazon.in", not "fakeamazon.in")."""
+    host, domain = (host or "").lower(), (domain or "").lower()
+    return bool(host) and (host == domain or host.endswith("." + domain))
+
+
 def listing_key(url: str) -> str:
     """The identity of one listing URL. Empty string when there is no URL.
 
@@ -103,12 +110,12 @@ def listing_key(url: str) -> str:
     if not host:
         return ""
 
-    if host.endswith("amazon.in") or host.endswith("amazon.com"):
+    if host_matches(host, "amazon.in") or host_matches(host, "amazon.com"):
         match = re.search(_ASIN_RE, path)
         if match:
             return f"{host}/dp/{match.group(1).lower()}"
 
-    if host.endswith("flipkart.com"):
+    if host_matches(host, "flipkart.com"):
         key = _flipkart_key(host, path, parsed)
         if key:
             return key

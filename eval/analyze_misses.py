@@ -124,7 +124,7 @@ def dropped_ranks(trace: dict) -> dict:
     rank counts how many listings of the same shop were ahead of it (kept or
     already-dropped, the dropped list runs in score order), so the listing was
     kept whenever N >= rank. That is the number the safe-N table sums."""
-    prefilter = trace.get("stages", {}).get("prefilter") or {}
+    prefilter = (trace.get("stages") or {}).get("prefilter") or {}
     top = prefilter.get("top") or 0
     ranks: dict = {}
     seen_per_shop: dict = {}

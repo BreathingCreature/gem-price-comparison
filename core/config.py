@@ -83,16 +83,21 @@ def _float_setting(name: str, default: float, minimum: Optional[float] = None, m
     return value
 
 
-def _int_setting(name: str, default: int) -> int:
-    """Read an int env var, returning the default on any parse problem."""
+def _int_setting(name: str, default: int, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
+    """Read an int env var. Returns the default (and logs a warning) when the
+    text is not a whole number or is outside minimum..maximum."""
     raw = os.getenv(name)
     if raw is None:
         return default
     try:
-        return int(raw.strip())
+        value = int(raw.strip())
     except (TypeError, ValueError):
         logger.warning("Invalid %s=%r, using default %r", name, raw, default)
         return default
+    if (minimum is not None and value < minimum) or (maximum is not None and value > maximum):
+        logger.warning("Out-of-range %s=%r (allowed %r to %r), using default %r", name, raw, minimum, maximum, default)
+        return default
+    return value
 
 
 # --- NVIDIA / LLM ----------------------------------------------------------
@@ -104,14 +109,13 @@ NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com
 _DEFAULT_MODELS = (
     "nvidia/nemotron-3-ultra-550b-a55b,"
     "nvidia/nemotron-3.5-super-vl-120b-a12b,"
-    "nvidia/nemotron-3.5-lightning-30b-a3b,"
-    "openai/gpt-oss-20b"
+    "nvidia/nemotron-3.5-lightning-30b-a3b"
 )
 NVIDIA_MODELS = [m.strip() for m in os.getenv("NVIDIA_MODELS", _DEFAULT_MODELS).split(",") if m.strip()]
 NVIDIA_MODEL = NVIDIA_MODELS[0]  # back-compat alias
-NVIDIA_MAX_TOKENS = _int_setting("NVIDIA_MAX_TOKENS", 2000)
-NVIDIA_MIN_SECONDS_BETWEEN_CALLS = _float_setting("NVIDIA_MIN_SECONDS_BETWEEN_CALLS", 1.6)
-NVIDIA_TIMEOUT_SECONDS = _float_setting("NVIDIA_TIMEOUT_SECONDS", 90.0)
+NVIDIA_MAX_TOKENS = _int_setting("NVIDIA_MAX_TOKENS", 2000, minimum=1)
+NVIDIA_MIN_SECONDS_BETWEEN_CALLS = _float_setting("NVIDIA_MIN_SECONDS_BETWEEN_CALLS", 1.6, minimum=0.0)
+NVIDIA_TIMEOUT_SECONDS = _float_setting("NVIDIA_TIMEOUT_SECONDS", 90.0, minimum=1.0)
 
 _PLACEHOLDER_KEYS = {"", "your_key_here", "changeme", "xxx"}
 
@@ -212,7 +216,7 @@ DISCOVERY_TIME_LIMIT_SECONDS = _float_setting("GEM_DISCOVERY_TIME_LIMIT", 25.0) 
 LANE_TIME_LIMIT_SECONDS = _float_setting("GEM_LANE_TIME_LIMIT", 150.0, minimum=1.0)
 
 # Max trace files to keep before rotation deletes oldest. Env-overrideable.
-TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200)
+TRACE_MAX_FILES = _int_setting("GEM_TRACE_MAX_FILES", 200, minimum=1)
 # Traces older than this many days are removed by the same rotation scan.
 TRACE_MAX_AGE_DAYS = _float_setting("GEM_TRACE_MAX_AGE_DAYS", 14.0, minimum=0.0)
 # Bumped whenever the shape of a result changes; part of every cache key so

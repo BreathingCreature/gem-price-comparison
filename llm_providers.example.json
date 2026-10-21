@@ -8,8 +8,7 @@
       "models": [
         "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3.5-super-vl-120b-a12b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "openai/gpt-oss-20b"
+        "nvidia/nemotron-3.5-lightning-30b-a3b"
       ],
       "min_seconds_between_calls": 1.6,
       "timeout_seconds": 90,

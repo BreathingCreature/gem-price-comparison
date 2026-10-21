@@ -36,6 +36,12 @@ def test_a_damaged_file_is_a_miss_not_a_crash(tmp_path):
     assert cache.get("abc") is None
 
 
+def test_a_non_utf8_file_is_a_miss_not_a_crash(tmp_path):
+    cache.put("abc", {"x": 1})
+    (tmp_path / "llm" / "abc.json").write_bytes(b'{"answer": {"x": "\xff"}}')
+    assert cache.get("abc") is None
+
+
 def _count_calls(monkeypatch, answers):
     calls = []
 

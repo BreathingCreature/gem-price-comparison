@@ -95,6 +95,20 @@ def test_cache_expired_entry_is_a_miss():
     assert pipeline._cache_get(url) is None
 
 
+def test_a_cache_file_that_is_not_an_object_is_a_miss():
+    url = "https://mkp.gem.gov.in/test/cache-shape/p-3-4-cat.html"
+    path = pipeline._cache_path(url)
+    for payload in ([], "text", 42, {"cached_at": "yesterday", "result": []}):
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert pipeline._cache_get(url) is None
+
+
+def test_a_cache_file_that_is_not_utf8_is_a_miss():
+    url = "https://mkp.gem.gov.in/test/cache-bytes/p-3-5-cat.html"
+    pipeline._cache_path(url).write_bytes(b"\xff\xfe{not json")
+    assert pipeline._cache_get(url) is None
+
+
 # --- happy path, no retry needed ------------------------------------------------------
 
 def test_happy_path_flipkart_match_amazon_not_found():

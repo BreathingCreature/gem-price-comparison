@@ -464,13 +464,19 @@ def verify_or_extract(normalized: dict, candidate: dict, *, client=None) -> dict
             price_used = float(data["extracted_price"]) if data.get("extracted_price") is not None else None
         except (TypeError, ValueError):
             price_used = None
+        if price_used is not None and not math.isfinite(price_used):
+            price_used = None
+
+    reason = data.get("reason", "")
+    if not isinstance(reason, str):
+        reason = str(reason)
 
     return {
         "candidate_url": candidate.get("url"),
         "source_domain": candidate.get("source_domain"),
         "is_match": is_match,
         "confidence": confidence,
-        "reason": data.get("reason", ""),
+        "reason": reason[:300],
         "price_used": price_used,
         "extraction_source": data.get("extraction_source", "scraper"),
     }

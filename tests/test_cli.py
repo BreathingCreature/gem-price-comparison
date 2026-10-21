@@ -71,6 +71,17 @@ def test_format_price_small_value():
     assert cli.format_price(999) == "\u20b9999.00"
 
 
+def test_format_price_accepts_a_scraped_string():
+    # Generic scrapes keep the page's price string; a similar-product row
+    # could therefore hold '₹51,313.00' and crash the :,.2f format.
+    assert cli.format_price("\u20b951,313.00") == "\u20b951,313.00"
+    assert cli.format_price("Rs. 1,299") == "\u20b91,299.00"
+
+
+def test_format_price_leaves_an_unparseable_text_alone():
+    assert cli.format_price("Call for price") == "Call for price"
+
+
 # --- print_result --------------------------------------------------------------------
 
 def test_print_result_marks_cheapest_match():

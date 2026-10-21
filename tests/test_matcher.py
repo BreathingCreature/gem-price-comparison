@@ -207,6 +207,23 @@ def test_match_candidates_skips_failing_candidate_without_crashing_batch():
     assert result.confirmed_matches[0]["price_used"] == 700.0
 
 
+def test_nan_price_from_the_llm_never_confirms_a_match():
+    # json.loads turns the bare token NaN into float("nan"); a NaN price used
+    # to pass `price is not None` and entered the cheapest/savings arithmetic.
+    fake = _FakeClient(_decision_json(True, 0.9, "NaN"))
+    result = matcher.match_candidates({"canonical_name": "Demo"}, [_candidate("https://x.com/nan")], client=fake)
+    assert result.confirmed_matches == []
+    assert result.all_decisions[0]["price_used"] is None
+    assert result.all_decisions[0]["outcome"] == "possible"
+
+
+def test_a_list_reason_from_the_llm_does_not_crash_the_lane(monkeypatch):
+    monkeypatch.setattr(llm_client, "_extract_json", lambda raw: {"is_match": False, "confidence": 0.9, "reason": ["different", "model"], "extracted_price": None, "extraction_source": "scraper"})
+    fake = _FakeClient("ignored - _extract_json is monkeypatched")
+    result = matcher.match_candidates({"canonical_name": "Demo"}, [_candidate("https://x.com/list")], client=fake)
+    assert result.all_decisions[0]["outcome"] == "no_match"
+
+
 # --- accepts objects with to_dict() as well as plain dicts -----------------------------
 
 def test_match_candidates_accepts_objects_with_to_dict():

@@ -9,6 +9,7 @@ them without scanning traces. list_runs() reads them newest first.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -66,12 +67,23 @@ def list_runs(limit: int = 20) -> list[dict]:
     for path in directory.glob("*.json"):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):  # ValueError covers JSON and UTF-8 errors
             continue
         if isinstance(record, dict):
             records.append(record)
-    records.sort(key=lambda r: r.get("saved_at") or 0, reverse=True)
+    records.sort(key=_saved_at, reverse=True)
     return records[:limit]
+
+
+def _saved_at(record: dict) -> float:
+    """Newest-first sort key. A hand-edited or older record may hold a string
+    (or nothing) where a timestamp belongs; that must not make list_runs
+    compare a str with a float and raise."""
+    value = record.get("saved_at")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    value = float(value)
+    return value if math.isfinite(value) else 0.0
 
 
 def summarize(record: dict) -> dict:

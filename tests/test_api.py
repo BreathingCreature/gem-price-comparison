@@ -148,6 +148,41 @@ def test_trace_ids_cannot_escape_the_traces_folder(client):
     assert client.get("/api/traces/abcdef0123456789").status_code == 404  # valid shape, no such file
 
 
+def test_a_damaged_trace_is_a_500_not_an_unhandled_crash(client):
+    (pipeline.TRACES_DIR / "abcdef0123456789.json").write_text("{not json", encoding="utf-8")
+    response = client.get("/api/traces/abcdef0123456789")
+    assert response.status_code == 500
+    assert "damaged" in response.json()["detail"]
+
+
+def test_a_gem_link_is_stripped_before_validation():
+    client = TestClient(create_app(runner=fake_runner, demo=False))
+    response = client.post("/api/runs", json={"gem_url": f"  {GEM_URL}  "})
+    assert response.status_code == 202
+    run = wait_until_finished(client, response.json()["run_id"])
+    assert run["gem_url"] == GEM_URL
+
+
+def test_a_finished_live_run_is_not_listed_twice():
+    from core import runs as runs_store
+
+    run_id = "abc123abc123abcd"
+
+    def saved_runner(gem_url, refresh, on_event):
+        with events.capture(on_event):
+            events.emit("run_started", gem_url=gem_url, refresh=refresh)
+        return {"matches": [], "trace_id": run_id}
+
+    client = TestClient(create_app(runner=saved_runner, demo=False))
+    job_id = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+    wait_until_finished(client, job_id)
+    runs_store.save_run({"run_id": run_id, "gem_url": GEM_URL, "saved_at": 1, "state": "done"})
+
+    entries = [r for r in client.get("/api/runs").json()["runs"] if r["gem_url"] == GEM_URL]
+    assert len(entries) == 1
+    assert entries[0]["id"] == job_id and entries[0]["live"] is True
+
+
 def test_llm_status_lists_every_endpoint(client, monkeypatch):
     endpoints = [
         Endpoint(provider="one", model="m", base_url="https://one.test/v1", api_key_env="K"),
@@ -202,6 +237,10 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     assert {"gem_product", "search_finished", "candidate_verdict", "run_finished", "shop_started",
             "shop_finished", "retry_started", "shop_updated", "run_updated", "done"} <= types
     assert [e["type"] for e in seen][-1] == "done"
+    # A demo run is fake data, so it must never appear in "recent runs".
+    from core import runs as runs_store
+
+    assert runs_store.list_runs() == []
 
 
 # --- B9: GEM_JOBS lets several runs share the server ----------------------

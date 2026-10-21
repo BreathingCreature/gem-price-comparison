@@ -62,3 +62,18 @@ def test_high_ratio_below_one_and_negative_ttl_fall_back(reload_config):
 def test_normal_values_are_kept(reload_config):
     cfg = reload_config(PRICE_SANITY_LOW_RATIO="0.2", MATCH_CONFIDENCE_THRESHOLD="0.9", PRICE_SANITY_HIGH_RATIO="4", CACHE_TTL_SECONDS="0")
     assert (cfg.PRICE_SANITY_LOW_RATIO, cfg.MATCH_CONFIDENCE_THRESHOLD, cfg.PRICE_SANITY_HIGH_RATIO, cfg.CACHE_TTL_SECONDS) == (0.2, 0.9, 4.0, 0.0)
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "abc"])
+def test_bad_trace_max_files_falls_back_to_the_default(reload_config, value):
+    assert reload_config(GEM_TRACE_MAX_FILES=value).TRACE_MAX_FILES == 200
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_bad_max_tokens_falls_back_to_the_default(reload_config, value):
+    assert reload_config(NVIDIA_MAX_TOKENS=value).NVIDIA_MAX_TOKENS == 2000
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "abc"])
+def test_bad_llm_timeout_falls_back_to_the_default(reload_config, value):
+    assert reload_config(NVIDIA_TIMEOUT_SECONDS=value).NVIDIA_TIMEOUT_SECONDS == 90.0

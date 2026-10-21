@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from core.keys import listing_key
+from core.keys import host_matches, listing_key
 
 PRICE_TOLERANCE = 0.02  # a price counts as right when it is within 2 percent
 NONE_WORD = "NONE"
@@ -51,14 +51,28 @@ def load_key(path) -> list[dict]:
 
 
 def load_results(path) -> dict[str, dict]:
-    """id -> result record. A later line for the same id wins."""
+    """id -> result record. A later line for the same id wins.
+
+    A half-written or corrupt line (a run killed mid-write) is skipped with a
+    warning: one lost product is better than refusing to score the rest."""
     out: dict[str, dict] = {}
+    bad = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 rec = json.loads(line)
-                out[str(rec["id"])] = rec
+            except json.JSONDecodeError:
+                bad += 1
+                continue
+            if not isinstance(rec, dict) or "id" not in rec:
+                bad += 1
+                continue
+            out[str(rec["id"])] = rec
+    if bad:
+        print(f"warning: skipped {bad} unreadable line(s) in {path}", file=sys.stderr)
     return out
 
 
@@ -68,9 +82,9 @@ def site_of(url: str) -> str:
     """'amazon', 'flipkart', or the plain host name for anything else."""
     host = (urlparse(url if "//" in url else "//" + url).hostname or "").lower()
     host = host[4:] if host.startswith("www.") else host
-    if host.endswith("amazon.in") or host.endswith("amazon.com"):
+    if host_matches(host, "amazon.in") or host_matches(host, "amazon.com"):
         return "amazon"
-    if host.endswith("flipkart.com"):
+    if host_matches(host, "flipkart.com"):
         return "flipkart"
     return host
 

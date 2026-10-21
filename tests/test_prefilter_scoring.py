@@ -88,3 +88,18 @@ def test_brand_alias_is_accepted():
 def test_a_short_model_without_digit_is_not_a_model_key():
     product = prefilter.product_tokens({"canonical_name": "Pro Mouse", "brand": None, "model": "Pro"})
     assert product.model_keys == []
+
+
+def test_a_known_product_uses_the_stricter_half_bar_in_the_filter():
+    # Brand + model present -> 0.5; the title below scores 0.45, so only the
+    # buggy call (min_relevant_score(normalized) = 0.4) would keep it.
+    product = {"canonical_name": "Acme AC-100", "brand": "Acme", "model": "AC-100", "key_identifiers": []}
+    assert prefilter.min_relevant_score(prefilter.product_tokens(product)) == 0.5
+    real = _cand("amazon.in", "REAL", "Acme AC-100")
+    weak = _cand("amazon.in", "WEAK", "Acme 100")
+    assert 0.4 <= prefilter.similarity("Acme 100", prefilter.product_tokens(product)) < 0.5
+
+    kept, dropped = prefilter.filter_candidates([real, weak], product, top=10)
+    assert [c.url for c in kept] == ["REAL"]
+    assert [d["url"] for d in dropped] == ["WEAK"]
+    assert dropped[0]["rule"] == "not_relevant"

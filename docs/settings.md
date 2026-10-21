@@ -12,7 +12,7 @@ An empty value means "use the default".
 |---|---|---|---|
 | `NVIDIA_API_KEY` | (empty) | Key for NVIDIA's OpenAI-compatible API | Without it no LLM call can run; the page still reads the GeM product |
 | `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | NVIDIA endpoint | Change only if NVIDIA moves it |
-| `NVIDIA_MODELS` | `nvidia/nemotron-3-ultra-550b-a55b,nvidia/nemotron-3.5-super-vl-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b,openai/gpt-oss-20b` | Comma-separated model list; the first is used first, the rest are fallbacks | A wrong or retired name gives a clear 404/400 |
+| `NVIDIA_MODELS` | `nvidia/nemotron-3-ultra-550b-a55b,nvidia/nemotron-3.5-super-vl-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b` | Comma-separated model list; the first is used first, the rest are fallbacks | A wrong or retired name gives a clear 404/400 |
 | `NVIDIA_MAX_TOKENS` | `2000` | Answer budget per call | Too low cuts JSON answers; a reasoning model needs more |
 | `NVIDIA_MIN_SECONDS_BETWEEN_CALLS` | `1.6` | Politeness gap for the old single-provider path | Lower may get 429s |
 | `NVIDIA_TIMEOUT_SECONDS` | `90.0` | One HTTP call timeout | Too low = timeouts on a slow free tier |
@@ -50,7 +50,7 @@ An empty value means "use the default".
 | `GEM_DISCOVERY` | `1` | Search engines and other shops | Off = Amazon/Flipkart only |
 | `GEM_DISCOVERY_TIME_LIMIT` | `25.0` | Total budget for one discovery call | Too low = other shops rarely finish |
 | `GEM_FLIPKART_LIGHT` | `1` | Plain HTTP search page first, then light Chrome | Off may change what Flipkart returns |
-| `GEM_LANE_TIME_LIMIT` | `150.0` | A lane over this is reported `timed_out` and retryable | The search cannot be killed; the scraper's own timeouts stop it |
+| `GEM_LANE_TIME_LIMIT` | `150.0` | A slow lane whose shops produced no verdict at all is `timed_out` and retryable; a slow lane that finished keeps its real outcome | The search cannot be killed; the scraper's own timeouts stop it |
 | `GEM_LLM_WORKERS` | `4` | Listings verified at the same time | Provider limits; lower it on many 429s |
 | `GEM_PREFILTER_TOP` | `10` | Best listings per shop sent to the LLM (`0` = no filter) | Too low can cut a real match |
 | `GEM_PRICE_PREGATE` | `1` | Skip the LLM when the price is already impossible | Off = wasted calls |
