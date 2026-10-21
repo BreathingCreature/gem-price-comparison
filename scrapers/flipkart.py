@@ -50,9 +50,23 @@ def _in_stock(card_text: str) -> bool:
     return not any(phrase in low for phrase in _OUT_OF_STOCK_PHRASES)
 
 
+def _visible_text(html: str) -> str:
+    """The text a person would see: no scripts, styles or JSON blobs. A
+    results-page shell can carry 'no results found' inside its own script
+    data without ever showing it."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script", "style", "noscript", "template"]):
+        tag.decompose()
+    return soup.get_text(" ", strip=True).lower()
+
+
 def _genuine_no_results(html: str) -> bool:
+    # Cheap check first; only a page that mentions a phrase is parsed.
     low = html.lower()
-    return any(phrase in low for phrase in _NO_RESULTS_PHRASES)
+    if not any(phrase in low for phrase in _NO_RESULTS_PHRASES):
+        return False
+    visible = _visible_text(html)
+    return any(phrase in visible for phrase in _NO_RESULTS_PHRASES)
 
 
 def _scroll_to_load_cards(driver, *, max_rounds: int = 8, stop_when_over: int = 50) -> None:
