@@ -121,6 +121,27 @@ eason. A page
   as used-up (aion's live wording missed the old "daily limit" marker).
   (Live fix)
 
+- 2026-10-21 - Free models are discovered, not remembered. `tools/free_models.py`
+  asks each provider for its own model list (OpenRouter: price 0 in and 0 out,
+  text in and text out; NVIDIA: chat families only) and gives every candidate
+  the EMI price question with the matcher's own 2000-token budget, so a model
+  that only answers after long thinking is measured honestly. `--write` keeps
+  the fastest correct ones (`--keep`, default 5) per provider. OpenRouter's
+  free tier allows about 20 calls a minute and 50 a day, so its default probe
+  budget is 10 (`--limit`), spaced 3.2 s apart. The NVIDIA probe also confirmed
+  the four models already in the live chain answer in under 2 s each. (Live fix)
+
+- 2026-10-21 - The OpenRouter entry in the live provider file now carries three
+  measured free models instead of `nvidia/nemotron-3-super-120b-a12b:free`,
+  which answers 404 there too (same dead NVIDIA function as the direct 404).
+  Probes at the matcher's token budget: `nemotron-3-nano-omni` 4.3 s,
+  `nemotron-3-ultra` 13.8 s, `nemotron-3.5-lightning` 23.5 s - all correct on
+  the EMI question. `liquid/lfm-2.5-2.6b` answered right in 65.5 s, longer than
+  the provider's 60 s timeout, so it was left out. Models that answered 2499
+  (the struck-out price) or empty (thinking used the whole budget) were
+  rejected; `thinkingmachines/*` answered 403 "only available on agentic
+  harnesses". (Live fix)
+
 - 2026-10-20 - `discovery/indian_shops.txt` is additive to the built-in
   Indian shop list, one domain per line, comments allowed. `.in` /
   `.co.in` still pass without being listed. (Stage 4)

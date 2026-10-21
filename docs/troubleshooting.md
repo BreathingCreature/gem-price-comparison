@@ -54,10 +54,16 @@ NVIDIA adds and removes free models often; nothing in the project changed.
 The router already handled it: that one model is switched off, the note is
 saved in `cache/llm_state.json`, and the next model in the list answers.
 
-- `python tools/check_models.py` asks every candidate two small JSON questions
-  and prints who answered, how fast, and whether the answers were right.
+- `python tools/check_models.py` asks every NVIDIA candidate two small JSON
+  questions and prints who answered, how fast, and whether the answers were
+  right.
 - `python tools/check_models.py --write` puts the good models (fastest first)
   into the NVIDIA entry of `llm_providers.json` and forgets their 404 notes.
+- `python tools/free_models.py` does the same for models it discovers from the
+  provider's own list (OpenRouter's free models, NVIDIA's chat models). Add
+  `--write` to keep the fastest correct ones; add `--provider` to limit it to
+  one. OpenRouter's free tier allows about 50 calls a day, so its default
+  budget is 10 probes (`--limit`).
 - The retired models show as `disabled` with `"retired": true` in
   `GET /api/llm/status`. After `GEM_RETIRED_RECHECK_DAYS` (7) one is tried
   again by itself.

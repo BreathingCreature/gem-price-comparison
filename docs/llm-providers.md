@@ -118,10 +118,25 @@ next model instead of spending a call on the dead one. After
 case the provider brought it back; a working answer deletes the note. The
 status rows show `"retired": true` for those models.
 
-Free model names change often. When a run starts saying "model not found",
-run `python tools/check_models.py` to see which names answer right now, then
-`python tools/check_models.py --write` to put the good ones (fastest first)
-into the NVIDIA entry of `llm_providers.json`.
+Free model names change often. Two tools keep the list current:
+
+- `python tools/check_models.py` asks two NVIDIA models two JSON questions (a
+  product match and an EMI price pick). `--write` puts the good ones, fastest
+  first, into the NVIDIA entry.
+- `python tools/free_models.py` discovers candidates from the provider's own
+  model list and asks one price question per model, using the matcher's token
+  budget (`NVIDIA_MAX_TOKENS`, 2000) so a model that thinks for a long time is
+  measured as the matcher will see it. OpenRouter candidates come from
+  `GET /api/v1/models` and must have price 0 in and 0 out with text in and text
+  out (audio, guardrail and "agentic harness only" models drop out); NVIDIA
+  candidates come from `GET /v1/models`, filtered to chat families (embeddings,
+  rerankers, vision-only and guard models are skipped). `--write` keeps the
+  fastest correct models per provider (`--keep`, default 5).
+
+OpenRouter's free tier allows about 20 calls a minute and 50 a day, so
+`free_models.py` probes at most 10 of them by default (`--limit`), spacing
+calls 3.2 s apart. Each probe spends real quota; widening `--limit` to cover
+every free model uses most of a day's calls.
 
 If every endpoint is resting, the call waits for the first one to return, up
 to `LLM_MAX_WAIT_SECONDS` (45 by default), then fails with a message that

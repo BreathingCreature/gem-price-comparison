@@ -53,6 +53,7 @@ next. See [docs/llm-providers.md](docs/llm-providers.md).
 | `python tools/doctor.py --live` | Live: LLM endpoints, search engines, one canary per shop |
 | `python tools/doctor.py --clean` | Remove old traces, run records and debug pages |
 | `python tools/probe_endpoints.py` | One line per LLM endpoint (finish reason, rate-limit header names) |
+| `python tools/free_models.py` | Probe free/discovered models; `--write` keeps the fastest correct ones |
 | `python tools/save_page.py flipkart "usb c cable"` | Save a real page as a test fixture |
 | `python -m eval.run_eval --key eval/answer_key.csv --label first` | Measure against your answer key |
 | `python -m pytest -q` | The whole test suite |
