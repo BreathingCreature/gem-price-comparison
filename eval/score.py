@@ -222,8 +222,12 @@ def score_row(row: dict, record: dict) -> dict:
             if s["site"] == site and s["state"] == "urls":
                 if any(p[0] == site and p[1] in s["keys"] for p in preds):
                     per_site[site][0] += 1
+    other_wanted = any(s["site"] == "other" and s["state"] == "urls" for s in slots)
+    other_any = other_wanted and any(p[0] == "other" and p[1] in other_keys for p in preds)
     return {
         "id": row.get("id"),
+        "other_wanted": other_wanted,
+        "other_any": bool(other_any),
         "branded": row.get("branded", "").lower() == "yes",
         "wanted": wanted,
         "found": found,
@@ -276,6 +280,10 @@ def summarize(outcomes: list[dict]) -> dict:
         "precision": precision,
         "f1": _f1(precision, recall),
         "recall_by_site": {s: _ratio(f, w) for s, (f, w) in sorted(sites.items())},
+        "other_products_wanted": sum(1 for o in outcomes if o.get("other_wanted")),
+        "other_products_found": sum(1 for o in outcomes if o.get("other_any")),
+        "other_product_recall": _ratio(sum(1 for o in outcomes if o.get("other_any")),
+                                       sum(1 for o in outcomes if o.get("other_wanted"))),
         "price_checked": pc,
         "price_within_2pct": pk,
         "price_accuracy": _ratio(pk, pc),
@@ -320,6 +328,10 @@ def render_markdown(result: dict) -> str:
     if by_site:
         lines.append("")
         lines.append("Recall by shop: " + ", ".join(f"{k} {_pct(v)}" for k, v in by_site.items()))
+    a = result["all"]
+    if a.get("other_products_wanted"):
+        lines.append(f"Other shops, per product (at least one right listing found): {_pct(a['other_product_recall'])} "
+                     f"({a['other_products_found']}/{a['other_products_wanted']}). The strict number above asks for every listed URL.")
     if result["all"]["not_run"]:
         lines.append(f"Warning: {result['all']['not_run']} products from the key have no line in the results file.")
     return "\n".join(lines)
@@ -331,6 +343,9 @@ def main(argv=None) -> int:
     ap.add_argument("--key", metavar="CSV")
     ap.add_argument("--results", metavar="JSONL")
     ap.add_argument("--json", metavar="FILE", help="also write the full numbers here")
+    ap.add_argument("--with-possible", action="store_true",
+                    help="also count 'possible' listings (not confirmed by the LLM) as found. Report this number "
+                         "next to the normal one, never instead of it")
     args = ap.parse_args(argv)
 
     if args.check_key:
@@ -353,7 +368,12 @@ def main(argv=None) -> int:
         for p in problems[:10]:
             print(" -", p)
         return 1
-    result = score(rows, load_results(args.results))
+    results = load_results(args.results)
+    if args.with_possible:
+        for rec in results.values():
+            rec["matches"] = list(rec.get("matches") or []) + list(rec.get("possible") or [])
+        print("NOTE: 'possible' listings are counted as found in this table.\n")
+    result = score(rows, results)
     print(render_markdown(result))
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)

@@ -209,3 +209,62 @@ Record once, replay both, score with `eval.score`, and read the LLM call counts 
 - The date of the run: shops change daily.
 - That GeM and Amazon discourage automated fetching, the sample is small and the use is research only.
 - The recall and precision from `eval.score`, the baseline result, and the time with and without parallel search.
+
+## Pooling: counting right listings the key missed
+
+The strict score asks the run to find the exact URLs in the key. A run can find
+another listing of the same product (another seller, another colour, another
+shop) and the strict score calls it wrong. To measure that fairly, a person
+checks the extra listings and says yes or no. Report **both** numbers.
+
+```
+python -m eval.adjudicate review --key eval/answer_key.csv --results eval/results/fixed2.jsonl --out eval/results/fixed2.review.csv
+# open the csv, open each link, write yes or no in the verdict column
+python -m eval.adjudicate pool --key eval/answer_key.csv --review eval/results/fixed2.review.csv --out eval/answer_key_pooled.csv
+python -m eval.score --key eval/answer_key_pooled.csv --results eval/results/fixed2.jsonl --json eval/results/fixed2.pooled.score.json
+```
+
+Only a person's "yes" is added. The original key is never edited. The scorer also
+prints "Other shops, per product": a product counts as found when at least one
+right listing on another shop was found, because the key lists many such shops
+and a run is not expected to return all of them.
+
+## How to repeat the final run
+
+The numbers quoted in the report (27 products, 54 wanted slots, 4 found, recall
+7.4%, precision 31.3%, 63 s median, 159 s p90) are from
+`eval/results/fixed2.score.json`. To reproduce that kind of run:
+
+1. Put the GeM/LLM keys in `.env` and the provider list in
+   `llm_providers.json` (both gitignored; `git status` must stay clean of them).
+   Leave demo mode off. `python tools/doctor.py` says whether the setup is
+   ready.
+2. Make sure nothing else is spending the same LLM quota: the API server and an
+   eval run share `cache/llm_state.json` and one free quota. Stop the server,
+   then check that file for `used_up` entries before starting.
+3. Run the products:
+
+   ```
+   python -m eval.run_eval --key eval/answer_key.csv --label final
+   ```
+
+   It writes `eval/results/final.jsonl` (one line per product, with `trace_id`
+   and the `possible` list), `eval/results/final.meta.json` (git commit and the
+   provider/model list at start) and one trace per product in `traces/`.
+   `--only P03,P33` runs a few products, `--limit 5` the first five. Keep
+   `--workers 1` for a reportable run; the free tiers throttle parallel calls.
+   A killed run resumes on the same `--label` and repairs a cut-off last line.
+4. Score it, once strictly and once with the possible rows counted:
+
+   ```
+   python -m eval.score --key eval/answer_key.csv --results eval/results/final.jsonl --json eval/results/final.score.json
+   python -m eval.score --key eval/answer_key.csv --results eval/results/final.jsonl --with-possible
+   ```
+
+5. Pool, if the possible rows should be counted for real (a person fills the
+   verdict column, see above).
+
+Time: one product took 49-263 s in fixed2 (median 63 s), so the 27 products
+take roughly 30-50 minutes sequential. Quota problems stretch that and are
+visible as `HTTP 429` / timeout lines in the run log; a run full of those is not
+a fair score.
