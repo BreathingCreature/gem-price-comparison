@@ -80,6 +80,14 @@ def test_fetch_light_page_refuses_a_wall(monkeypatch):
     assert _REAL_FETCH_LIGHT("logitech m650") is None
 
 
+def test_a_good_page_with_a_recaptcha_flag_is_not_a_wall(monkeypatch):
+    """Flipkart's own config says "isReCaptchaEnabled":true on every normal
+    results page, so the phrase check must not throw real cards away."""
+    page = LIGHT_PAGE.replace("<body>", '<body><script>{"isReCaptchaEnabled":true}</script>')
+    monkeypatch.setitem(sys.modules, "curl_cffi", _curl_stub(_FakeCurlResponse(page)))
+    assert _REAL_FETCH_LIGHT("logitech m650") == page
+
+
 def test_fetch_light_page_gives_up_on_a_non_200(monkeypatch):
     monkeypatch.setitem(sys.modules, "curl_cffi", _curl_stub(_FakeCurlResponse("<html>forbidden</html>", status_code=403)))
     assert _REAL_FETCH_LIGHT("logitech m650") is None

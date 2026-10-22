@@ -265,7 +265,11 @@ def _fetch_light_page(query: str, page: int = 1) -> str | None:
         logger.info("Flipkart fast path got HTTP %s for %r.", response.status_code, query)
         return None
     html = response.text
-    if _looks_like_wall(html):
+    # Cards win over words: Flipkart's own config ships "isReCaptchaEnabled":
+    # true on every normal results page, so the phrase check alone rejects a
+    # good page and starts Chrome for nothing. Same rule as the Brave
+    # discovery engine: only a page with no usable cards counts as a wall.
+    if _looks_like_wall(html) and not _light_page_is_usable(html):
         _save_debug(html, "flipkart_light_block")
         return None
     return html
