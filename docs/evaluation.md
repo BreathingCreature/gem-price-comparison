@@ -209,3 +209,22 @@ Record once, replay both, score with `eval.score`, and read the LLM call counts 
 - The date of the run: shops change daily.
 - That GeM and Amazon discourage automated fetching, the sample is small and the use is research only.
 - The recall and precision from `eval.score`, the baseline result, and the time with and without parallel search.
+
+## Pooling: counting right listings the key missed
+
+The strict score asks the run to find the exact URLs in the key. A run can find
+another listing of the same product (another seller, another colour, another
+shop) and the strict score calls it wrong. To measure that fairly, a person
+checks the extra listings and says yes or no. Report **both** numbers.
+
+```
+python -m eval.adjudicate review --key eval/answer_key.csv --results eval/results/fixed2.jsonl --out eval/results/fixed2.review.csv
+# open the csv, open each link, write yes or no in the verdict column
+python -m eval.adjudicate pool --key eval/answer_key.csv --review eval/results/fixed2.review.csv --out eval/answer_key_pooled.csv
+python -m eval.score --key eval/answer_key_pooled.csv --results eval/results/fixed2.jsonl --json eval/results/fixed2.pooled.score.json
+```
+
+Only a person's "yes" is added. The original key is never edited. The scorer also
+prints "Other shops, per product": a product counts as found when at least one
+right listing on another shop was found, because the key lists many such shops
+and a run is not expected to return all of them.
