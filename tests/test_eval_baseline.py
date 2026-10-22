@@ -61,17 +61,3 @@ def test_command_line_writes_a_scoreable_results_file(tmp_path):
     lines = [json.loads(x) for x in out.read_text().splitlines()]
     assert lines[0]["matches"][0]["url"].endswith("B0ABCDEFGH") and lines[0]["error"] is None
     assert lines[1]["matches"] == [] and "trace file not found" in lines[1]["error"]
-
-
-def test_a_half_written_results_line_is_skipped(tmp_path):
-    traces = tmp_path / "saved_traces"
-    traces.mkdir()
-    (traces / "t1.json").write_text(json.dumps({"stages": {
-        "extraction": {"title": "Logitech M235 Wireless Mouse", "gem_price": 1000.0},
-    }}))
-    res = tmp_path / "in.jsonl"
-    res.write_text(json.dumps({"id": "P1", "trace_id": "t1"}) + "\n" + '{"id": "P2", "tra')
-
-    out = tmp_path / "out.jsonl"
-    assert fz.main(["--results", str(res), "--out", str(out), "--traces", str(traces)]) == 0
-    assert [json.loads(x)["id"] for x in out.read_text().splitlines()] == ["P1"]

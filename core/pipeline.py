@@ -265,21 +265,12 @@ def _cache_get(gem_url: str) -> Optional[dict]:
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        # JSONDecodeError and UnicodeDecodeError are both ValueErrors — a
-        # truncated or half-written file is a miss, never a crash.
-        logger.warning("Cache read failed for %s: %s - treating as a miss.", gem_url, e)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Cache read failed for %s: %s — treating as a miss.", gem_url, e)
         return None
-    if not isinstance(payload, dict):
-        logger.warning("Cache file for %s is not an object - treating as a miss.", gem_url)
+    if time.time() - payload.get("cached_at", 0) > CACHE_TTL_SECONDS:
         return None
-    cached_at = payload.get("cached_at", 0)
-    if not isinstance(cached_at, (int, float)):
-        cached_at = 0
-    if time.time() - cached_at > CACHE_TTL_SECONDS:
-        return None
-    result = payload.get("result")
-    return result if isinstance(result, dict) else None
+    return payload.get("result")
 
 
 def _cache_set(gem_url: str, result: dict) -> None:
@@ -423,10 +414,9 @@ def _shop_entries(
     """One card per shop (Stage 7.2). Pure data in, pure data out.
 
     Rules: blocked/errored search -> not_searched; a listing that could not be
-    checked -> incomplete (never not_found); at least one possible but no match
-    -> possible; searched cleanly and nothing -> not_found; timed_out is only
-    for a slow lane whose listings never reached a verdict (a slow lane that
-    did finish reports what it actually found)."""
+    checked -> incomplete (never not_found); a lane over its time limit ->
+    timed_out; at least one possible but no match -> possible; searched
+    cleanly and nothing -> not_found."""
     retried = set(retried or ())
     decisions = list(getattr(match_result, "all_decisions", None) or [])
     confirmed = list(getattr(match_result, "confirmed_matches", None) or [])
@@ -478,18 +468,14 @@ def _shop_entries(
             status, reason = result_module.SHOP_NOT_SEARCHED, str(_cand_dict(errored[0]).get("error"))
         elif lane_error:
             status, reason = result_module.SHOP_INCOMPLETE, lane_error
+        elif seconds is not None and seconds > LANE_TIME_LIMIT_SECONDS:
+            status, reason = result_module.SHOP_TIMED_OUT, f"lane took {seconds:.0f} s (limit {LANE_TIME_LIMIT_SECONDS:.0f} s)"
         elif unchecked:
             status, reason = result_module.SHOP_INCOMPLETE, f"{unchecked} listing(s) could not be checked"
         elif possibles:
             status, reason = result_module.SHOP_POSSIBLE, f"{possibles} possible listing(s), none confirmed"
         elif seen == 0 and not results:
             status, reason = result_module.SHOP_NOT_SEARCHED, "the search returned no listings"
-        elif seconds is not None and seconds > LANE_TIME_LIMIT_SECONDS and not checked and not dropped:
-            # Slow AND the shop produced no verdict at all: the lane is still
-            # the best explanation. A lane that ran long but did check (or
-            # filter) its listings is not timed out - it is finished, and the
-            # card says what it found.
-            status, reason = result_module.SHOP_TIMED_OUT, f"lane took {seconds:.0f} s (limit {LANE_TIME_LIMIT_SECONDS:.0f} s)"
         else:
             status, reason = result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
 
@@ -1084,9 +1070,7 @@ def _run_pipeline(
             events.emit("shop_finished", shop=name, **entry)
         # Saved before the event so a listener that reads the record (the CLI)
         # never races the write.
-        if use_cache:
-            # A demo run must never show up in the real "recent runs" list.
-            _save_run_record(gem_url, first_result, trace_id, state="shown")
+        _save_run_record(gem_url, first_result, trace_id, state="shown")
         _emit_finished(first_result)
 
         # --- retry: only the shops that are honestly retryable ---------------------------
@@ -1330,8 +1314,7 @@ def _run_pipeline(
         events.emit("done", state="done", trace_id=trace_id)
         trace["events"] = events.snapshot()
         _write_trace(trace)
-        if use_cache:
-            _save_run_record(gem_url, result, trace_id, state="done")
+        _save_run_record(gem_url, result, trace_id, state="done")
         if not use_cache:
             logger.info("Not caching this run: cache disabled (demo).")
         elif search_issues:

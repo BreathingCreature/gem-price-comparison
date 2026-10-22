@@ -37,11 +37,7 @@ def traces_for_results(results_path, traces_dir) -> tuple[list, list]:
         line = line.strip()
         if not line:
             continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue  # a half-written line must not hide the rest of the file
-        trace_id = record.get("trace_id") if isinstance(record, dict) else None
+        trace_id = json.loads(line).get("trace_id")
         if not trace_id:
             continue
         path = Path(traces_dir) / f"{trace_id}.json"
@@ -183,26 +179,14 @@ def main(argv=None) -> int:
                 p = Path(args.dir) / f"{t}.json"
             (paths if p.exists() else missing).append(p if p.exists() else t)
     elif args.results:
-        try:
-            paths, missing = traces_for_results(args.results, args.dir)
-        except OSError as exc:
-            print(f"cannot read {args.results}: {type(exc).__name__}: {exc}")
-            return 2
+        paths, missing = traces_for_results(args.results, args.dir)
     else:
         paths = newest_traces(args.dir, args.last)
 
     if not paths:
         print(f"no traces found (looked in {args.dir})")
         return 1
-    profiles = []
-    for path in paths:
-        try:
-            profiles.append(profile_trace(load_trace(path)))
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            print(f"skipped {path}: {type(exc).__name__}: {exc}")
-    if not profiles:
-        print("no readable traces")
-        return 1
+    profiles = [profile_trace(load_trace(p)) for p in paths]
     print(render(profiles, aggregate(profiles)))
     if missing:
         print(f"\n{len(missing)} trace id(s) have no file: {', '.join(str(m) for m in missing)}")

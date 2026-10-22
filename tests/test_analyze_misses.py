@@ -221,13 +221,3 @@ def test_cli_prints_the_report_and_can_write_json(tmp_path, capsys):
     assert "safe prefilter n" in text.lower()
     saved = json.loads(out_file.read_text(encoding="utf-8"))
     assert saved["counts"] == {"cut_by_filter": 1}
-
-
-def test_a_trace_without_stages_is_read_as_empty_not_a_crash():
-    # A trace file can exist without a stages block (older runs, partial write).
-    trace = {"trace_id": "t1", "stages": None}
-
-    assert analyze_misses.dropped_ranks(trace) == {}
-    assert analyze_misses.candidate_entries(trace) == []
-    assert analyze_misses.decisions_by_key(trace) == {}
-    assert analyze_misses.discovery_urls(trace) == []

@@ -328,8 +328,7 @@
       $("llm-strategy").textContent = data.error ? "Config problem: " + data.error : "Strategy: " + data.strategy;
       (data.endpoints || []).forEach(function (endpoint) {
         $("providers-body").appendChild(h("tr", null,
-          h("td", { text: endpoint.provider || "" }),
-          h("td", { text: endpoint.model || endpoint.endpoint || "" }),
+          h("td", { text: endpoint.endpoint }),
           h("td", { class: endpoint.state === "ready" ? "ok" : endpoint.state === "limit" ? "bad" : "warn", text: endpoint.state }),
           h("td", { text: String(endpoint.calls) }),
           h("td", { text: String(endpoint.errors) }),
@@ -508,20 +507,7 @@
     showScreen("result");
     setPill("saved", "cached");
     fetch(API + "/api/runs/" + runId).then(function (r) { return r.ok ? r.json() : null; }).then(function (run) {
-      if (!run) {
-        showFailure("That saved run could not be opened.");
-        return;
-      }
-      if (run.live && !run.result) {
-        // A run that is still going has no result yet: watch it live
-        // instead of claiming it cannot be opened.
-        state.runId = run.id;
-        $("gem-url").value = run.gem_url || "";
-        setPill("running", "running");
-        attach(run.id);
-        return;
-      }
-      if (!run.result) {
+      if (!run || !run.result) {
         showFailure("That saved run could not be opened.");
         return;
       }

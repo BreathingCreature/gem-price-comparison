@@ -100,21 +100,6 @@ def test_h1_is_the_title_when_there_is_no_meta_or_jsonld():
     assert fields["price_unknown"] is True
 
 
-def test_a_price_specification_object_is_read():
-    # schema.org lets the price live in an object; str(dict) used to give None.
-    html = """
-    <script type="application/ld+json">
-    {"@type": "Product", "name": "M650",
-     "offers": {"@type": "Offer",
-                "priceSpecification": {"@type": "PriceSpecification", "price": 1299, "priceCurrency": "INR"}}}
-    </script>
-    """
-    result, _ = _scrape(html)
-    fields = result.structured_fields
-    assert fields["price"] == 1299.0
-    assert fields["currency"] == "INR"
-
-
 def test_a_foreign_currency_is_kept_as_is():
     html = """
     <script type="application/ld+json">

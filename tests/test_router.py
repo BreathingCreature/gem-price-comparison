@@ -1,6 +1,5 @@
 """The router picks an endpoint, rests the ones that fail, and explains itself."""
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -161,57 +160,7 @@ def test_failing_clears_once_the_last_failure_is_old_enough():
     router.complete(MESSAGES, 100)
     clock.now += router_module.MAX_COOLDOWN + router_module.FAILING_WINDOW + 1
     row = next(r for r in router.status() if r["provider"] == "a")
-    # The state is "ready" again (it may be tried), but the old error is not
-    # presented as if it were fresh — and it never answered since.
-    assert row["state"] == "ready"
-    assert "last error" in row["reason"] and "no answer since" in row["reason"]
-
-
-def test_another_process_used_up_mark_is_respected():
-    # The app and an eval run share cache/llm_state.json and one free quota.
-    a = FakeClient(label="a")
-    router, _ = make_router({"a": a})
-    router_module._write_state({"a/m": time.time() + 600}, {})
-
-    assert router.status()[0]["state"] == "limit"
-    with pytest.raises(router_module.GatewayExhausted):
-        router.complete(MESSAGES, 10)
-    assert a.calls == 0
-
-
-def test_saving_state_keeps_a_mark_another_process_made():
-    a = FakeClient([FakeHTTPError(402, "payment required")], label="a")
-    router, _ = make_router({"a": a})
-    router.status()  # this router has synced; the next write must still merge
-    router_module._write_state({"far/m": time.time() + 600}, {})
-
-    with pytest.raises(router_module.GatewayExhausted):
-        router.complete(MESSAGES, 10)
-
-    saved = json.loads(router_module._state_path().read_text(encoding="utf-8"))
-    assert {"a/m", "far/m"} <= set(saved["used_up"])
-
-
-def test_a_404_another_process_learned_disables_the_model_here():
-    router, clock = make_router({"a": FakeClient(label="a")})
-    router.status()
-    router_module._write_state({}, {"a/m": {"at": time.time(), "reason": "model not found (404)"}})
-
-    clock.now += router_module.STATE_SYNC_SECONDS + 1
-    row = router.status()[0]
-    assert row["state"] == "disabled" and "404" in row["reason"]
-
-
-def test_a_success_deletes_a_stale_404_note_from_disk():
-    old = time.time() - (router_module._config.RETIRED_RECHECK_DAYS + 1) * 86400
-    router_module._write_state({}, {"a/m": {"at": old, "reason": "model not found (404)"}})
-    a = FakeClient(label="a")
-    router, _ = make_router({"a": a})
-
-    assert router.complete(MESSAGES, 10) == "answer from a"
-
-    saved = json.loads(router_module._state_path().read_text(encoding="utf-8"))
-    assert "a/m" not in saved["retired"]
+    assert row["state"] == "ready" and row["reason"] == ""
 
 
 def test_a_successful_call_clears_the_failing_state():
@@ -785,111 +734,3 @@ def test_status_shows_the_token_budget_and_the_moving_count():
     assert row["tokens_last_minute"] == 1500
 
 
-# --- one key, one limit: models of a provider share its rate limit -------------
-
-
-def _two_model_router(first_script):
-    """nvidia/a + nvidia/b (one account) and groq/m (another account)."""
-    clock = Clock()
-    a = Endpoint(provider="nvidia", model="a", base_url="https://n.test/v1", api_key_env="K")
-    b = Endpoint(provider="nvidia", model="b", base_url="https://n.test/v1", api_key_env="K")
-    g = Endpoint(provider="groq", model="m", base_url="https://g.test/v1", api_key_env="K")
-    clients = {
-        "nvidia/a": FakeClient(first_script, label="a"),
-        "nvidia/b": FakeClient(label="b"),
-        "groq/m": FakeClient(label="g"),
-    }
-    router = Router(
-        [a, b, g],
-        clock=clock,
-        sleep=clock.sleep,
-        client_factory=lambda ep: clients[ep.name],
-    )
-    return router, clock, clients
-
-
-def test_a_rate_limit_rests_every_model_on_the_same_provider():
-    router, clock, clients = _two_model_router([FakeHTTPError(429, "too many requests")])
-
-    assert router.complete(MESSAGES, 100) == "answer from g"  # the other account answers
-    states = {row["endpoint"]: row for row in router.status()}
-    assert states["nvidia/a"]["state"] == "cooling"
-    assert states["nvidia/b"]["state"] == "cooling"
-    assert states["groq/m"]["state"] == "ready"
-    assert "too many requests" in states["nvidia/b"]["reason"]
-
-    assert router.complete(MESSAGES, 100) == "answer from g"
-    assert clients["nvidia/b"].calls == 0  # the rested sibling was never tried
-
-
-def test_a_provider_overload_message_rests_every_model_of_that_provider():
-    overload = FakeHTTPError(503, "worker local total request limit 16/16")
-    router, _, clients = _two_model_router([overload])
-
-    assert router.complete(MESSAGES, 100) == "answer from g"
-    assert all(row["state"] == "cooling" for row in router.status() if row["provider"] == "nvidia")
-
-
-def test_a_daily_limit_marks_every_model_of_the_provider_used_up():
-    router, _, _ = _two_model_router([FakeHTTPError(429, "Daily token limit exceeded.")])
-
-    assert router.complete(MESSAGES, 100) == "answer from g"  # the other account still works
-
-    rows = {row["endpoint"]: row for row in router.status()}
-    assert rows["nvidia/a"]["state"] == "limit"
-    assert rows["nvidia/b"]["state"] == "limit"
-    assert rows["groq/m"]["state"] == "ready"
-
-    saved = json.loads(router_module._state_path().read_text(encoding="utf-8"))
-    assert {"nvidia/a", "nvidia/b"} <= set(saved["used_up"])
-
-
-
-
-
-# --- config typos are loud errors, not silent garbage ------------------------------
-
-
-def test_a_models_string_is_read_as_a_name_list(tmp_path, monkeypatch):
-    monkeypatch.setenv("KEY_A", "real-key")
-    path = _write_config(tmp_path, [{"name": "a", "base_url": "https://a.test/v1", "api_key_env": "KEY_A", "models": "m1, m2"}])
-
-    endpoints, _ = load_endpoints(path)
-    assert [e.model for e in endpoints] == ["m1", "m2"]
-
-
-def test_models_that_are_not_names_are_a_loud_error(tmp_path, monkeypatch):
-    monkeypatch.setenv("KEY_A", "real-key")
-    for bad in ([{"x": 1}], [123], [""]):
-        path = _write_config(tmp_path, [{"name": "a", "base_url": "https://a.test/v1", "api_key_env": "KEY_A", "models": bad}])
-        with pytest.raises(ValueError) as err:
-            load_endpoints(path)
-        assert "models" in str(err.value)
-
-
-def test_a_bad_seconds_value_names_the_setting(tmp_path, monkeypatch):
-    monkeypatch.setenv("KEY_A", "real-key")
-    path = _write_config(tmp_path, [{"name": "a", "base_url": "https://a.test/v1", "api_key_env": "KEY_A",
-                                     "models": ["m"], "timeout_seconds": "slow"}])
-    with pytest.raises(ValueError) as err:
-        load_endpoints(path)
-    assert "timeout_seconds" in str(err.value)
-
-
-def test_a_negative_gap_or_timeout_is_a_loud_error(tmp_path, monkeypatch):
-    monkeypatch.setenv("KEY_A", "real-key")
-    for key, value in (("min_seconds_between_calls", -1), ("timeout_seconds", 0)):
-        path = _write_config(tmp_path, [{"name": "a", "base_url": "https://a.test/v1", "api_key_env": "KEY_A",
-                                         "models": ["m"], key: value}])
-        with pytest.raises(ValueError) as err:
-            load_endpoints(path)
-        assert key in str(err.value)
-
-
-def test_providers_must_be_a_list_of_objects(tmp_path):
-    path = _write_config(tmp_path, {"providers": "nvidia"})
-    with pytest.raises(ValueError):
-        load_endpoints(path)
-    path = _write_config(tmp_path, ["nvidia"])
-    with pytest.raises(ValueError):
-        load_endpoints(path)

@@ -69,7 +69,6 @@ class Job:
         comparison = result.get("comparison") if isinstance(result.get("comparison"), dict) else {}
         return {
             "id": self.id,
-            "run_id": result.get("trace_id"),
             "gem_url": self.gem_url,
             "refresh": self.refresh,
             "status": self.status,

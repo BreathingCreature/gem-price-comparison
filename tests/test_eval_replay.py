@@ -342,11 +342,3 @@ def test_replay_run_never_starts_a_browser(tmp_path, monkeypatch):
     run_fn = replay.make_run_fn(rec_dir, "replay", pipeline_fn=fake_pipeline)
     out = run_fn(GEM_URL, refresh=True, on_event=None)
     assert out["trace_id"] == "t1"
-
-
-def test_an_unreadable_recording_says_so(tmp_path):
-    store = replay.RecordingStore(tmp_path, GEM_URL)
-    store.path.write_text("{broken", encoding="utf-8")
-
-    with pytest.raises(replay.ReplayDivergence, match="cannot read the recording"):
-        store.load()

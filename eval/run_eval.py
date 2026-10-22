@@ -105,26 +105,13 @@ def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=N
     out_path.parent.mkdir(parents=True, exist_ok=True)
     done = set()
     if out_path.exists():
-        lines = out_path.read_text(encoding="utf-8").splitlines()
-        kept: list[str] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
+        for line in out_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
                 rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # a line cut off by a killed run is simply run again
-            if not isinstance(rec, dict) or not rec.get("id"):
-                continue
-            kept.append(line)
-            # A row that errored must be retried on resume — only clean
-            # rows are "done".
-            if not rec.get("error"):
-                done.add(str(rec["id"]))
-        if len(kept) < len(lines):
-            # Rewrite so the junk cannot glue itself onto the next record
-            # (a cut-off line has no trailing newline) or break scoring.
-            out_path.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
+                # A row that errored must be retried on resume — only clean
+                # rows are "done".
+                if not rec.get("error"):
+                    done.add(str(rec["id"]))
     todo = [r for r in rows if r.get("gem_url") and r["id"] not in done and (not only or r["id"] in only)]
     if limit:
         todo = todo[:limit]
@@ -173,16 +160,8 @@ def write_meta(meta: Path, label: str, *, extra: dict | None = None, log=print) 
     snapshot = settings_snapshot()
     if extra:
         snapshot.update(extra)
-    old_meta: dict = {}
     if meta.exists():
-        try:
-            old_meta = json.loads(meta.read_text(encoding="utf-8"))
-            if not isinstance(old_meta, dict):
-                raise ValueError("not a JSON object")
-        except (OSError, ValueError):
-            log(f"Warning: {meta.name} is unreadable, writing a fresh one.")
-            old_meta = {}
-    if old_meta:
+        old_meta = json.loads(meta.read_text(encoding="utf-8"))
         old_settings = old_meta.get("settings", {})
         new_settings = snapshot.get("settings", {})
         diff = {k: (old_settings.get(k), new_settings.get(k))

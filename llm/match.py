@@ -12,7 +12,6 @@ as much a "decision made" as confirming it.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -115,16 +114,9 @@ def _apply_scraper_price(decision: dict, candidate_dict: dict) -> None:
     decision["price_from"] = "scraper"
 
 
-def _reason_text(decision: dict) -> str:
-    """The LLM is asked for a short string; a model that answers with a list
-    or a number must not crash the whole lane downstream."""
-    reason = decision.get("reason") or ""
-    return reason if isinstance(reason, str) else str(reason)
-
-
 def _outcome(decision: dict, threshold: float) -> str:
     """match / possible / no_match for one judged listing (Stage 6.3)."""
-    reason = _reason_text(decision)
+    reason = decision.get("reason") or ""
     if "[hard-rejected:" in reason:
         return OUTCOME_NO_MATCH
     if "different pack" in reason.lower():
@@ -142,7 +134,7 @@ def _outcome(decision: dict, threshold: float) -> str:
 
 
 def _why_possible(decision: dict, threshold: float) -> str:
-    reason = _reason_text(decision).strip()
+    reason = (decision.get("reason") or "").strip()
     if "different pack" in reason.lower():
         return "different pack"
     if bool(decision.get("is_match")) and decision.get("price_used") is None:
@@ -172,16 +164,14 @@ def _price_number(value) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        number = float(value)
-    elif isinstance(value, str):
+        return float(value)
+    if isinstance(value, str):
         cleaned = value.strip().replace(",", "").replace("₹", "").replace("Rs.", "").replace("Rs", "").strip()
         try:
-            number = float(cleaned)
+            return float(cleaned)
         except ValueError:
             return None
-    else:
-        return None
-    return number if math.isfinite(number) else None
+    return None
 
 
 def match_candidates(normalized: dict, candidates: list, *, client=None, verdict_cache=None) -> MatchBatchResult:

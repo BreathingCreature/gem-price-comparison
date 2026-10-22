@@ -287,7 +287,7 @@ def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[lis
         scores = {i: similarity(titles[i], product) for i in titled}
         tiers = {i: tier(titles[i], product) for i in titled}
         prices = {i: _price_number(_candidate_price(candidates[i])) for i in titled}
-        min_score = min_relevant_score(product)
+        min_score = min_relevant_score(normalized)
         ranked = sorted(titled, key=lambda i: (tiers[i], -scores[i], len(_tokens(titles[i])), i))
         model_hits = [i for i in ranked if tiers[i] == 1]
         others = [i for i in ranked if tiers[i] != 1 and scores[i] >= min_score]

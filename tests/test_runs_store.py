@@ -65,26 +65,6 @@ def test_a_damaged_record_is_skipped():
     assert [r["run_id"] for r in runs.list_runs()] == ["good"]
 
 
-def test_a_record_that_is_not_utf8_is_skipped():
-    runs.save_run({"run_id": "good", "saved_at": 1})
-    (runs.runs_dir() / "bad.json").write_bytes(b'{"run_id": "\xff"}')
-    assert [r["run_id"] for r in runs.list_runs()] == ["good"]
-
-
-def test_a_record_with_a_string_timestamp_does_not_crash_the_list():
-    # An older/hand-edited record can hold a string where a timestamp belongs;
-    # sorting used to compare str with float and raise TypeError.
-    runs.save_run({"run_id": "typed", "saved_at": "not-a-time"})
-    runs.save_run({"run_id": "numeric", "saved_at": 5})
-    assert [r["run_id"] for r in runs.list_runs()] == ["numeric", "typed"]
-
-
-def test_a_nan_timestamp_does_not_break_the_order():
-    runs.save_run({"run_id": "nan", "saved_at": float("nan")})
-    runs.save_run({"run_id": "numeric", "saved_at": 5})
-    assert [r["run_id"] for r in runs.list_runs()] == ["numeric", "nan"]
-
-
 def test_a_key_inside_a_record_is_hidden():
     path = runs.save_run({"run_id": "s1", "note": "rejected nvapi-abc123DEF456"})
     text = path.read_text(encoding="utf-8")

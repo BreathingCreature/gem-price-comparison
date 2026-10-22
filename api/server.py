@@ -105,10 +105,7 @@ def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
                 "live": True,
             }
         )
-        # A finished live job saves a record under its trace id, which is not
-        # the job id. Dedupe by that id or the same run appears twice (once
-        # live, once from cache/runs) as soon as it finishes.
-        seen.add(job.get("run_id") or job["id"])
+        seen.add(job["id"])
     for record in runs_store.list_runs(limit):
         run_id = str(record.get("run_id") or "")
         if not run_id or run_id in seen:
@@ -179,10 +176,9 @@ def create_app(
 
     @app.post("/api/runs", status_code=202)
     def start_run(body: RunRequest):
-        gem_url = body.gem_url.strip()
-        if not demo and not looks_like_gem_url(gem_url):
+        if not demo and not looks_like_gem_url(body.gem_url):
             raise HTTPException(status_code=422, detail="That does not look like a GeM product link (gem.gov.in).")
-        job = manager.submit(gem_url, body.refresh)
+        job = manager.submit(body.gem_url.strip(), body.refresh)
         return {"run_id": job.id, "status": job.status}
 
     @app.get("/api/runs")
@@ -265,11 +261,7 @@ def create_app(
         path: Path = pipeline.TRACES_DIR / f"{trace_id}.json"
         if not path.exists():
             raise HTTPException(status_code=404, detail="No such trace.")
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:  # ValueError covers JSON/UTF-8 errors
-            logger.warning("Trace %s could not be read: %s", trace_id, exc)
-            raise HTTPException(status_code=500, detail="That trace file is damaged.") from exc
+        data = json.loads(path.read_text(encoding="utf-8"))
         if os.getenv("GEM_DEBUG") != "1":
             data = _trim_text(data, TRACE_TEXT_LIMIT)
         return data

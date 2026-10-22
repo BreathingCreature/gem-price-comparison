@@ -40,7 +40,7 @@ def get(key: str) -> Optional[dict]:
     path = Path(CACHE_DIR) / f"{key}.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # ValueError covers JSON and UTF-8 errors
+    except (OSError, json.JSONDecodeError):
         return None
     answer = data.get("answer") if isinstance(data, dict) else None
     return answer if isinstance(answer, dict) else None

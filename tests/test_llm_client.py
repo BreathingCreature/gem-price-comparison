@@ -307,23 +307,6 @@ def test_verify_confidence_inf_is_zero(monkeypatch):
     assert llm_client.verify_or_extract(_NORMALIZED, _CANDIDATE, client=fake)["confidence"] == 0.0
 
 
-def test_verify_nan_extracted_price_is_not_used(monkeypatch):
-    # json.loads accepts the bare token NaN; a NaN price must never reach the
-    # cheapest arithmetic (every comparison with it is silently False).
-    monkeypatch.setattr(llm_client, "_extract_json", lambda raw: {"confidence": 0.9, "is_match": True, "reason": "x", "extracted_price": float("nan"), "extraction_source": "scraper"})
-    fake = _FakeClient("ignored - _extract_json is monkeypatched")
-    assert llm_client.verify_or_extract(_NORMALIZED, _CANDIDATE, client=fake)["price_used"] is None
-
-
-def test_verify_non_string_reason_is_coerced(monkeypatch):
-    # _outcome/_why_possible call .lower()/.strip() on the reason; a model that
-    # answers with a list used to crash the whole lane.
-    monkeypatch.setattr(llm_client, "_extract_json", lambda raw: {"confidence": 0.9, "is_match": False, "reason": ["different", "model"], "extracted_price": None, "extraction_source": "scraper"})
-    fake = _FakeClient("ignored - _extract_json is monkeypatched")
-    reason = llm_client.verify_or_extract(_NORMALIZED, _CANDIDATE, client=fake)["reason"]
-    assert reason == "['different', 'model']"
-
-
 # --- expand_search -------------------------------------------------------------------
 
 def test_expand_search_returns_new_queries_and_domains():

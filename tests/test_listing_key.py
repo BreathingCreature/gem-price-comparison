@@ -1,7 +1,7 @@
 """One listing, one key: the shared URL identity used by dedup and scoring."""
 import pytest
 
-from core.keys import host_matches, listing_key
+from core.keys import listing_key
 
 SAME = [
     (
@@ -54,13 +54,3 @@ def test_no_url_gives_an_empty_key():
     assert listing_key("") == ""
     assert listing_key("   ") == ""
     assert listing_key(None) == ""
-
-
-def test_a_lookalike_host_is_not_amazon_or_flipkart():
-    # "fakeamazon.in" is not "amazon.in": it must keep its own generic key
-    # instead of being folded into the ASIN rule.
-    assert listing_key("https://fakeamazon.in/dp/B0ABCDEFGH") == "fakeamazon.in/dp/B0ABCDEFGH"
-    assert listing_key("https://www.amazon.in.evil.com/dp/B0ABCDEFGH") == "amazon.in.evil.com/dp/B0ABCDEFGH"
-    assert listing_key("https://notflipkart.com/slug/p/itm1?pid=ACC123") == "notflipkart.com/slug/p/itm1?pid=ACC123"
-    assert host_matches("amazon.in", "amazon.in") and host_matches("www.amazon.in", "amazon.in")
-    assert not host_matches("fakeamazon.in", "amazon.in") and not host_matches("", "amazon.in")

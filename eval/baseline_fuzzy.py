@@ -110,12 +110,7 @@ def main(argv=None) -> int:
         for line in f:
             if not line.strip():
                 continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # a line cut off by a killed run is skipped, not fatal
-            if not isinstance(rec, dict) or "id" not in rec:
-                continue
+            rec = json.loads(line)
             trace = load_trace(Path(args.traces), rec.get("trace_id") or "")
             if trace is None:
                 missing += 1

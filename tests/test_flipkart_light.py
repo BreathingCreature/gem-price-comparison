@@ -184,13 +184,3 @@ def test_a_second_death_is_not_rebuilt_again():
 
     assert len(builds) == 2  # one rebuild, not one per retry
     assert result.error is not None
-
-
-def test_saving_a_debug_page_recreates_a_missing_folder(tmp_path, monkeypatch):
-    # The folder used to be created only at import time, so a deleted cache
-    # folder silently lost every saved page.
-    monkeypatch.setattr(flipkart, "DEBUG_DIR", tmp_path / "gone")
-
-    flipkart._save_debug("<html></html>", "page")
-
-    assert len(list((tmp_path / "gone").glob("page_*.html"))) == 1

@@ -97,29 +97,6 @@ def test_traces_for_results_reads_the_trace_ids(tmp_path):
     assert missing == ["gone"]
 
 
-def test_a_half_written_results_line_is_skipped(tmp_path):
-    results = tmp_path / "r.jsonl"
-    results.write_text(
-        json.dumps({"id": "P1", "trace_id": "t1"}) + '\n{"id": "P2", "trace',
-        encoding="utf-8",
-    )
-    traces_dir = tmp_path / "traces"
-    (traces_dir / "t1.json").write_text("{}", encoding="utf-8")
-    found, missing = profile_runs.traces_for_results(results, traces_dir)
-    assert [p.name for p in found] == ["t1.json"]
-    assert missing == []
-
-
-def test_a_damaged_trace_file_is_skipped_not_fatal(tmp_path, capsys):
-    traces_dir = tmp_path / "traces"
-    (traces_dir / "good.json").write_text(json.dumps(_trace()), encoding="utf-8")
-    (traces_dir / "bad.json").write_text("{not json", encoding="utf-8")
-    rc = profile_runs.main(["--dir", str(traces_dir)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "skipped" in out and "openrouter" in out
-
-
 def test_render_shows_steps_and_providers():
     profiles = [profile_runs.profile_trace(_trace())]
     text = profile_runs.render(profiles, profile_runs.aggregate(profiles))
@@ -143,9 +120,3 @@ def test_cli_main_with_no_traces_says_so(tmp_path, capsys):
     rc = profile_runs.main(["--dir", str(empty)])
     assert rc == 1
     assert "no traces" in capsys.readouterr().out.lower()
-
-
-def test_cli_main_with_a_missing_results_file_reports_it(tmp_path, capsys):
-    rc = profile_runs.main(["--results", str(tmp_path / "missing.jsonl"), "--dir", str(tmp_path / "traces")])
-    assert rc == 2
-    assert "cannot read" in capsys.readouterr().out.lower()

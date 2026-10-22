@@ -31,10 +31,7 @@ from core.config import CACHE_DIR, FLIPKART_LIGHT, logger
 from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
 
 DEBUG_DIR = CACHE_DIR.parent / "debug_html"
-try:
-    DEBUG_DIR.mkdir(exist_ok=True)
-except OSError:
-    pass  # a read-only tree must not break the import; _save_debug retries
+DEBUG_DIR.mkdir(exist_ok=True)
 
 
 _BLOCK_PHRASES = ["flipkart recaptcha", "recaptcha", "please verify you are a human", "not a robot"]
@@ -358,7 +355,6 @@ def _search_light(
 def _save_debug(html: str, prefix: str) -> None:
     path = DEBUG_DIR / f"{prefix}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
     try:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(html, encoding="utf-8")
         logger.warning("Saved Flipkart page to %s", path)
     except Exception:

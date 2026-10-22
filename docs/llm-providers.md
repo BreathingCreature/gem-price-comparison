@@ -150,24 +150,12 @@ With no `llm_providers.json` at all, NVIDIA is used alone, built from the
 `GET /api/llm/status`, the Advanced tab of the web page, and the
 `llm_call` / `llm_cooldown` events all show which endpoint served each call,
 how long it took and why an endpoint was skipped. States are `ready`, `failing`
-(its last call failed within 15 minutes �?" it will be retried, but it is not
+(its last call failed within 15 minutes — it will be retried, but it is not
 "ready"), `cooling` (resting; `reason` names the remaining seconds and the
-error), `limit` (allowance gone until the reset) and `disabled`. Once a failure
-is older than 15 minutes the row is `ready` again, but its `reason` still says
-"last error 1h ago, answered since" (or "no answer since") so the old error is
-not read as a fresh one. The status rows
+error), `limit` (allowance gone until the reset) and `disabled`. The status rows
 also show each provider's `calls_today`, `in_flight`, `max_concurrent`,
 `daily_limit`, `last_status` / `last_failure_ago` and the token budget with the
 last minute's count (`tokens_per_minute`, `tokens_last_minute`).
-
-`calls` counts answered calls only; `errors` counts failed attempts
-(timeouts, 5xx, empty answers), so `0 calls / 4 errors` means "never answered".
-
-`cache/llm_state.json` (used-up allowances, 404 notes) is shared, so two
-processes — the web app and an eval run, or two apps — on one account can
-respect each other. Each re-reads it at most once a second, before picking an
-endpoint and in the status rows, and a write merges the file instead of
-overwriting it, so one process's mark is never erased by the other.
 
 `python -m tools.probe_endpoints` sends one tiny message to every endpoint
 and prints OK with the round-trip time, or the real error (bad key, wrong

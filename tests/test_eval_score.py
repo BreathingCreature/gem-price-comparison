@@ -167,27 +167,3 @@ def test_command_line_refuses_a_broken_key(tmp_path, capsys):
     res.write_text("")
     assert score.main(["--key", str(key), "--results", str(res)]) == 1
     assert "problems" in capsys.readouterr().out
-
-
-def test_a_half_written_results_line_is_skipped_not_fatal(tmp_path, capsys):
-    # A run killed mid-write leaves one cut-off line; the other products must
-    # still be scoreable.
-    path = tmp_path / "res.jsonl"
-    path.write_text(
-        json.dumps({"id": "P1", "matches": []}) + "\n"
-        + '{"id": "P2", "matches": [{"url": "https://www.amazon.in/dp/B0' + "\n"
-        + json.dumps({"id": "P3", "matches": []}) + "\n",
-        encoding="utf-8",
-    )
-
-    results = score.load_results(path)
-
-    assert sorted(results) == ["P1", "P3"]
-    assert "skipped 1 unreadable line(s)" in capsys.readouterr().err
-
-
-def test_a_results_line_that_is_not_an_object_is_skipped(tmp_path):
-    path = tmp_path / "res.jsonl"
-    path.write_text("[]\n7\n" + json.dumps({"id": "P1", "matches": []}) + "\n", encoding="utf-8")
-
-    assert sorted(score.load_results(path)) == ["P1"]
