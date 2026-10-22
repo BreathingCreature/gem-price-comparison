@@ -43,6 +43,7 @@ EVENT_SAMPLES = [
     {"type": "llm_unavailable", "reason": "all busy"},
     {"type": "shop_started", "shop": "flipkart.com"},
     {"type": "search_started", "marketplace": "flipkart", "query": "q"},
+    {"type": "search_retry", "marketplace": "flipkart", "query": "q2"},
     {"type": "search_finished", "marketplace": "flipkart", "query": "q", "count": 2, "candidates": [{"title": "t", "price": 5}]},
     {"type": "discovery_finished", "queries": ["q"], "urls": ["https://x.in/a"]},
     {"type": "scrape_started", "url": "https://x.in/a"},

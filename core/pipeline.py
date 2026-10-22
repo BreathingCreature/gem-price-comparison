@@ -510,12 +510,25 @@ def _shop_entries(
         r.to_dict() if hasattr(r, "to_dict") else r for r in (discovery_results if isinstance(discovery_results, (list, tuple)) else [])
     ]
     discovery_blocked = any(r.get("blocked") for r in discovery_rows if isinstance(r, dict))
+    discovery_urls = sum(
+        len(r.get("filtered_urls") or r.get("urls") or r.get("raw_urls") or [])
+        for r in discovery_rows
+        if isinstance(r, dict)
+    )
+    # Every query failed at the search backend (DDG on cooldown, Brave 429,
+    # "no result links could be parsed"): no shop was actually looked at, so
+    # the card must not claim "searched, nothing confirmed".
+    discovery_failed = bool(discovery_rows) and not discovery_urls and all(
+        r.get("blocked") or r.get("error") for r in discovery_rows if isinstance(r, dict)
+    )
     if not discovered:
         other_status, other_reason = result_module.SHOP_NOT_SEARCHED, "discovery is switched off"
     elif other_lane_error:
         other_status, other_reason = result_module.SHOP_INCOMPLETE, other_lane_error
     elif discovery_blocked:
         other_status, other_reason = result_module.SHOP_NOT_SEARCHED, "discovery blocked/CAPTCHA"
+    elif discovery_failed:
+        other_status, other_reason = result_module.SHOP_NOT_SEARCHED, "the web search failed, so other shops were not searched"
     elif any(e["status"] == result_module.SHOP_FOUND for e in generic_entries):
         other_status, other_reason = result_module.SHOP_FOUND, ""
     elif any(e["status"] in result_module.UNFINISHED_STATUSES for e in generic_entries):
@@ -666,21 +679,55 @@ def _run_first_pass_lanes(
     if DISCOVERY_ENABLED:
         events.emit("stage", name="discovery", label="Looking for other shops")
 
-    def flipkart_lane():
+    def direct_lane(search_fn, *, label, shop, name, label_text, seconds_key):
+        """One direct marketplace: search, verify, and (only when nothing was
+        confirmed and the early exit left a query unrun) one more query.
+
+        The early exit in search_direct stops as soon as enough relevant cards
+        arrive, so the query that would have held the exact listing can stay
+        unrun. One extra search per lane is cheap and polite — it is never a
+        loop, and it never runs after a confirmed match."""
         started = time.monotonic()
-        events.emit("shop_started", shop="flipkart.com")
-        results, candidates = _search_direct(flipkart_search_fn, queries, label="flipkart", normalized=normalized)
-        lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="flipkart", label="the Flipkart listings")
-        lane_seconds["flipkart"] = time.monotonic() - started
+        events.emit("shop_started", shop=shop)
+        results, candidates = _search_direct(search_fn, queries, label=label, normalized=normalized)
+        lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name=name, label=label_text)
+        blocked_or_failed = any(
+            getattr(result, "blocked", False) or getattr(result, "error", None) for result in results
+        )
+        if not lane_match.confirmed_matches and len(results) < len(queries) and not blocked_or_failed:
+            tried = {getattr(r, "query", None) for r in results}
+            remaining = [q for q in queries if q not in tried]
+            if remaining:
+                events.emit("search_retry", marketplace=label, query=remaining[0])
+                retry_results, retry_candidates = _search_direct(
+                    search_fn, remaining[:1], label=label, normalized=normalized
+                )
+                results = list(results) + list(retry_results)
+                seen = {_listing_key(_cand_dict(c).get("url")) for c in candidates}
+                fresh = [c for c in retry_candidates if _listing_key(_cand_dict(c).get("url")) not in seen]
+                candidates = list(candidates) + fresh
+                if fresh:
+                    retry_match, retry_dropped = _verify_lane(
+                        normalized, fresh, match_fn, name=name, label=label_text
+                    )
+                    lane_match = _merge_match_results([lane_match, retry_match])
+                    dropped = list(dropped) + list(retry_dropped)
+        lane_seconds[seconds_key] = time.monotonic() - started
         return results, candidates, lane_match, dropped
 
+    def flipkart_lane():
+        return direct_lane(
+            flipkart_search_fn,
+            label="flipkart", shop="flipkart.com", name="flipkart",
+            label_text="the Flipkart listings", seconds_key="flipkart",
+        )
+
     def amazon_lane():
-        started = time.monotonic()
-        events.emit("shop_started", shop="amazon.in")
-        results, candidates = _search_direct(amazon_search_fn, queries, label="amazon", normalized=normalized)
-        lane_match, dropped = _verify_lane(normalized, candidates, match_fn, name="amazon", label="the Amazon listings")
-        lane_seconds["amazon"] = time.monotonic() - started
-        return results, candidates, lane_match, dropped
+        return direct_lane(
+            amazon_search_fn,
+            label="amazon", shop="amazon.in", name="amazon",
+            label_text="the Amazon listings", seconds_key="amazon",
+        )
 
     def other_shops_lane():
         started = time.monotonic()

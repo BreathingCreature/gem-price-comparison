@@ -411,7 +411,11 @@ def test_direct_search_stops_once_enough_candidates():
         expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
     )
 
-    assert fk_calls == ["q1"]  # enough after first query — q2/q3 never searched
+    # The early exit still holds: q2/q3 were not searched in the first pass.
+    # The one bounded retry (no confirmed match) then uses the next unused
+    # query — and only that one.
+    assert fk_calls[:1] == ["q1"]
+    assert fk_calls[1:] == ["q2"]
 
 
 def test_direct_search_junk_results_do_not_end_the_queries():
@@ -461,7 +465,10 @@ def test_direct_search_junk_results_do_not_end_the_queries():
         expand_search_fn=lambda n, tq, td: {"new_queries": [], "suggested_domains": [], "notes": ""},
     )
 
-    assert fk_calls == ["q1", "q2"]  # q1's junk did not count; q2's relevant cards did
+    # q1's junk did not count; q2's relevant cards did. The one bounded lane
+    # retry then spent the single remaining query (q3).
+    assert fk_calls[:2] == ["q1", "q2"]
+    assert fk_calls[2:] == ["q3"]
 
 
 def test_direct_search_without_the_product_counts_every_candidate():

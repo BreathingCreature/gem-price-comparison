@@ -378,6 +378,8 @@
         return { kind: "shop", level: "", key: true, text: "Started on " + shopLabel(e.shop) + "." };
       case "search_started":
         return { kind: "search", level: "", key: false, text: shopLabel(e.marketplace) + ": searching for “" + short(e.query, 80) + "”" };
+      case "search_retry":
+        return { kind: "search", level: "", key: true, text: shopLabel(e.marketplace) + ": nothing confirmed yet, trying the next search “" + short(e.query, 80) + "”" };
       case "search_finished":
         list = e.candidates || [];
         lines = [];

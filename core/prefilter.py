@@ -200,6 +200,35 @@ def relevant_title(title: str, product) -> bool:
     return similarity(title, product) >= min_relevant_score(product)
 
 
+def identity_evidence(title: str, page_text: str, product) -> bool:
+    """Code-side proof that a listing is the product itself, not just a
+    similar title. Used only before promoting a same-product verdict that has
+    no price to a confirmed match (llm/match.py); it is a gate, so it is
+    deliberately stricter than similarity():
+
+    - the model code (letters+digits, spaces/dashes ignored: "NDO-24" ->
+      "ndo24") appears in the listing title or on the page itself, or
+    - the brand appears AND at least two of the product's own words appear in
+      the title ("Godrej Maestro Executive Suite" for a Godrej Maestro set).
+
+    A title with neither is not evidence: the listing stays "possible".
+    """
+    title = title or ""
+    page_text = page_text or ""
+    compact_title = _compact(title)
+    compact_page = _compact(page_text)
+    for key in getattr(product, "model_keys", None) or []:
+        if key and (key in compact_title or key in compact_page):
+            return True
+    brand_words = getattr(product, "brand_words", None)
+    if not brand_words:
+        return False
+    title_tokens = _tokens(title)
+    if not (title_tokens & brand_words):
+        return False
+    return len({word for word in product if word in title_tokens}) >= 2
+
+
 def relevant_candidate(candidate, product: set[str]) -> bool:
     """relevant_title for a CandidateResult or its to_dict() form."""
     d = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate

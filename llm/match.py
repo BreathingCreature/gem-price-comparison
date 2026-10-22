@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import partial
 
-from core import events
+from core import events, prefilter
 from core.config import (
     GATES_ENABLED,
     LLM_WORKERS,
@@ -114,7 +114,20 @@ def _apply_scraper_price(decision: dict, candidate_dict: dict) -> None:
     decision["price_from"] = "scraper"
 
 
-def _outcome(decision: dict, threshold: float) -> str:
+def _identity_proof(candidate_dict: dict, normalized: dict) -> bool:
+    """Does the listing itself carry the product's identity? Reads only the
+    candidate's own title/page (untrusted data used as evidence, never as an
+    instruction) and the normalized product's words."""
+    if not isinstance(candidate_dict, dict) or not isinstance(normalized, dict):
+        return False
+    fields = candidate_dict.get("structured_fields")
+    fields = fields if isinstance(fields, dict) else {}
+    title = str(fields.get("title") or "")
+    page_text = str(candidate_dict.get("raw_page_text") or "")
+    return prefilter.identity_evidence(title, page_text, prefilter.product_tokens(normalized))
+
+
+def _outcome(decision: dict, threshold: float, *, candidate=None, normalized=None) -> str:
     """match / possible / no_match for one judged listing (Stage 6.3)."""
     reason = decision.get("reason") or ""
     if "[hard-rejected:" in reason:
@@ -127,6 +140,13 @@ def _outcome(decision: dict, threshold: float) -> str:
     if is_match and confidence >= threshold and price is not None:
         return OUTCOME_MATCH
     if is_match and price is None:
+        # Same product, no price on the page (brand stores, B2B shops that
+        # ask for a quote). That used to stay "possible" forever. Confirm it
+        # only when code can prove the identity from the listing itself — the
+        # model code, or the brand plus two product words. The price stays
+        # None: unknown is reported as unknown, never guessed.
+        if _identity_proof(candidate, normalized):
+            return OUTCOME_MATCH
         return OUTCOME_POSSIBLE
     if not is_match and 0.5 <= confidence < threshold:
         return OUTCOME_POSSIBLE
@@ -376,17 +396,30 @@ def match_candidates(normalized: dict, candidates: list, *, client=None, verdict
                 )
 
     # Stage 6.3: every judged listing gets exactly one outcome. A "match" is
-    # only confirmed with a real price (it must enter the cheapest/savings
-    # arithmetic); a same-product verdict with no price is `possible`, which
-    # is honest and still visible, instead of the old silent demotion.
+    # normally confirmed only with a real price (it enters the cheapest/savings
+    # arithmetic); a same-product verdict with no price is confirmed only when
+    # the listing itself proves the identity (model code / brand + two words),
+    # and its price stays None. Everything else with no price is `possible`,
+    # which is honest and still visible, instead of the old silent demotion.
     threshold = MATCH_CONFIDENCE_THRESHOLD
+    candidates_by_url = {}
+    for candidate in candidates:
+        candidate_dict = _cand_dict(candidate)
+        candidates_by_url[str(candidate_dict.get("url"))] = candidate_dict
     for d in all_decisions:
-        d["outcome"] = _outcome(d, threshold)
+        d["outcome"] = _outcome(
+            d,
+            threshold,
+            candidate=candidates_by_url.get(str(d.get("candidate_url"))),
+            normalized=normalized,
+        )
         if d["outcome"] == OUTCOME_POSSIBLE:
             d["why"] = _why_possible(d, threshold)
 
     confirmed = [d for d in all_decisions if d["outcome"] == OUTCOME_MATCH]
-    confirmed.sort(key=lambda d: d["price_used"])
+    # Unknown prices (confirmed identity, no price on the page) sort last,
+    # never first: the cheapest list must not treat "unknown" as "free".
+    confirmed.sort(key=lambda d: (d.get("price_used") is None, d.get("price_used") or 0.0))
     possible = [d for d in all_decisions if d["outcome"] == OUTCOME_POSSIBLE]
     possible.sort(
         key=lambda d: (

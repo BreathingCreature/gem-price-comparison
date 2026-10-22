@@ -283,6 +283,41 @@ def test_a_discovery_crash_is_reported_on_the_other_card():
     assert shops["other"]["retryable"] is False
 
 
+def test_a_failed_web_search_is_not_searched_not_not_found():
+    # Live P28: DDG on cooldown, Brave 429, every query ended with "no result
+    # links could be parsed" — the card used to say "searched, nothing
+    # confirmed" although no shop was ever looked at.
+    shops = pipeline._shop_entries(
+        flipkart_results=[], amazon_results=[],
+        discovery_results=[
+            {"query": "q1", "raw_urls": [], "filtered_urls": [], "blocked": False,
+             "error": "search backends responded but no result links could be parsed"},
+            {"query": "q2", "raw_urls": [], "filtered_urls": [], "blocked": False,
+             "error": "search backends responded but no result links could be parsed"},
+        ],
+        flipkart_candidates=[], amazon_candidates=[], generic_candidates=[],
+        match_result=MatchBatchResult(), prefilter_dropped=[], lane_errors=[], lane_seconds={},
+        nothing_found=True,
+    )
+    other = shops["other"]
+    assert other["status"] == result.SHOP_NOT_SEARCHED
+    assert "web search failed" in other["reason"]
+    assert other["retryable"] is True
+
+
+def test_a_clean_empty_web_search_is_still_not_found():
+    shops = pipeline._shop_entries(
+        flipkart_results=[], amazon_results=[],
+        discovery_results=[
+            {"query": "q1", "raw_urls": [], "filtered_urls": [], "blocked": False, "error": None},
+        ],
+        flipkart_candidates=[], amazon_candidates=[], generic_candidates=[],
+        match_result=MatchBatchResult(), prefilter_dropped=[], lane_errors=[], lane_seconds={},
+        nothing_found=True,
+    )
+    assert shops["other"]["status"] == result.SHOP_NOT_FOUND
+
+
 # --- the shown-then-updated run ----------------------------------------------
 
 def test_the_first_result_is_shown_then_the_retry_updates_it(monkeypatch):
