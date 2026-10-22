@@ -167,3 +167,25 @@ def test_command_line_refuses_a_broken_key(tmp_path, capsys):
     res.write_text("")
     assert score.main(["--key", str(key), "--results", str(res)]) == 1
     assert "problems" in capsys.readouterr().out
+
+
+def test_other_shops_per_product_recall_counts_one_right_listing(tmp_path):
+    rows = [_row(id="P1", other_urls="https://a.in/p/1 https://b.in/p/2")]
+    rec = {"matches": [{"url": "https://a.in/p/1", "price": 10}]}
+    out = score.score_row(rows[0], rec)
+    assert out["found"] == 1 and out["wanted"] == 2        # strict: 1 of 2 URLs
+    assert out["other_wanted"] and out["other_any"]         # per product: yes
+    s = score.summarize([out])
+    assert s["other_product_recall"] == 1.0
+
+
+def test_with_possible_adds_unconfirmed_listings(tmp_path, capsys):
+    key = tmp_path / "k.csv"
+    _write_key(key, [_row(amazon_url=AMZ_SAME, amazon_price="10")])
+    res = tmp_path / "r.jsonl"
+    res.write_text(json.dumps({"id": "P1", "matches": [], "possible": [{"url": AMZ_SAME, "price": 10}]}) + "\n")
+    assert score.main(["--key", str(key), "--results", str(res)]) == 0
+    assert "0.0%" in capsys.readouterr().out
+    assert score.main(["--key", str(key), "--results", str(res), "--with-possible"]) == 0
+    out = capsys.readouterr().out
+    assert "possible" in out and "100.0%" in out

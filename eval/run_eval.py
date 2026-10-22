@@ -82,6 +82,15 @@ def record_for(row: dict, run_fn) -> dict:
             }
             for m in (result.get("matches") or [])
         ],
+        "possible": [
+            {
+                "url": m.get("candidate_url"),
+                "domain": m.get("source_domain"),
+                "price": m.get("price_used"),
+                "confidence": m.get("confidence"),
+            }
+            for m in (result.get("possible_matches") or [])
+        ],
         "not_found_on": result.get("not_found_on") or [],
         "search_issues": result.get("search_issues") or [],
         **counts,
