@@ -42,5 +42,5 @@ def test_the_api_routes_are_not_hidden_by_the_static_files():
 
 def test_the_script_only_calls_routes_that_exist():
     script = (FRONTEND_DIR / "app.js").read_text(encoding="utf-8")
-    called = set(re.findall(r'API \+ "(/api/[a-z/]+)', script))
+    called = set(re.findall(r'API\s*\+\s*"(/api/[a-z/]+)', script))
     assert called == {"/api/health", "/api/runs", "/api/runs/", "/api/llm/status", "/api/traces/"}

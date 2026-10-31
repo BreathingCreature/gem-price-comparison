@@ -106,7 +106,7 @@ def test_the_counters_follow_one_shops_story():
         {"type": "search_finished", "marketplace": "flipkart", "query": "a", "count": 12},
         {"type": "filter_finished", "shop": "flipkart", "seen": 12, "dropped": 7, "sent": 5},
         {"type": "candidate_checking", "domain": "flipkart.com", "index": 1, "total": 5},
-        {"type": "candidate_verdict", "domain": "flipkart.com", "is_match": True},
+        {"type": "candidate_verdict", "domain": "flipkart.com", "is_match": True, "price": 100},
         {"type": "candidate_checking", "domain": "flipkart.com", "index": 2, "total": 5},
         {"type": "candidate_verdict", "domain": "flipkart.com", "is_match": False},
         {"type": "llm_call", "ok": True, "seconds": 2}, {"type": "llm_call", "ok": False, "seconds": 1},

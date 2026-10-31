@@ -5,6 +5,7 @@ There is no browser here. These are source checks plus one real Node run of
 render.js with a sample v2 result (the file is DOM-free on purpose).
 """
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,7 @@ def test_every_result_event_the_page_uses_has_a_handler():
 def test_the_similar_section_needs_an_empty_match_list():
     assert "showsSimilar" in RENDER_JS
     shows = RENDER_JS.split("function showsSimilar", 1)[1][:220]
-    assert "matches" in shows and "length === 0" in shows
+    assert "matches" in shows and re.search(r"length\s*===\s*0", shows)
     assert '$("similar-section").hidden' in APP_JS
 
 
@@ -119,16 +120,16 @@ def test_render_js_formats_a_v2_result_without_a_browser(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
-    assert out["line"] == "Cheapest: \u20b91,149.00 on flipkart.com \u2014 \u20b9150.00 less than GeM"
+    assert out["line"] == "Cheapest: \u20b91,149 on flipkart.com, \u20b9150 less (11.5%)"
     assert out["state"] == "complete"
     assert out["cached"].startswith("cached result from 2026-10-20")
-    assert out["rows"][0]["priceText"] == "\u20b91,149.00"
-    assert out["rows"][0]["vsGem"] == "\u20b9150.00 less"
+    assert out["rows"][0]["priceText"] == "\u20b91,149"
+    assert out["rows"][0]["vsGem"] == "\u20b9150 less"
     assert out["possible"][0]["why"].startswith("confidence 0.70")
     assert out["similar"] is False
-    assert out["shop"].startswith("found \u00b7 3 seen")
+    assert out["shop"].startswith("Found a match \u00b7 3 seen")
     assert out["reason"] is True
-    assert out["cls"] == "shop-unfinished"
+    assert out["cls"] == "status-warning"
     assert out["safe"] is None
     assert out["ok"] == "https://flipkart.com/x"
 
