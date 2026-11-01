@@ -23,7 +23,7 @@ python cli.py "https://mkp.gem.gov.in/..."
 
 In VS Code: open the folder, `Ctrl+Shift+P` → "Python: Select Interpreter" →
 `.venv`, then use the integrated terminal. The project needs Python 3.10 or
-newer (3.12 is what CI uses).
+newer (3.12 and 3.14 are what CI uses).
 
 ## One command
 

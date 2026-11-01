@@ -165,3 +165,79 @@ def test_flipkart_browser_registers_and_forgets_its_driver(monkeypatch):
     assert driver.quit_calls == 1
     assert id(driver) not in base._LIVE_DRIVERS
     assert id(browser) not in base._LIVE_BROWSERS
+
+
+def test_register_ignores_none():
+    base.register_driver(None)
+    base.register_browser(None)
+    assert base._LIVE_DRIVERS == {} and base._LIVE_BROWSERS == {}
+
+
+def test_process_running_is_optimistic_without_a_poll():
+    class NoPoll:
+        pid = 1
+
+    driver = type("Driver", (), {"service": type("Service", (), {"process": NoPoll()})()})()
+    assert base._process_running(driver) is True
+    assert base._driver_pid(driver) == 1
+
+
+def test_process_running_treats_a_broken_poll_as_still_running():
+    class BrokenPoll:
+        pid = 1
+
+        def poll(self):
+            raise OSError("handle closed")
+
+    driver = type("Driver", (), {"service": type("Service", (), {"process": BrokenPoll()})()})()
+    assert base._process_running(driver) is True
+    assert base._driver_pid(type("Driver", (), {"service": None})()) is None
+
+
+def test_kill_pid_tree_on_windows_uses_taskkill_for_that_pid(monkeypatch):
+    calls = []
+    monkeypatch.setattr(base.os, "name", "nt")
+    monkeypatch.setattr(base.subprocess, "run", lambda args, **kwargs: calls.append(args))
+
+    base._kill_pid_tree(4321)
+
+    assert calls == [["taskkill", "/PID", "4321", "/T", "/F"]]
+
+
+def test_kill_pid_tree_on_posix_signals_only_that_pid(monkeypatch):
+    killed = []
+    monkeypatch.setattr(base.os, "name", "posix")
+    monkeypatch.setattr(base.os, "kill", lambda pid, signum: killed.append((pid, signum)))
+
+    base._kill_pid_tree(9876)
+
+    assert killed == [(9876, base.signal.SIGTERM)]
+
+
+def test_cleanup_survives_a_browser_that_fails_to_close(monkeypatch, caplog):
+    class BadBrowser:
+        def close(self):
+            raise RuntimeError("close failed")
+
+    driver = FakeDriver()
+    monkeypatch.setattr(base, "_kill_pid_tree", lambda pid: None)
+    base.register_browser(BadBrowser())
+    base.register_driver(driver)
+
+    base.cleanup_drivers()
+
+    assert driver.quit_calls == 1
+    assert "Could not close a leftover browser." in caplog.text
+    assert base._LIVE_BROWSERS == {} and base._LIVE_DRIVERS == {}
+
+
+def test_the_signal_handler_exits_when_there_is_no_previous_handler(monkeypatch):
+    monkeypatch.setattr(base, "cleanup_drivers", lambda: None)
+    monkeypatch.setattr(base, "_PREVIOUS_HANDLERS", {})
+
+    with pytest.raises(SystemExit) as exit_info:
+        base._handle_cleanup_signal(base.signal.SIGTERM, None)
+    assert exit_info.value.code == 128 + base.signal.SIGTERM
+
+    with pytest.raises(KeyboardInterrupt):
+        base._handle_cleanup_signal(base.signal.SIGINT, None)

@@ -14,23 +14,32 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        python: ["3.12"]
+        python: ["3.12", "3.14"]
     steps:
- - uses: actions/checkout@v4
- - uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
- - name: Install dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
- - name: Lint
+      - name: Lint
         run: python -m ruff check .
- - name: Run the test suite
-        run: python -m pytest -q
+      - name: Run the test suite
+        run: >
+          python -m pytest -q
+          --cov=api --cov=core --cov=llm --cov=scrapers
+          --cov=discovery --cov=cli
+          --cov-report=term --cov-fail-under=85
         env:
           PYTHONIOENCODING: utf-8
- - name: Byte-compile every module
+      - name: Byte-compile every module
         run: python -m compileall -q api core discovery eval llm scrapers tools frontend cli.py
+      - name: Audit dependencies (non-blocking)
+        continue-on-error: true
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt
