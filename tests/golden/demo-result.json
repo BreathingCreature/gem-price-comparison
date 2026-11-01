@@ -25,11 +25,16 @@
     "brand": "Logitech",
     "canonical_name": "Logitech M650 Signature Wireless Mouse",
     "described_by": "llm",
+    "image": null,
     "model": "M650",
     "price": {
       "high": 1299.0,
       "kind": "fixed",
       "low": 1299.0
+    },
+    "specs": {
+      "Colour": "Graphite",
+      "Connectivity": "Bluetooth"
     },
     "title": "Logitech M650 Signature Wireless Mouse (Demo)",
     "url": "https://mkp.gem.gov.in/demo/p-123.html"
@@ -149,7 +154,6 @@
     }
   ],
   "result_version": 2,
-  "run_id": "d3cf35a35d93482b",
   "search_issues": [
     "flipkart.com: blocked/CAPTCHA - scrape failed (not counted as 'not found')"
   ],

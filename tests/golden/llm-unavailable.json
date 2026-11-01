@@ -49,12 +49,14 @@
       "brand": "Demo",
       "canonical_name": "Demo Wireless Mouse",
       "described_by": "llm",
+      "image": null,
       "model": null,
       "price": {
         "high": 1000.0,
         "kind": "fixed",
         "low": 1000.0
       },
+      "specs": {},
       "title": "Demo Wireless Mouse",
       "url": "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-300-400-cat.html"
     },

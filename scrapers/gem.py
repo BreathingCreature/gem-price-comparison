@@ -45,6 +45,7 @@ class GemProduct:
     # Which CSS selector produced the price - a trace field, so a layout
     # change can be seen without guessing.
     price_selector: str = ""
+    image: Optional[str] = None
 
     def to_dict(self) -> dict:
         price = self.price
@@ -64,6 +65,7 @@ class GemProduct:
             "price": price,
             "price_selector": self.price_selector,
             "currency": self.currency,
+            "image": self.image,
         }
 
 
@@ -246,7 +248,25 @@ def _guess_brand_model(title: str) -> tuple[Optional[str], Optional[str]]:
     return brand, None
 
 
-# --- fetch with one small retry -------------------------------------------
+def _extract_image(soup: BeautifulSoup) -> Optional[str]:
+    """Product image, only when it is served from the GeM host over https."""
+    candidates: list[str] = []
+    meta = soup.find("meta", attrs={"property": "og:image"})
+    if meta and meta.get("content"):
+        candidates.append(str(meta["content"]).strip())
+    for img in soup.select("img"):
+        src = img.get("src") or img.get("data-src")
+        if src:
+            candidates.append(str(src).strip())
+    for candidate in candidates:
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme == "https" and (host == "gem.gov.in" or host.endswith(".gem.gov.in")):
+            return candidate
+    return None
 # One timeout, reset connection or 5xx during a burst shouldn't kill a whole
 # run over a failure the next attempt would have survived.
 
@@ -305,6 +325,7 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
     price_text, price_selector = _extract_price_text(soup)
     seller = _first_text(soup, _SELLER_SELECTORS) or None
     specs = _extract_specs(soup)
+    image = _extract_image(soup)
     if seller:
         specs.setdefault("seller", seller)
 
@@ -343,6 +364,7 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
         currency="INR",
         price=price_detail,
         price_selector=price_selector,
+        image=image,
     )
 
 

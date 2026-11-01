@@ -189,6 +189,8 @@ def _gem_view(gem_url: str, gem_product: dict, normalized: dict, described_by: s
         "model": normalized.get("model") or gem_product.get("model"),
         "price": gem_product.get("price")
         or {"low": gem_price, "high": gem_price, "kind": gem_product.get("gem_price_type", "unknown")},
+        "image": gem_product.get("image"),
+        "specs": gem_product.get("specs") or {},
         "described_by": described_by or normalized.get("described_by") or "llm",
     }
 
