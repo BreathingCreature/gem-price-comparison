@@ -264,7 +264,7 @@ def test_a_link_that_is_not_gem_exits_2_with_a_clear_message(monkeypatch):
     called = []
     code, out, err = _run_main(["https://example.com/x"], monkeypatch, lambda *a, **k: called.append(1))
     assert code == 2
-    assert "not a GeM product link" in err
+    assert "That is not a GeM product link" in err
     assert called == []
 
 

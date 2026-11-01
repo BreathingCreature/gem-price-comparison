@@ -40,7 +40,7 @@ from core.config import (
     logger,
 )
 from core.errors import redact
-from core.gem_url import looks_like_gem_url
+from core.gem_url import looks_like_gem_product_url
 
 FRONTEND_DIR = BASE_DIR / "frontend"
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -266,8 +266,8 @@ def create_app(
 
     @app.post("/api/runs", status_code=202)
     def start_run(body: RunRequest):
-        if not demo and not looks_like_gem_url(body.gem_url):
-            raise HTTPException(status_code=422, detail="That does not look like a GeM product link (gem.gov.in).")
+        if not demo and not looks_like_gem_product_url(body.gem_url):
+            raise HTTPException(status_code=422, detail="That is not a GeM product link. Open one product on GeM and paste its link.")
         job = manager.submit(body.gem_url.strip(), body.refresh)
         return {
             "run_id": job.id,

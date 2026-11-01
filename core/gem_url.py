@@ -5,6 +5,7 @@ answer "is this a GeM product link?".
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 
@@ -15,3 +16,17 @@ def looks_like_gem_url(url: str) -> bool:
     return parts.scheme in ("http", "https") and (
         host == "gem.gov.in" or host.endswith(".gem.gov.in")
     )
+
+
+_PRODUCT_PATH_RE = re.compile(r"^/[^/]+/[^/]+/p-\d+-\d+-cat\.html$", re.IGNORECASE)
+
+
+def looks_like_gem_product_url(url: str) -> bool:
+    """True only for a link to one GeM product page, not a search or listing."""
+    parts = urlparse((url or "").strip())
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in ("http", "https"):
+        return False
+    if host not in ("gem.gov.in",) and not host.endswith(".gem.gov.in"):
+        return False
+    return bool(_PRODUCT_PATH_RE.match(parts.path))

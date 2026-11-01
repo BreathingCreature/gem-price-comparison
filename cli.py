@@ -337,10 +337,10 @@ def main(argv=None) -> int:
         # the pipeline (and core.config) is imported.
         os.environ["GEM_STRICT"] = "1"
 
-    from core.gem_url import looks_like_gem_url
+    from core.gem_url import looks_like_gem_product_url
 
-    if not looks_like_gem_url(args.gem_url):
-        print("not a GeM product link", file=sys.stderr)
+    if not looks_like_gem_product_url(args.gem_url):
+        print("That is not a GeM product link. Open one product on GeM and paste its link.", file=sys.stderr)
         return 2
 
     from core import config, pipeline
