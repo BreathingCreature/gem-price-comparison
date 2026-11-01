@@ -34,6 +34,7 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin
 
@@ -419,10 +420,8 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
         error = f"{type(e).__name__}: {e}"
         logger.error("Amazon search failed for %r: %s", query, error)
     finally:
-        try:
+        with suppress(Exception):
             driver.quit()
-        except Exception:
-            pass
 
     if error:
         status, reason = None, None

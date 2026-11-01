@@ -20,8 +20,8 @@ import random
 import re
 import threading
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
@@ -482,10 +482,8 @@ def search(query: str, max_results: int = 15, max_pages: int = 3, product: set[s
     try:
         return _search_with_driver(driver, query, max_results=max_results, max_pages=max_pages, product=product)
     finally:
-        try:
+        with suppress(Exception):
             driver.quit()
-        except Exception:
-            pass
 
 
 def _build_default_driver():
@@ -574,10 +572,8 @@ class FlipkartBrowser:
         self._rebuilt = True
         old = self._driver
         if old is not None:
-            try:
+            with suppress(Exception):
                 old.quit()
-            except Exception:
-                pass
         logger.warning("Flipkart Chrome died — rebuilding it once for this run.")
         self._driver = self._build_driver()
 

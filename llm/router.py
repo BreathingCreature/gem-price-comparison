@@ -37,6 +37,7 @@ import re
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -189,10 +190,8 @@ def _write_state(used_up: dict[str, float], retired: dict[str, dict]) -> None:
             json.dump({"used_up": used_up, "retired": retired}, fh, indent=2, sort_keys=True)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -774,10 +773,8 @@ class Router:
             endpoint.total_seconds += seconds
             endpoint.fail_streak = 0
             if self._retired.pop(endpoint.name, None) is not None:
-                try:  # the provider brought the model back
+                with suppress(OSError):  # the provider brought the model back
                     _write_state(self._used_up, self._retired)
-                except OSError:
-                    pass
         events.emit("llm_call", endpoint=endpoint.name, provider=endpoint.provider, model=endpoint.model,
                     purpose=purpose, seconds=round(seconds, 2), ok=True)
         return raw

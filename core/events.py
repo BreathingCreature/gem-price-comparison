@@ -20,6 +20,7 @@ import time
 from contextlib import contextmanager
 from typing import Callable, Optional
 
+from core.config import logger
 from core.errors import redact_obj
 
 _current = contextvars.ContextVar("gem_event_sink", default=None)
@@ -32,6 +33,7 @@ class EventSink:
         self.events: list[dict] = []
         self._seq = 0
         self._lock = threading.Lock()
+        self._listener_error_logged = False
 
     def emit(self, type_: str, **data) -> dict:
         with self._lock:
@@ -42,9 +44,11 @@ class EventSink:
         if self.callback is not None:
             try:
                 self.callback(event)
-            except Exception:
+            except Exception as exc:
                 # A broken listener must never break a pipeline run.
-                pass
+                if not self._listener_error_logged:
+                    self._listener_error_logged = True
+                    logger.debug("Event listener failed: %s: %s", type(exc).__name__, exc)
         return event
 
 

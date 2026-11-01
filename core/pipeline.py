@@ -113,10 +113,6 @@ from core.candidates import dedup as _dedup  # noqa: E402
 from core.candidates import listing_identity as _listing_key  # noqa: E402
 from core.candidates import usable as _usable  # noqa: E402
 from core.searches import (  # noqa: E402
-    DIRECT_SEARCH_MIN_CANDIDATES,
-    MAX_GENERIC_CANDIDATES,
-    brief as _brief,
-    only_blocks as _only_blocks,
     record_search_health as _record_search_health,
     run_discovery_and_generic_scrape as _run_discovery_and_generic_scrape,
     search_direct as _search_direct,
@@ -482,7 +478,7 @@ def _shop_entries(
         retryable = (
             status in result_module.UNFINISHED_STATUSES
             or (status == result_module.SHOP_NOT_FOUND and nothing_found)
-        ) and not hard_failure and not (status == result_module.SHOP_FOUND)
+        ) and not hard_failure and status != result_module.SHOP_FOUND
         # The discovery lane's retry covers every other shop at once.
         retried_here = domain in retried or ("other" in retried and domain not in LANE_FOR_DOMAIN)
         if retried_here:

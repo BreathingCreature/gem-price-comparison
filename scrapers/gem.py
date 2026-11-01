@@ -215,7 +215,7 @@ def _extract_specs(soup: BeautifulSoup) -> dict:
     for dl in soup.select("dl"):
         keys = dl.find_all("dt")
         vals = dl.find_all("dd")
-        for k, v in zip(keys, vals):
+        for k, v in zip(keys, vals, strict=False):
             kt, vt = k.get_text(" ", strip=True), v.get_text(" ", strip=True)
             if kt and vt:
                 specs[kt] = vt

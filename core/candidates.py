@@ -19,9 +19,7 @@ def usable(candidate) -> bool:
     d = cand_dict(candidate)
     if not isinstance(d, dict):
         return False
-    if d.get("fetch_error") and not d.get("raw_page_text") and not d.get("structured_fields"):
-        return False
-    return True
+    return not (d.get("fetch_error") and not d.get("raw_page_text") and not d.get("structured_fields"))
 
 
 def listing_identity(url: str) -> str:

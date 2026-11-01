@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import LLM_CACHE_DIR as CACHE_DIR
-from core.config import LLM_CACHE_ENABLED as ENABLED
+from core.config import LLM_CACHE_ENABLED as ENABLED  # noqa: F401
 from core.config import LLM_CACHE_TAG as CACHE_TAG
 
 

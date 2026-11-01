@@ -74,9 +74,10 @@ def pick_matches(gem_title: str, gem_price, candidates: list[dict], *, threshold
     """The best listing per shop, if it is similar enough."""
     best: dict[str, tuple[float, dict]] = {}
     for c in candidates:
-        if price_band and gem_price and c["price"] is not None:
-            if not (gem_price * BAND_LOW <= c["price"] <= gem_price * BAND_HIGH):
-                continue
+        if price_band and gem_price and c["price"] is not None and not (
+            gem_price * BAND_LOW <= c["price"] <= gem_price * BAND_HIGH
+        ):
+            continue
         score = similarity(gem_title, c["title"])
         if score >= threshold and (c["domain"] not in best or score > best[c["domain"]][0]):
             best[c["domain"]] = (score, c)

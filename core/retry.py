@@ -20,9 +20,7 @@ def retryable_shops(shops: dict, *, nothing_found: bool) -> list[str]:
         if entry.get("retried") or not entry.get("retryable", True):
             continue
         status = entry.get("status")
-        if status in (SHOP_NOT_SEARCHED, SHOP_INCOMPLETE, SHOP_TIMED_OUT):
-            picked.append(name)
-        elif status == SHOP_NOT_FOUND and nothing_found:
+        if status in (SHOP_NOT_SEARCHED, SHOP_INCOMPLETE, SHOP_TIMED_OUT) or status == SHOP_NOT_FOUND and nothing_found:
             picked.append(name)
     return picked
 

@@ -1,3 +1,12 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+extend-exclude = ["tests"]
+
+[tool.ruff.lint]
+select = ["E9", "F", "B", "SIM"]
+ignore = ["SIM108"]

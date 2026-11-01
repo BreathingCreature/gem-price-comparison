@@ -1,3 +1,1 @@
-from core.config import *
-
-__all__ = []
+"""Core modules for the comparison pipeline."""

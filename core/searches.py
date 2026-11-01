@@ -9,13 +9,11 @@ from __future__ import annotations
 from functools import partial
 from typing import Optional
 
-import discovery
 from core import events, prefilter
 from core.candidates import cand_dict as _cand_dict
 from core.candidates import listing_identity as _listing_key
 from core.config import logger
 from core.parallel import run_many, run_pair
-from scrapers import generic as generic_scraper
 
 MAX_GENERIC_CANDIDATES = 8  # cap how many brand-site/discovery URLs get scraped per run
 DIRECT_SEARCH_MIN_CANDIDATES = 5

@@ -219,9 +219,12 @@ def score_row(row: dict, record: dict) -> dict:
             per_site[s["site"]][1] += 1
     for site in per_site:
         for s in slots:
-            if s["site"] == site and s["state"] == "urls":
-                if any(p[0] == site and p[1] in s["keys"] for p in preds):
-                    per_site[site][0] += 1
+            if (
+                s["site"] == site
+                and s["state"] == "urls"
+                and any(p[0] == site and p[1] in s["keys"] for p in preds)
+            ):
+                per_site[site][0] += 1
     other_wanted = any(s["site"] == "other" and s["state"] == "urls" for s in slots)
     other_any = other_wanted and any(p[0] == "other" and p[1] in other_keys for p in preds)
     return {
