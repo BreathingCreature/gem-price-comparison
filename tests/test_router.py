@@ -734,3 +734,34 @@ def test_status_shows_the_token_budget_and_the_moving_count():
     assert row["tokens_last_minute"] == 1500
 
 
+
+
+
+def test_counters_increment_once_per_attempt():
+    from openai import APIError
+
+    class FakeRequest:
+        pass
+
+    class FailingClient:
+        def __init__(self):
+            self.calls = 0
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise APIError("boom", request=FakeRequest(), body=None)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+    client = FailingClient()
+    router, clock = make_router({"a": client})
+    endpoint = router.endpoints[0]
+
+    assert router._call_endpoint(endpoint, MESSAGES, 100, "test") is None
+    clock.now += 30
+    assert router._call_endpoint(endpoint, MESSAGES, 100, "test") is None
+    clock.now += 30
+    assert router._call_endpoint(endpoint, MESSAGES, 100, "test") == "ok"
+    assert endpoint.calls == 1
+    assert endpoint.errors == 2
