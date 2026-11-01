@@ -1,0 +1,117 @@
+{
+  "events": [
+    "run_started",
+    "stage",
+    "gem_product",
+    "product_ready",
+    "stage",
+    "normalized",
+    "shop_started",
+    "shop_started",
+    "stage",
+    "search_started",
+    "search_finished",
+    "stage",
+    "search_started",
+    "search_finished",
+    "shop_started",
+    "stage",
+    "discovery_finished",
+    "stage",
+    "candidates_total",
+    "shop_finished",
+    "shop_finished",
+    "shop_finished",
+    "run_finished",
+    "retry_started",
+    "stage",
+    "retry_plan",
+    "run_updated",
+    "done"
+  ],
+  "result": {
+    "cheapest": null,
+    "compared_with": [
+      "other"
+    ],
+    "comparison": {
+      "cheapest_match_price": null,
+      "gem_price": 1000.0,
+      "gem_price_type": "fixed",
+      "savings_vs_gem": null
+    },
+    "from_cache": false,
+    "gem": {
+      "brand": "Demo",
+      "canonical_name": "Demo Mouse",
+      "described_by": "llm",
+      "model": null,
+      "price": {
+        "high": 1000.0,
+        "kind": "fixed",
+        "low": 1000.0
+      },
+      "title": "Demo Wireless Mouse",
+      "url": "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-300-400-cat.html"
+    },
+    "gem_product": {
+      "brand": "Demo",
+      "category_slug": "computer-mouse",
+      "currency": "INR",
+      "gem_price": 1000.0,
+      "gem_price_type": "fixed",
+      "model": null,
+      "product_slug": "demo-mouse",
+      "specs": {},
+      "title": "Demo Wireless Mouse",
+      "url": "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-300-400-cat.html"
+    },
+    "matches": [],
+    "not_found_on": [],
+    "possible_matches": [],
+    "result_version": 2,
+    "search_issues": [
+      "flipkart.com: blocked/CAPTCHA - scrape failed (not counted as 'not found')",
+      "amazon.in: blocked/CAPTCHA - scrape failed (not counted as 'not found')"
+    ],
+    "shops": {
+      "amazon.in": {
+        "checked": 0,
+        "dropped": 0,
+        "matches": 0,
+        "reason": "blocked/CAPTCHA",
+        "retried": false,
+        "retryable": true,
+        "seen": 0,
+        "status": "not_searched"
+      },
+      "flipkart.com": {
+        "checked": 0,
+        "dropped": 0,
+        "matches": 0,
+        "reason": "blocked/CAPTCHA",
+        "retried": false,
+        "retryable": true,
+        "seen": 0,
+        "status": "not_searched"
+      },
+      "other": {
+        "checked": 0,
+        "dropped": 0,
+        "matches": 0,
+        "reason": "searched, nothing confirmed",
+        "retried": false,
+        "retryable": true,
+        "seen": 0,
+        "status": "not_found"
+      }
+    },
+    "similar": [],
+    "skipped": [],
+    "state": "done",
+    "warnings": [
+      "amazon.in: not_searched (blocked/CAPTCHA)",
+      "flipkart.com: not_searched (blocked/CAPTCHA)"
+    ]
+  }
+}

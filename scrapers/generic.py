@@ -164,27 +164,20 @@ def _is_soft_404(title: str, h1: str) -> bool:
     return bool(_SOFT_404_404.search(text))
 
 
-def scrape(url: str, *, session: Optional[requests.Session] = None) -> CandidateResult:
-    # removeprefix, not replace: str.replace("www.", "") also strips a
-    # mid-host occurrence ("awww.com" -> "a.com").
-    domain = urlparse(url).netloc.lower().removeprefix("www.")
+def _failed(domain: str, url: str, message: str) -> CandidateResult:
+    return CandidateResult(
+        source_domain=domain,
+        url=url,
+        scraper_used="generic",
+        structured_fields=None,
+        raw_page_text=None,
+        fetch_error=message,
+    )
 
-    def failed(message: str) -> CandidateResult:
-        return CandidateResult(
-            source_domain=domain,
-            url=url,
-            scraper_used="generic",
-            structured_fields=None,
-            raw_page_text=None,
-            fetch_error=message,
-        )
 
-    if not _is_public_http_url(url):
-        logger.warning("generic scrape refused non-public URL %s", url)
-        return failed("refused: not a public http(s) URL")
-
+def _fetch(url: str, session: Optional[requests.Session]):
+    """Fetch the page, refusing private/non-http targets. Returns (response, error)."""
     sess = session or requests.Session()
-
     try:
         resp = sess.get(
             url,
@@ -194,27 +187,23 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
         resp.raise_for_status()
     except Exception as e:
         logger.warning("generic scrape failed for %s: %s: %s", url, type(e).__name__, e)
-        return failed(f"{type(e).__name__}: {e}")
+        return None, f"{type(e).__name__}: {e}"
 
     final_url = getattr(resp, "url", url) or url
     if not _is_public_http_url(final_url):
         logger.warning("generic scrape refused a redirect to %s", final_url)
-        return failed("refused: redirect to a private or non-http address")
+        return None, "refused: redirect to a private or non-http address"
+    return resp, None
 
-    # Limit raw text before parsing to avoid blowing memory on huge pages.
-    # resp.text is read-only on a real requests.Response, so the shortened
-    # copy lives in our own variable. Assigning to resp.text raised
-    # AttributeError on every live page (SCRP-01).
-    html = resp.text[:RAW_TEXT_CHAR_CAP]
-    soup = BeautifulSoup(html, "lxml")
 
-    linked = _jsonld_fields(soup)
-
+def _page_title(soup, linked: dict):
     h1_tag = soup.find("h1")
     h1_text = h1_tag.get_text(" ", strip=True) if h1_tag else ""
     meta_title = _meta_content(soup, "og:title") or (soup.title.get_text(strip=True) if soup.title else "")
-    title = linked.get("title") or meta_title or h1_text
+    return h1_text, linked.get("title") or meta_title or h1_text
 
+
+def _page_price(soup, linked: dict):
     price_text = (
         _meta_content(soup, "og:price:amount")
         or _meta_content(soup, "product:price:amount")
@@ -224,8 +213,10 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
     price = linked.get("price")
     if price is None:
         price = price_value
-    image_url = linked.get("image_url") or _meta_content(soup, "og:image") or None
+    return price
 
+
+def _page_currency(soup, linked: dict):
     # Currency from the page's own data - do NOT blindly claim INR. A
     # logitech.com/en-us page listing "39.99" (USD) once reached the matcher
     # tagged as INR and beat every real ₹ listing as "cheapest match".
@@ -237,11 +228,57 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
         or ""
     ).upper().strip()
     if currency_raw in ("", "INR", "RS", "₹", "RUPEES", "INR RUPEE"):
-        currency = "INR"
-        currency_assumed = not bool(currency_raw)
-    else:
-        currency = currency_raw
-        currency_assumed = False
+        return "INR", not bool(currency_raw)
+    return currency_raw, False
+
+
+def _structured_record(*, title, price, currency, image_url, linked: dict, currency_assumed: bool, page_not_found: bool):
+    if not (title or price is not None):
+        return None
+    structured = {
+        "title": title,
+        "price": price,
+        "currency": currency,
+        "seller": None,
+        "image_url": image_url,
+        "in_stock": linked.get("in_stock"),
+    }
+    if linked.get("brand"):
+        structured["brand"] = linked["brand"]
+    if currency_assumed:
+        structured["currency_assumed"] = True
+    if price is None:
+        structured["price_unknown"] = True
+    if page_not_found:
+        structured["page_not_found"] = True
+    return structured
+
+
+def scrape(url: str, *, session: Optional[requests.Session] = None) -> CandidateResult:
+    # removeprefix, not replace: str.replace("www.", "") also strips a
+    # mid-host occurrence ("awww.com" -> "a.com").
+    domain = urlparse(url).netloc.lower().removeprefix("www.")
+
+    if not _is_public_http_url(url):
+        logger.warning("generic scrape refused non-public URL %s", url)
+        return _failed(domain, url, "refused: not a public http(s) URL")
+
+    resp, error = _fetch(url, session)
+    if error is not None:
+        return _failed(domain, url, error)
+
+    # Limit raw text before parsing to avoid blowing memory on huge pages.
+    # resp.text is read-only on a real requests.Response, so the shortened
+    # copy lives in our own variable. Assigning to resp.text raised
+    # AttributeError on every live page (SCRP-01).
+    html = resp.text[:RAW_TEXT_CHAR_CAP]
+    soup = BeautifulSoup(html, "lxml")
+
+    linked = _jsonld_fields(soup)
+    h1_text, title = _page_title(soup, linked)
+    price = _page_price(soup, linked)
+    image_url = linked.get("image_url") or _meta_content(soup, "og:image") or None
+    currency, currency_assumed = _page_currency(soup, linked)
 
     page_not_found = _is_soft_404(title, h1_text)
     if page_not_found:
@@ -252,25 +289,15 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
         tag.decompose()
     raw_text = soup.get_text(" ", strip=True)[:RAW_TEXT_CHAR_CAP]
 
-    structured = None
-    if title or price is not None:
-        structured = {
-            "title": title,
-            "price": price,
-            "currency": currency,
-            "seller": None,
-            "image_url": image_url,
-            "in_stock": linked.get("in_stock"),
-        }
-        if linked.get("brand"):
-            structured["brand"] = linked["brand"]
-        if currency_assumed:
-            structured["currency_assumed"] = True
-        if price is None:
-            structured["price_unknown"] = True
-        if page_not_found:
-            structured["page_not_found"] = True
-
+    structured = _structured_record(
+        title=title,
+        price=price,
+        currency=currency,
+        image_url=image_url,
+        linked=linked,
+        currency_assumed=currency_assumed,
+        page_not_found=page_not_found,
+    )
     if not structured:
         logger.info("generic scrape got no structured signal from %s - relying on raw_page_text only.", url)
 

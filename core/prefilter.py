@@ -275,6 +275,73 @@ def _price_distance(price, gem_price: Optional[float]) -> float:
     return abs(price - gem_price) / gem_price
 
 
+def _prefilter_index(candidates: list):
+    titles: list[str] = []
+    by_shop: dict[str, list[int]] = {}
+    for index, candidate in enumerate(candidates):
+        d = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
+        fields = d.get("structured_fields")
+        title = str(fields.get("title") or "").strip() if isinstance(fields, dict) else ""
+        titles.append(title)
+        by_shop.setdefault(str(d.get("source_domain") or "?"), []).append(index)
+    return titles, by_shop
+
+
+def _drop_rule(tier_value: int, score: float, min_score: float) -> str:
+    if tier_value == 1:
+        return "over_model_cap"
+    if score < min_score:
+        return "not_relevant"
+    return "over_shop_cap"
+
+
+def _keep_shop(
+    indexes: list[int],
+    *,
+    candidates: list,
+    titles: list[str],
+    product: set[str],
+    normalized: dict,
+    gem_price: Optional[float],
+    non_model_limit: int,
+    keep: set[int],
+    dropped: list[dict],
+) -> None:
+    titled = [i for i in indexes if titles[i]]
+    keep.update(i for i in indexes if not titles[i])  # no title -> nothing to compare, always kept
+    if not titled:
+        return
+    scores = {i: similarity(titles[i], product) for i in titled}
+    tiers = {i: tier(titles[i], product) for i in titled}
+    prices = {i: _price_number(_candidate_price(candidates[i])) for i in titled}
+    min_score = min_relevant_score(normalized)
+    ranked = sorted(titled, key=lambda i: (tiers[i], -scores[i], len(_tokens(titles[i])), i))
+    model_hits = [i for i in ranked if tiers[i] == 1]
+    others = [i for i in ranked if tiers[i] != 1 and scores[i] >= min_score]
+    keep.update(others[:non_model_limit])
+    if len(model_hits) > MAX_MODEL_HITS_PER_SHOP:
+        # More model-code hits than the cap: keep the ones priced nearest
+        # the GeM product. Unknown prices sort last, not first.
+        model_hits = sorted(model_hits, key=lambda i: (_price_distance(prices[i], gem_price), -scores[i], i))
+    keep.update(model_hits[:MAX_MODEL_HITS_PER_SHOP])
+    if not any(i in keep for i in titled):
+        # SAFETY NET: the caps just emptied this shop.
+        keep.update(sorted(titled, key=lambda i: (-scores[i], tiers[i], len(_tokens(titles[i])), i))[:SAFETY_NET_KEEP])
+    for i in ranked:
+        if i in keep:
+            continue
+        d = candidates[i].to_dict() if hasattr(candidates[i], "to_dict") else candidates[i]
+        dropped.append({
+            "url": d.get("url"),
+            "source_domain": d.get("source_domain"),
+            "title": titles[i],
+            "price": _candidate_price(candidates[i]),
+            "score": round(scores[i], 3),
+            "tier": tiers[i],
+            "rule": _drop_rule(tiers[i], scores[i], min_score),
+        })
+
+
 def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[list, list]:
     """Keep the listings worth an LLM call, per source_domain.
 
@@ -294,14 +361,7 @@ def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[lis
 
     product = product_tokens(normalized)
     gem_price = _gem_price(normalized)
-    titles: list[str] = []
-    by_shop: dict[str, list[int]] = {}
-    for index, candidate in enumerate(candidates):
-        d = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
-        fields = d.get("structured_fields")
-        title = str(fields.get("title") or "").strip() if isinstance(fields, dict) else ""
-        titles.append(title)
-        by_shop.setdefault(str(d.get("source_domain") or "?"), []).append(index)
+    titles, by_shop = _prefilter_index(candidates)
 
     # A negative GEM_PREFILTER_TOP cannot happen (config clamps it), but the
     # arithmetic is written so the cap can never exceed the hard limit.
@@ -309,45 +369,17 @@ def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[lis
     keep: set[int] = set()
     dropped: list[dict] = []
     for indexes in by_shop.values():
-        titled = [i for i in indexes if titles[i]]
-        keep.update(i for i in indexes if not titles[i])  # no title -> nothing to compare, always kept
-        if not titled:
-            continue
-        scores = {i: similarity(titles[i], product) for i in titled}
-        tiers = {i: tier(titles[i], product) for i in titled}
-        prices = {i: _price_number(_candidate_price(candidates[i])) for i in titled}
-        min_score = min_relevant_score(normalized)
-        ranked = sorted(titled, key=lambda i: (tiers[i], -scores[i], len(_tokens(titles[i])), i))
-        model_hits = [i for i in ranked if tiers[i] == 1]
-        others = [i for i in ranked if tiers[i] != 1 and scores[i] >= min_score]
-        keep.update(others[:non_model_limit])
-        if len(model_hits) > MAX_MODEL_HITS_PER_SHOP:
-            # More model-code hits than the cap: keep the ones priced nearest
-            # the GeM product. Unknown prices sort last, not first.
-            model_hits = sorted(model_hits, key=lambda i: (_price_distance(prices[i], gem_price), -scores[i], i))
-        keep.update(model_hits[:MAX_MODEL_HITS_PER_SHOP])
-        if not any(i in keep for i in titled):
-            # SAFETY NET: the caps just emptied this shop.
-            keep.update(sorted(titled, key=lambda i: (-scores[i], tiers[i], len(_tokens(titles[i])), i))[:SAFETY_NET_KEEP])
-        for i in ranked:
-            if i in keep:
-                continue
-            d = candidates[i].to_dict() if hasattr(candidates[i], "to_dict") else candidates[i]
-            if tiers[i] == 1:
-                rule = "over_model_cap"
-            elif scores[i] < min_score:
-                rule = "not_relevant"
-            else:
-                rule = "over_shop_cap"
-            dropped.append({
-                "url": d.get("url"),
-                "source_domain": d.get("source_domain"),
-                "title": titles[i],
-                "price": _candidate_price(candidates[i]),
-                "score": round(scores[i], 3),
-                "tier": tiers[i],
-                "rule": rule,
-            })
+        _keep_shop(
+            indexes,
+            candidates=candidates,
+            titles=titles,
+            product=product,
+            normalized=normalized,
+            gem_price=gem_price,
+            non_model_limit=non_model_limit,
+            keep=keep,
+            dropped=dropped,
+        )
 
     events.emit("prefilter_finished", kept=len(keep), dropped=len(dropped), top=top)
     return [c for i, c in enumerate(candidates) if i in keep], dropped

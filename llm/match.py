@@ -193,31 +193,69 @@ def _price_number(value) -> float | None:
     return None
 
 
-def match_candidates(normalized: dict, candidates: list, *, client=None, verdict_cache=None) -> MatchBatchResult:
-    """normalized: a NormalizedProduct dict (from llm_client.normalize_product).
-    candidates: a list of CandidateResult objects or dicts (from any of the
-    The shop scrapers - flipkart.search()/amazon.search()'s .candidates, or
-    generic.scrape()'s single result wrapped in a list).
+def _fetch_failed(candidate_dict: dict) -> bool:
+    return bool(
+        candidate_dict.get("fetch_error")
+        and not candidate_dict.get("raw_page_text")
+        and not candidate_dict.get("structured_fields")
+    )
 
-    Listings are verified LLM_WORKERS at a time (GEM_LLM_WORKERS, default 4).
-    GEM_STRICT=1 keeps the old one-at-a-time path and turns the pre-filter
-    off upstream. The decisions and the events keep the candidate order
-    either way.
 
-    verdict_cache (optional dict) lets several shops share one run's verdicts:
-    the same listing title + price for the same product is never sent to the
-    LLM twice. Without it, one batch still dedupes against itself when
-    GEM_REUSE_VERDICTS is on (the default)."""
-    all_decisions: list[dict] = []
-    skipped: list[str] = []
-    not_checked: list[dict] = []
+def _hard_rejection(candidate_dict: dict, url, gem_price):
+    """A decision the gates can make without the LLM, or None to continue."""
+    # Currency hard-gate BEFORE burning an LLM call: explicit non-INR
+    # (e.g. generic scrape of a .com page tagged USD) can never confirm,
+    # even if its numeric price falls inside the sanity band below.
+    sf = candidate_dict.get("structured_fields") or {}
+    currency = str(sf.get("currency") or "").strip().upper() if hasattr(sf, "get") else ""
+    if GATES_ENABLED and currency not in _INR_CURRENCIES:
+        logger.warning("currency gate rejected %s: %s is not INR - not sending to LLM.", url, currency)
+        return {
+            "candidate_url": url,
+            "source_domain": candidate_dict.get("source_domain"),
+            "is_match": False,
+            "confidence": 0.0,
+            "reason": f"[hard-rejected: currency {currency} is not INR]",
+            "price_used": None,
+            "extraction_source": "scraper",
+        }
+    # Price pre-gate (GEM_PRICE_PREGATE): Amazon/Flipkart cards already
+    # carry the price - if it is outside the hard gate's band the LLM call
+    # would be thrown away anyway. Tied to GATES_ENABLED: with the gates
+    # off nothing would reject the listing, so nothing is skipped.
+    if PRICE_PREGATE and GATES_ENABLED and gem_price is not None:
+        price = _price_number(sf.get("price"))
+        if price is not None and (price < gem_price * PRICE_SANITY_LOW_RATIO or price > gem_price * PRICE_SANITY_HIGH_RATIO):
+            reason = f"[hard-rejected: price {price} outside {PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x GeM {gem_price}]"
+            events.emit("candidate_gate_rejected", url=url, reason=reason)
+            logger.warning("price pre-gate rejected %s: %s - not sending to the LLM.", url, reason)
+            return {
+                "candidate_url": url,
+                "source_domain": candidate_dict.get("source_domain"),
+                "is_match": False,
+                "confidence": 0.0,
+                "reason": reason,
+                "price_used": price,
+                "extraction_source": "scraper",
+            }
+    return None
+
+
+def _reused_decision(candidate_dict: dict, url, cached: dict) -> dict:
+    # Already answered in this run: same verdict, this listing's link.
+    return {
+        "candidate_url": url,
+        "source_domain": candidate_dict.get("source_domain"),
+        **cached,
+        "reused_verdict": True,
+    }
+
+
+def _screen_candidates(normalized: dict, candidates: list, verdict_cache, reuse: bool, gem_price):
+    """Decide which listings never need the LLM, and queue the rest."""
     outcomes: dict = {}  # position -> ("decision", dict) / ("skipped", (url, reason)) / ("not_checked", (url, reason))
     to_verify: list = []  # (position, candidate_dict, verdict key) - the ones that need the LLM
     waiting_reuse: list = []  # duplicates of a listing already queued in this batch
-    reuse = bool(REUSE_VERDICTS)
-    if reuse and verdict_cache is None:
-        verdict_cache = {}
-    gem_price = normalized.get("gem_price") if isinstance(normalized, dict) else None
 
     for position, candidate in enumerate(candidates, start=1):
         candidate_dict = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
@@ -235,96 +273,46 @@ def match_candidates(normalized: dict, candidates: list, *, client=None, verdict
         )
         # A fetch that failed has no evidence to judge - don't burn an LLM
         # call letting the model guess from the reference alone (it will).
-        if candidate_dict.get("fetch_error") and not candidate_dict.get("raw_page_text") and not candidate_dict.get(
-            "structured_fields"
-        ):
+        if _fetch_failed(candidate_dict):
             logger.info("skipping %s - fetch failed (%s), no evidence to verify against.", url, candidate_dict.get("fetch_error"))
             outcomes[position] = ("skipped", (url, f"fetch failed: {candidate_dict.get('fetch_error')}"))
             continue
-        # Currency hard-gate BEFORE burning an LLM call: explicit non-INR
-        # (e.g. generic scrape of a .com page tagged USD) can never confirm,
-        # even if its numeric price falls inside the sanity band below.
-        sf = candidate_dict.get("structured_fields") or {}
-        currency = str(sf.get("currency") or "").strip().upper() if hasattr(sf, "get") else ""
-        if GATES_ENABLED and currency not in _INR_CURRENCIES:
-            logger.warning("currency gate rejected %s: %s is not INR - not sending to LLM.", url, currency)
-            outcomes[position] = (
-                "decision",
-                {
-                    "candidate_url": url,
-                    "source_domain": candidate_dict.get("source_domain"),
-                    "is_match": False,
-                    "confidence": 0.0,
-                    "reason": f"[hard-rejected: currency {currency} is not INR]",
-                    "price_used": None,
-                    "extraction_source": "scraper",
-                },
-            )
+        rejected = _hard_rejection(candidate_dict, url, gem_price)
+        if rejected is not None:
+            outcomes[position] = ("decision", rejected)
             continue
-        # Price pre-gate (GEM_PRICE_PREGATE): Amazon/Flipkart cards already
-        # carry the price - if it is outside the hard gate's band the LLM call
-        # would be thrown away anyway. Tied to GATES_ENABLED: with the gates
-        # off nothing would reject the listing, so nothing is skipped.
-        if PRICE_PREGATE and GATES_ENABLED and gem_price is not None:
-            price = _price_number(sf.get("price"))
-            if price is not None and (price < gem_price * PRICE_SANITY_LOW_RATIO or price > gem_price * PRICE_SANITY_HIGH_RATIO):
-                reason = f"[hard-rejected: price {price} outside {PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x GeM {gem_price}]"
-                events.emit("candidate_gate_rejected", url=url, reason=reason)
-                logger.warning("price pre-gate rejected %s: %s - not sending to the LLM.", url, reason)
-                outcomes[position] = (
-                    "decision",
-                    {
-                        "candidate_url": url,
-                        "source_domain": candidate_dict.get("source_domain"),
-                        "is_match": False,
-                        "confidence": 0.0,
-                        "reason": reason,
-                        "price_used": price,
-                        "extraction_source": "scraper",
-                    },
-                )
-                continue
         key = _verdict_key(normalized, candidate_dict) if reuse else None
         cached = verdict_cache.get(key) if reuse and key is not None else None
         if cached is not None:
-            # Already answered in this run: same verdict, this listing's link.
-            decision = {
-                "candidate_url": url,
-                "source_domain": candidate_dict.get("source_domain"),
-                **cached,
-                "reused_verdict": True,
-            }
-            outcomes[position] = ("decision", decision)
+            outcomes[position] = ("decision", _reused_decision(candidate_dict, url, cached))
             events.emit("candidate_reused", url=url, domain=candidate_dict.get("source_domain"))
             continue
         if reuse and any(item[2] == key for item in to_verify):
             waiting_reuse.append((position, candidate_dict, key))
             continue
         to_verify.append((position, candidate_dict, key))
+    return outcomes, to_verify, waiting_reuse
 
-    def _verify(item):
-        position, candidate_dict, key = item
-        url = candidate_dict.get("url", "<unknown url>")
-        try:
-            decision = verify_or_extract(normalized, candidate_dict, client=client)
-        except GatewayError as e:
-            # The gateway itself is out of reach (busy or used up) - that is
-            # "not checked", not "rejected".
-            logger.warning("no LLM answer for %s: %s - not checked.", url, e)
-            return position, ("not_checked", (url, str(e)))
-        except Exception as e:
-            logger.warning("verify_or_extract failed for %s: %s: %s - skipping this candidate.", url, type(e).__name__, e)
-            return position, ("skipped", (url, f"{type(e).__name__}: {e}"))
-        if reuse and key is not None:
-            verdict_cache[key] = _decision_verdict(decision)
-        return position, ("decision", decision)
 
-    # Several listings at once when GEM_LLM_WORKERS > 1; run_many keeps the
-    # results in candidate order, so the report below reads the same either way.
-    workers = 1 if STRICT_MODE else LLM_WORKERS
-    for position, outcome in run_many([partial(_verify, item) for item in to_verify], workers=workers):
-        outcomes[position] = outcome
+def _verify_item(item, *, normalized: dict, client, reuse: bool, verdict_cache):
+    position, candidate_dict, key = item
+    url = candidate_dict.get("url", "<unknown url>")
+    try:
+        decision = verify_or_extract(normalized, candidate_dict, client=client)
+    except GatewayError as e:
+        # The gateway itself is out of reach (busy or used up) - that is
+        # "not checked", not "rejected".
+        logger.warning("no LLM answer for %s: %s - not checked.", url, e)
+        return position, ("not_checked", (url, str(e)))
+    except Exception as e:
+        logger.warning("verify_or_extract failed for %s: %s: %s - skipping this candidate.", url, type(e).__name__, e)
+        return position, ("skipped", (url, f"{type(e).__name__}: {e}"))
+    if reuse and key is not None:
+        verdict_cache[key] = _decision_verdict(decision)
+    return position, ("decision", decision)
 
+
+def _settle_waiting(waiting_reuse: list, outcomes: dict, verdict_cache) -> None:
     # Duplicates that waited for the first copy: take its verdict. If the
     # first one failed there is no verdict to reuse - report it as skipped,
     # never as "not found".
@@ -334,16 +322,14 @@ def match_candidates(normalized: dict, candidates: list, *, client=None, verdict
         if cached is None:
             outcomes[position] = ("skipped", (url, "duplicate listing had no verdict to reuse"))
             continue
-        outcomes[position] = (
-            "decision",
-            {
-                "candidate_url": url,
-                "source_domain": candidate_dict.get("source_domain"),
-                **cached,
-                "reused_verdict": True,
-            },
-        )
+        outcomes[position] = ("decision", _reused_decision(candidate_dict, url, cached))
 
+
+def _collect_outcomes(candidates: list, outcomes: dict):
+    """Turn the position map into ordered lists, emitting one event each."""
+    all_decisions: list[dict] = []
+    skipped: list[str] = []
+    not_checked: list[dict] = []
     for position in sorted(outcomes):
         kind, payload = outcomes[position]
         if kind == "not_checked":
@@ -361,46 +347,51 @@ def match_candidates(normalized: dict, candidates: list, *, client=None, verdict
                 _apply_scraper_price(decision, _cand_dict(candidates[position - 1]))
             all_decisions.append(decision)
             _emit_verdict(decision)
+    return all_decisions, skipped, not_checked
 
+
+def _apply_price_sanity(all_decisions: list, gem_price) -> None:
     # Hard price-sanity gate. The verify prompt asks the LLM to distrust
     # wild price gaps, but it confirmed a $39.99-parsed-as-₹39.99 match at
     # 95% confidence live - so enforce the band mechanically here. A
     # decision already marked is_match=False is left untouched.
-    if gem_price is not None and GATES_ENABLED:
-        for d in all_decisions:
-            if not d.get("is_match"):
-                continue
-            price = d.get("price_used")
-            if price is None:
-                continue
-            if price < gem_price * PRICE_SANITY_LOW_RATIO or price > gem_price * PRICE_SANITY_HIGH_RATIO:
-                d["is_match"] = False
-                events.emit(
-                    "candidate_gate_rejected",
-                    url=d.get("candidate_url"),
-                    reason=f"price {price} is outside {PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x the GeM price {gem_price}",
-                )
-                reason = d.get("reason") or ""
-                d["reason"] = (
-                    f"{reason} [hard-rejected: price {price} outside "
-                    f"{PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x GeM {gem_price}]"
-                ).strip()
-                logger.warning(
-                    "price-sanity gate rejected match at %s: price %s vs GeM %s (band %s-%sx).",
-                    d.get("candidate_url", "?"),
-                    price,
-                    gem_price,
-                    PRICE_SANITY_LOW_RATIO,
-                    PRICE_SANITY_HIGH_RATIO,
-                )
+    if gem_price is None or not GATES_ENABLED:
+        return
+    for d in all_decisions:
+        if not d.get("is_match"):
+            continue
+        price = d.get("price_used")
+        if price is None:
+            continue
+        if price < gem_price * PRICE_SANITY_LOW_RATIO or price > gem_price * PRICE_SANITY_HIGH_RATIO:
+            d["is_match"] = False
+            events.emit(
+                "candidate_gate_rejected",
+                url=d.get("candidate_url"),
+                reason=f"price {price} is outside {PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x the GeM price {gem_price}",
+            )
+            reason = d.get("reason") or ""
+            d["reason"] = (
+                f"{reason} [hard-rejected: price {price} outside "
+                f"{PRICE_SANITY_LOW_RATIO}-{PRICE_SANITY_HIGH_RATIO}x GeM {gem_price}]"
+            ).strip()
+            logger.warning(
+                "price-sanity gate rejected match at %s: price %s vs GeM %s (band %s-%sx).",
+                d.get("candidate_url", "?"),
+                price,
+                gem_price,
+                PRICE_SANITY_LOW_RATIO,
+                PRICE_SANITY_HIGH_RATIO,
+            )
 
+
+def _label_outcomes(all_decisions: list, candidates: list, normalized: dict, threshold: float) -> None:
     # every judged listing gets exactly one outcome. A "match" is
     # normally confirmed only with a real price (it enters the cheapest/savings
     # arithmetic); a same-product verdict with no price is confirmed only when
     # the listing itself proves the identity (model code / brand + two words),
     # and its price stays None. Everything else with no price is `possible`,
     # which is honest and still visible, instead of the old silent demotion.
-    threshold = MATCH_CONFIDENCE_THRESHOLD
     candidates_by_url = {}
     for candidate in candidates:
         candidate_dict = _cand_dict(candidate)
@@ -415,6 +406,8 @@ def match_candidates(normalized: dict, candidates: list, *, client=None, verdict
         if d["outcome"] == OUTCOME_POSSIBLE:
             d["why"] = _why_possible(d, threshold)
 
+
+def _select_outcomes(all_decisions: list):
     confirmed = [d for d in all_decisions if d["outcome"] == OUTCOME_MATCH]
     # Unknown prices (confirmed identity, no price on the page) sort last,
     # never first: the cheapest list must not treat "unknown" as "free".
@@ -427,6 +420,46 @@ def match_candidates(normalized: dict, candidates: list, *, client=None, verdict
             -float(d.get("confidence") or 0.0),
         )
     )
+    return confirmed, possible
+
+
+def match_candidates(normalized: dict, candidates: list, *, client=None, verdict_cache=None) -> MatchBatchResult:
+    """normalized: a NormalizedProduct dict (from llm_client.normalize_product).
+    candidates: a list of CandidateResult objects or dicts (from any of the
+    The shop scrapers - flipkart.search()/amazon.search()'s .candidates, or
+    generic.scrape()'s single result wrapped in a list).
+
+    Listings are verified LLM_WORKERS at a time (GEM_LLM_WORKERS, default 4).
+    GEM_STRICT=1 keeps the old one-at-a-time path and turns the pre-filter
+    off upstream. The decisions and the events keep the candidate order
+    either way.
+
+    verdict_cache (optional dict) lets several shops share one run's verdicts:
+    the same listing title + price for the same product is never sent to the
+    LLM twice. Without it, one batch still dedupes against itself when
+    GEM_REUSE_VERDICTS is on (the default)."""
+    reuse = bool(REUSE_VERDICTS)
+    if reuse and verdict_cache is None:
+        verdict_cache = {}
+    gem_price = normalized.get("gem_price") if isinstance(normalized, dict) else None
+
+    outcomes, to_verify, waiting_reuse = _screen_candidates(
+        normalized, candidates, verdict_cache, reuse, gem_price
+    )
+
+    # Several listings at once when GEM_LLM_WORKERS > 1; run_many keeps the
+    # results in candidate order, so the report below reads the same either way.
+    workers = 1 if STRICT_MODE else LLM_WORKERS
+    verify = partial(_verify_item, normalized=normalized, client=client, reuse=reuse, verdict_cache=verdict_cache)
+    for position, outcome in run_many([partial(verify, item) for item in to_verify], workers=workers):
+        outcomes[position] = outcome
+    _settle_waiting(waiting_reuse, outcomes, verdict_cache)
+
+    all_decisions, skipped, not_checked = _collect_outcomes(candidates, outcomes)
+    _apply_price_sanity(all_decisions, gem_price)
+    threshold = MATCH_CONFIDENCE_THRESHOLD
+    _label_outcomes(all_decisions, candidates, normalized, threshold)
+    confirmed, possible = _select_outcomes(all_decisions)
 
     return MatchBatchResult(
         all_decisions=all_decisions,

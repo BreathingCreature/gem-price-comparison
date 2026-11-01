@@ -1,0 +1,214 @@
+{
+  "cheapest": {
+    "bulk": false,
+    "price": 1149.0,
+    "saving_vs_gem": 150.0,
+    "shop": "flipkart.com",
+    "title": "Logitech M650 Wireless Mouse",
+    "url": "https://www.flipkart.com/demo-m650"
+  },
+  "compared_with": [
+    "amazon.in",
+    "example-shop.in",
+    "flipkart.com",
+    "indiamart.com",
+    "other"
+  ],
+  "comparison": {
+    "cheapest_match_price": 1149.0,
+    "gem_price": 1299.0,
+    "gem_price_type": "fixed",
+    "savings_vs_gem": 150.0
+  },
+  "from_cache": false,
+  "gem": {
+    "brand": "Logitech",
+    "canonical_name": "Logitech M650 Signature Wireless Mouse",
+    "described_by": "llm",
+    "model": "M650",
+    "price": {
+      "high": 1299.0,
+      "kind": "fixed",
+      "low": 1299.0
+    },
+    "title": "Logitech M650 Signature Wireless Mouse (Demo)",
+    "url": "https://mkp.gem.gov.in/demo/p-123.html"
+  },
+  "gem_product": {
+    "brand": "Logitech",
+    "category_slug": "computer-mouse",
+    "gem_price": 1299.0,
+    "gem_price_type": "fixed",
+    "model": "M650",
+    "specs": {
+      "Colour": "Graphite",
+      "Connectivity": "Bluetooth"
+    },
+    "title": "Logitech M650 Signature Wireless Mouse (Demo)",
+    "url": "https://mkp.gem.gov.in/demo/p-123.html"
+  },
+  "matches": [
+    {
+      "bulk": false,
+      "candidate_url": "https://www.flipkart.com/demo-m650",
+      "cheaper_than_gem": true,
+      "confidence": 0.94,
+      "delta_vs_gem": -150.0,
+      "extraction_source": "scraper",
+      "in_stock": true,
+      "is_match": true,
+      "outcome": "match",
+      "price": 1149.0,
+      "price_used": 1149.0,
+      "reason": "Same model number and a plausible price.",
+      "shop": "flipkart.com",
+      "source_domain": "flipkart.com",
+      "structured_fields": {
+        "currency": "INR",
+        "in_stock": true,
+        "price": 1149.0,
+        "title": "Logitech M650 Wireless Mouse"
+      },
+      "title": "Logitech M650 Wireless Mouse",
+      "url": "https://www.flipkart.com/demo-m650"
+    },
+    {
+      "bulk": false,
+      "candidate_url": "https://www.amazon.in/demo-m650",
+      "cheaper_than_gem": true,
+      "confidence": 0.94,
+      "delta_vs_gem": -100.0,
+      "extraction_source": "scraper",
+      "in_stock": true,
+      "is_match": true,
+      "outcome": "match",
+      "price": 1199.0,
+      "price_used": 1199.0,
+      "reason": "Same model number and a plausible price.",
+      "shop": "amazon.in",
+      "source_domain": "amazon.in",
+      "structured_fields": {
+        "currency": "INR",
+        "in_stock": true,
+        "price": 1199.0,
+        "title": "Logitech M650 Signature Wireless Mouse"
+      },
+      "title": "Logitech M650 Signature Wireless Mouse",
+      "url": "https://www.amazon.in/demo-m650"
+    },
+    {
+      "bulk": true,
+      "candidate_url": "https://www.indiamart.com/demo-m650",
+      "cheaper_than_gem": true,
+      "confidence": 0.94,
+      "delta_vs_gem": -50.0,
+      "extraction_source": "scraper",
+      "in_stock": true,
+      "is_match": true,
+      "outcome": "match",
+      "price": 1249.0,
+      "price_used": 1249.0,
+      "reason": "Same model number and a plausible price.",
+      "shop": "indiamart.com",
+      "source_domain": "indiamart.com",
+      "structured_fields": {
+        "currency": "INR",
+        "in_stock": true,
+        "price": 1249.0,
+        "title": "Logitech M650 Signature Wireless Mouse"
+      },
+      "title": "Logitech M650 Signature Wireless Mouse",
+      "url": "https://www.indiamart.com/demo-m650"
+    }
+  ],
+  "not_found_on": [
+    "example-shop.in"
+  ],
+  "possible_matches": [
+    {
+      "candidate_url": "https://www.amazon.in/demo-m650-pack2",
+      "confidence": 0.62,
+      "extraction_source": "scraper",
+      "in_stock": true,
+      "is_match": false,
+      "outcome": "possible",
+      "price": 2199.0,
+      "price_used": 2199.0,
+      "reason": "Different pack: this price is for two mice.",
+      "shop": "amazon.in",
+      "source_domain": "amazon.in",
+      "structured_fields": {
+        "currency": "INR",
+        "in_stock": true,
+        "price": 2199.0,
+        "title": "Logitech M650 Signature Wireless Mouse (Pack of 2)"
+      },
+      "title": "Logitech M650 Signature Wireless Mouse (Pack of 2)",
+      "url": "https://www.amazon.in/demo-m650-pack2",
+      "why": "different pack"
+    }
+  ],
+  "result_version": 2,
+  "run_id": "d3cf35a35d93482b",
+  "search_issues": [
+    "flipkart.com: blocked/CAPTCHA - scrape failed (not counted as 'not found')"
+  ],
+  "shops": {
+    "amazon.in": {
+      "checked": 3,
+      "dropped": 0,
+      "matches": 1,
+      "reason": "",
+      "retried": false,
+      "retryable": false,
+      "seen": 3,
+      "status": "found"
+    },
+    "example-shop.in": {
+      "checked": 1,
+      "dropped": 0,
+      "matches": 0,
+      "reason": "searched, nothing confirmed",
+      "retried": false,
+      "retryable": false,
+      "seen": 1,
+      "status": "not_found"
+    },
+    "flipkart.com": {
+      "checked": 1,
+      "dropped": 0,
+      "matches": 1,
+      "reason": "",
+      "retried": true,
+      "retryable": false,
+      "seen": 0,
+      "status": "found"
+    },
+    "indiamart.com": {
+      "checked": 1,
+      "dropped": 0,
+      "matches": 1,
+      "reason": "",
+      "retried": false,
+      "retryable": false,
+      "seen": 1,
+      "status": "found"
+    },
+    "other": {
+      "checked": 2,
+      "dropped": 0,
+      "matches": 0,
+      "reason": "no confirmed match in the final result",
+      "retried": false,
+      "retryable": false,
+      "seen": 2,
+      "status": "not_found"
+    }
+  },
+  "similar": [],
+  "skipped": [],
+  "state": "done",
+  "warnings": [
+    "indiamart.com is a B2B/bulk marketplace - its price may be wholesale, not retail."
+  ]
+}

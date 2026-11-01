@@ -50,6 +50,7 @@ import json
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -390,6 +391,201 @@ def _norm_domain(domain) -> str:
     return str(domain or "").lower().removeprefix("www.")
 
 
+@dataclass
+class _ShopFacts:
+    domain: str
+    results: list
+    candidates: list
+    seen: int
+    dropped: int
+    checked: int
+    matches: int
+    possibles: int
+    unchecked: int
+    lane_error: str
+    seconds: float | None
+
+
+def _shop_domains(generic_candidates) -> set:
+    domains = {"flipkart.com", "amazon.in"}
+    for candidate in generic_candidates or []:
+        domain = _norm_domain(_cand_dict(candidate).get("source_domain"))
+        if domain:
+            domains.add(domain)
+    return domains
+
+
+def _shop_sources(domain, flipkart_results, flipkart_candidates, amazon_results, amazon_candidates, generic_candidates):
+    if domain == "flipkart.com":
+        return list(flipkart_results or ()), list(flipkart_candidates or ())
+    if domain == "amazon.in":
+        return list(amazon_results or ()), list(amazon_candidates or ())
+    results = []
+    candidates = [
+        c for c in (generic_candidates or ()) if _norm_domain(_cand_dict(c).get("source_domain")) == domain
+    ]
+    return results, candidates
+
+
+def _shop_counts(domain, candidates, decisions, confirmed, possible, skipped, prefilter_dropped):
+    seen_keys = {_listing_key(_cand_dict(c).get("url")) for c in candidates}
+    seen = len([key for key in seen_keys if key])
+    dropped = sum(1 for d in (prefilter_dropped or ()) if _norm_domain(d.get("source_domain")) == domain)
+    checked = sum(1 for d in decisions if _norm_domain(d.get("source_domain")) == domain)
+    matches = sum(1 for d in confirmed if _norm_domain(d.get("source_domain")) == domain)
+    possibles = sum(1 for d in possible if _norm_domain(d.get("source_domain")) == domain)
+    unchecked = sum(
+        1 for url in skipped if isinstance(url, str) and _norm_domain(urlparse(url).netloc) == domain
+    )
+    return seen, dropped, checked, matches, possibles, unchecked
+
+
+def _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds) -> _ShopFacts:
+    seen, dropped, checked, matches, possibles, unchecked = counts
+    lane = LANE_FOR_DOMAIN.get(domain, "other_shops")
+    return _ShopFacts(
+        domain=domain,
+        results=results,
+        candidates=candidates,
+        seen=seen,
+        dropped=dropped,
+        checked=checked,
+        matches=matches,
+        possibles=possibles,
+        unchecked=unchecked,
+        lane_error=lane_error,
+        seconds=(lane_seconds or {}).get(lane),
+    )
+
+
+def _shop_status(facts: _ShopFacts) -> tuple[str, str]:
+    blocked = [r for r in facts.results if _cand_dict(r).get("blocked")]
+    errored = [r for r in facts.results if _cand_dict(r).get("error")]
+    if facts.matches:
+        return result_module.SHOP_FOUND, ""
+    if blocked:
+        return result_module.SHOP_NOT_SEARCHED, "blocked/CAPTCHA"
+    if errored:
+        return result_module.SHOP_NOT_SEARCHED, str(_cand_dict(errored[0]).get("error"))
+    if facts.lane_error:
+        return result_module.SHOP_INCOMPLETE, facts.lane_error
+    if facts.seconds is not None and facts.seconds > LANE_TIME_LIMIT_SECONDS:
+        return (
+            result_module.SHOP_TIMED_OUT,
+            f"lane took {facts.seconds:.0f} s (limit {LANE_TIME_LIMIT_SECONDS:.0f} s)",
+        )
+    if facts.unchecked:
+        return result_module.SHOP_INCOMPLETE, f"{facts.unchecked} listing(s) could not be checked"
+    if facts.possibles:
+        return result_module.SHOP_POSSIBLE, f"{facts.possibles} possible listing(s), none confirmed"
+    if facts.seen == 0 and not facts.results:
+        return result_module.SHOP_NOT_SEARCHED, "the search returned no listings"
+    return result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
+
+
+def _shop_retryable(facts: _ShopFacts, status: str, nothing_found: bool, retried: set) -> tuple[bool, bool]:
+    # A lane that CRASHED is not retried: the same call would crash again.
+    # A blocked/errored search IS retryable - new words may
+    # reach a shop the first query could not.
+    hard_failure = bool(facts.lane_error)
+    retryable = (
+        status in result_module.UNFINISHED_STATUSES
+        or (status == result_module.SHOP_NOT_FOUND and nothing_found)
+    ) and not hard_failure and status != result_module.SHOP_FOUND
+    # The discovery lane's retry covers every other shop at once.
+    retried_here = facts.domain in retried or ("other" in retried and facts.domain not in LANE_FOR_DOMAIN)
+    if retried_here:
+        # One retry per shop per run: the flag tells the caller there is
+        # nothing left to spend on this shop.
+        retryable = False
+    return retryable, retried_here
+
+
+def _shop_card(facts: _ShopFacts, status: str, reason: str, retryable: bool, retried_here: bool) -> dict:
+    return result_module.shop_entry(
+        status=status,
+        reason=reason,
+        seen=facts.seen,
+        dropped=facts.dropped,
+        checked=facts.checked,
+        matches=facts.matches,
+        retried=retried_here,
+        retryable=retryable,
+        seconds=facts.seconds,
+    )
+
+
+def _discovery_summary(discovery_results):
+    rows = [
+        r.to_dict() if hasattr(r, "to_dict") else r
+        for r in (discovery_results if isinstance(discovery_results, (list, tuple)) else [])
+    ]
+    blocked = any(r.get("blocked") for r in rows if isinstance(r, dict))
+    urls = sum(
+        len(r.get("filtered_urls") or r.get("urls") or r.get("raw_urls") or [])
+        for r in rows
+        if isinstance(r, dict)
+    )
+    # Every query failed at the search backend (DDG on cooldown, Brave 429,
+    # "no result links could be parsed"): no shop was actually looked at, so
+    # the card must not claim "searched, nothing confirmed".
+    failed = bool(rows) and not urls and all(
+        r.get("blocked") or r.get("error") for r in rows if isinstance(r, dict)
+    )
+    return blocked, failed
+
+
+def _other_status(*, discovered, other_lane_error, discovery_blocked, discovery_failed, generic_entries):
+    if not discovered:
+        return result_module.SHOP_NOT_SEARCHED, "discovery is switched off"
+    if other_lane_error:
+        return result_module.SHOP_INCOMPLETE, other_lane_error
+    if discovery_blocked:
+        return result_module.SHOP_NOT_SEARCHED, "discovery blocked/CAPTCHA"
+    if discovery_failed:
+        return result_module.SHOP_NOT_SEARCHED, "the web search failed, so other shops were not searched"
+    if any(e["status"] == result_module.SHOP_FOUND for e in generic_entries):
+        return result_module.SHOP_FOUND, ""
+    if any(e["status"] in result_module.UNFINISHED_STATUSES for e in generic_entries):
+        return result_module.SHOP_INCOMPLETE, "some other shops could not be searched"
+    if any(e["status"] == result_module.SHOP_POSSIBLE for e in generic_entries):
+        return result_module.SHOP_POSSIBLE, "possible listings only"
+    return result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
+
+
+def _other_entry(*, entries, discovery_results, lane_errors, lane_seconds, retried, nothing_found, discovered):
+    generic_entries = [
+        e
+        for name, e in entries.items()
+        if name not in LANE_FOR_DOMAIN.values() and name not in ("flipkart.com", "amazon.in")
+    ]
+    other_lane_error = next((e for e in (lane_errors or []) if str(e).startswith("other_shops")), "")
+    discovery_blocked, discovery_failed = _discovery_summary(discovery_results)
+    other_status, other_reason = _other_status(
+        discovered=discovered,
+        other_lane_error=other_lane_error,
+        discovery_blocked=discovery_blocked,
+        discovery_failed=discovery_failed,
+        generic_entries=generic_entries,
+    )
+    other_retryable = (
+        other_status in result_module.UNFINISHED_STATUSES and discovered and not other_lane_error
+    ) or (other_status == result_module.SHOP_NOT_FOUND and nothing_found)
+    if "other" in retried:
+        other_retryable = False
+    return result_module.shop_entry(
+        status=other_status,
+        reason=other_reason,
+        seen=sum(e["seen"] for e in generic_entries),
+        dropped=sum(e["dropped"] for e in generic_entries),
+        checked=sum(e["checked"] for e in generic_entries),
+        matches=sum(e["matches"] for e in generic_entries),
+        retried="other" in retried,
+        retryable=other_retryable,
+        seconds=(lane_seconds or {}).get("other_shops"),
+    )
+
+
 def _shop_entries(
     *,
     flipkart_results,
@@ -418,137 +614,90 @@ def _shop_entries(
     possible = list(getattr(match_result, "possible_matches", None) or [])
     skipped = list(getattr(match_result, "skipped", None) or [])
 
-    domains = {"flipkart.com", "amazon.in"}
-    for candidate in generic_candidates or []:
-        domain = _norm_domain(_cand_dict(candidate).get("source_domain"))
-        if domain:
-            domains.add(domain)
-
     entries: dict = {}
-    for domain in sorted(domains):
-        if domain == "flipkart.com":
-            results, candidates = list(flipkart_results or ()), list(flipkart_candidates or ())
-        elif domain == "amazon.in":
-            results, candidates = list(amazon_results or ()), list(amazon_candidates or ())
-        else:
-            results = []
-            candidates = [
-                c for c in (generic_candidates or []) if _norm_domain(_cand_dict(c).get("source_domain")) == domain
-            ]
-
-        seen_keys = {_listing_key(_cand_dict(c).get("url")) for c in candidates}
-        seen = len([key for key in seen_keys if key])
-        dropped = sum(1 for d in (prefilter_dropped or ()) if _norm_domain(d.get("source_domain")) == domain)
-        checked = sum(1 for d in decisions if _norm_domain(d.get("source_domain")) == domain)
-        matches = sum(1 for d in confirmed if _norm_domain(d.get("source_domain")) == domain)
-        possibles = sum(1 for d in possible if _norm_domain(d.get("source_domain")) == domain)
-        unchecked = sum(
-            1 for url in skipped if isinstance(url, str) and _norm_domain(urlparse(url).netloc) == domain
+    for domain in sorted(_shop_domains(generic_candidates)):
+        results, candidates = _shop_sources(
+            domain,
+            flipkart_results,
+            flipkart_candidates,
+            amazon_results,
+            amazon_candidates,
+            generic_candidates,
         )
+        counts = _shop_counts(domain, candidates, decisions, confirmed, possible, skipped, prefilter_dropped)
         lane = LANE_FOR_DOMAIN.get(domain, "other_shops")
-        seconds = (lane_seconds or {}).get(lane)
-        blocked = [r for r in results if _cand_dict(r).get("blocked")]
-        errored = [r for r in results if _cand_dict(r).get("error")]
         lane_error = next((e for e in (lane_errors or []) if str(e).startswith(lane)), "")
-        # A lane that CRASHED is not retried: the same call would crash again.
-        # A blocked/errored search IS retryable - new words may
-        # reach a shop the first query could not.
-        hard_failure = bool(lane_error)
-
-        if matches:
-            status, reason = result_module.SHOP_FOUND, ""
-        elif blocked:
-            status, reason = result_module.SHOP_NOT_SEARCHED, "blocked/CAPTCHA"
-        elif errored:
-            status, reason = result_module.SHOP_NOT_SEARCHED, str(_cand_dict(errored[0]).get("error"))
-        elif lane_error:
-            status, reason = result_module.SHOP_INCOMPLETE, lane_error
-        elif seconds is not None and seconds > LANE_TIME_LIMIT_SECONDS:
-            status, reason = result_module.SHOP_TIMED_OUT, f"lane took {seconds:.0f} s (limit {LANE_TIME_LIMIT_SECONDS:.0f} s)"
-        elif unchecked:
-            status, reason = result_module.SHOP_INCOMPLETE, f"{unchecked} listing(s) could not be checked"
-        elif possibles:
-            status, reason = result_module.SHOP_POSSIBLE, f"{possibles} possible listing(s), none confirmed"
-        elif seen == 0 and not results:
-            status, reason = result_module.SHOP_NOT_SEARCHED, "the search returned no listings"
-        else:
-            status, reason = result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
-
-        retryable = (
-            status in result_module.UNFINISHED_STATUSES
-            or (status == result_module.SHOP_NOT_FOUND and nothing_found)
-        ) and not hard_failure and status != result_module.SHOP_FOUND
-        # The discovery lane's retry covers every other shop at once.
-        retried_here = domain in retried or ("other" in retried and domain not in LANE_FOR_DOMAIN)
-        if retried_here:
-            # One retry per shop per run: the flag tells the caller there is
-            # nothing left to spend on this shop.
-            retryable = False
-
-        entries[domain] = result_module.shop_entry(
-            status=status,
-            reason=reason,
-            seen=seen,
-            dropped=dropped,
-            checked=checked,
-            matches=matches,
-            retried=retried_here,
-            retryable=retryable,
-            seconds=seconds,
-        )
+        facts = _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds)
+        status, reason = _shop_status(facts)
+        retryable, retried_here = _shop_retryable(facts, status, nothing_found, retried)
+        entries[domain] = _shop_card(facts, status, reason, retryable, retried_here)
 
     # The discovery lane itself, summarised: a crash there is not any one
     # shop's fault, and the page needs one card that says so.
-    generic_entries = [e for name, e in entries.items() if name not in LANE_FOR_DOMAIN.values() and name not in ("flipkart.com", "amazon.in")]
-    other_lane_error = next((e for e in (lane_errors or []) if str(e).startswith("other_shops")), "")
-    discovery_rows = [
-        r.to_dict() if hasattr(r, "to_dict") else r for r in (discovery_results if isinstance(discovery_results, (list, tuple)) else [])
-    ]
-    discovery_blocked = any(r.get("blocked") for r in discovery_rows if isinstance(r, dict))
-    discovery_urls = sum(
-        len(r.get("filtered_urls") or r.get("urls") or r.get("raw_urls") or [])
-        for r in discovery_rows
-        if isinstance(r, dict)
-    )
-    # Every query failed at the search backend (DDG on cooldown, Brave 429,
-    # "no result links could be parsed"): no shop was actually looked at, so
-    # the card must not claim "searched, nothing confirmed".
-    discovery_failed = bool(discovery_rows) and not discovery_urls and all(
-        r.get("blocked") or r.get("error") for r in discovery_rows if isinstance(r, dict)
-    )
-    if not discovered:
-        other_status, other_reason = result_module.SHOP_NOT_SEARCHED, "discovery is switched off"
-    elif other_lane_error:
-        other_status, other_reason = result_module.SHOP_INCOMPLETE, other_lane_error
-    elif discovery_blocked:
-        other_status, other_reason = result_module.SHOP_NOT_SEARCHED, "discovery blocked/CAPTCHA"
-    elif discovery_failed:
-        other_status, other_reason = result_module.SHOP_NOT_SEARCHED, "the web search failed, so other shops were not searched"
-    elif any(e["status"] == result_module.SHOP_FOUND for e in generic_entries):
-        other_status, other_reason = result_module.SHOP_FOUND, ""
-    elif any(e["status"] in result_module.UNFINISHED_STATUSES for e in generic_entries):
-        other_status, other_reason = result_module.SHOP_INCOMPLETE, "some other shops could not be searched"
-    elif any(e["status"] == result_module.SHOP_POSSIBLE for e in generic_entries):
-        other_status, other_reason = result_module.SHOP_POSSIBLE, "possible listings only"
-    else:
-        other_status, other_reason = result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
-    other_retryable = (
-        other_status in result_module.UNFINISHED_STATUSES and discovered and not other_lane_error
-    ) or (other_status == result_module.SHOP_NOT_FOUND and nothing_found)
-    if "other" in retried:
-        other_retryable = False
-    entries["other"] = result_module.shop_entry(
-        status=other_status,
-        reason=other_reason,
-        seen=sum(e["seen"] for e in generic_entries),
-        dropped=sum(e["dropped"] for e in generic_entries),
-        checked=sum(e["checked"] for e in generic_entries),
-        matches=sum(e["matches"] for e in generic_entries),
-        retried="other" in retried,
-        retryable=other_retryable,
-        seconds=(lane_seconds or {}).get("other_shops"),
+    entries["other"] = _other_entry(
+        entries=entries,
+        discovery_results=discovery_results,
+        lane_errors=lane_errors,
+        lane_seconds=lane_seconds,
+        retried=retried,
+        nothing_found=nothing_found,
+        discovered=discovered,
     )
     return entries
+
+def _aggregate_domains(confirmed, possible, skipped):
+    matched_domains = {_norm_domain(m.get("source_domain")) for m in confirmed}
+    possible_domains = {_norm_domain(m.get("source_domain")) for m in possible if m.get("source_domain")}
+    skipped_domains: set = set()
+    for url in skipped:
+        if isinstance(url, str) and url.startswith("http"):
+            domain = _norm_domain(urlparse(url).netloc)
+            if domain:
+                skipped_domains.add(domain)
+    return matched_domains, possible_domains, skipped_domains
+
+
+def _not_found_and_issues(tried_domains, matched_domains, possible_domains, skipped_domains, search_issues):
+    verify_incomplete = sorted((tried_domains - matched_domains) & skipped_domains)
+    not_found_on = sorted(tried_domains - matched_domains - skipped_domains - possible_domains)
+    for domain in verify_incomplete:
+        search_issues.append(f"{domain}: candidates skipped (verify incomplete) - not counted as 'not found'")
+    for domain in sorted((tried_domains - matched_domains) & possible_domains):
+        search_issues.append(f"{domain}: possibly the same product (not confirmed) - not counted as 'not found'")
+
+    seen_issues: set = set()
+    search_issues[:] = [i for i in search_issues if not (i in seen_issues or seen_issues.add(i))]
+    return not_found_on
+
+
+def _price_flags(gem_product_dict, confirmed, warnings):
+    gem_price = gem_product_dict.get("gem_price")
+    if gem_price is None:
+        message = "GeM price not extracted - price-sanity gate is OFF and savings comparison unavailable."
+        if message not in warnings:
+            warnings.append(message)
+    for match in confirmed:
+        price = match.get("price_used")
+        if gem_price is not None and price is not None:
+            match["delta_vs_gem"] = price - gem_price
+            match["cheaper_than_gem"] = price < gem_price
+        match["bulk"] = _norm_domain(match.get("source_domain") or match.get("shop")) in BULK_MARKETPLACES
+    bulk_domains = sorted({_norm_domain(m.get("source_domain")) for m in confirmed if m.get("bulk")})
+    for domain in bulk_domains:
+        message = f"{domain} is a B2B/bulk marketplace - its price may be wholesale, not retail."
+        if message not in warnings:
+            warnings.append(message)
+    return gem_price
+
+
+def _comparison(gem_price, gem_product_dict, confirmed):
+    priced = [m.get("price_used") for m in confirmed if m.get("price_used") is not None]
+    return {
+        "gem_price": gem_price,
+        "gem_price_type": gem_product_dict.get("gem_price_type", "unknown"),
+        "cheapest_match_price": min(priced) if priced else None,
+        "savings_vs_gem": (gem_price - min(priced)) if (gem_price is not None and priced) else None,
+    }
 
 
 def _aggregate(
@@ -572,49 +721,16 @@ def _aggregate(
     possible = list(getattr(match_result, "possible_matches", None) or [])
     skipped = list(getattr(match_result, "skipped", None) or [])
 
-    matched_domains = {_norm_domain(m.get("source_domain")) for m in confirmed}
-    possible_domains = {_norm_domain(m.get("source_domain")) for m in possible if m.get("source_domain")}
-    skipped_domains: set = set()
-    for url in skipped:
-        if isinstance(url, str) and url.startswith("http"):
-            domain = _norm_domain(urlparse(url).netloc)
-            if domain:
-                skipped_domains.add(domain)
-
-    verify_incomplete = sorted((tried_domains - matched_domains) & skipped_domains)
-    not_found_on = sorted(tried_domains - matched_domains - skipped_domains - possible_domains)
-    for domain in verify_incomplete:
-        search_issues.append(f"{domain}: candidates skipped (verify incomplete) - not counted as 'not found'")
-    for domain in sorted((tried_domains - matched_domains) & possible_domains):
-        search_issues.append(f"{domain}: possibly the same product (not confirmed) - not counted as 'not found'")
-
-    seen_issues: set = set()
-    deduped = [i for i in search_issues if not (i in seen_issues or seen_issues.add(i))]
-    search_issues[:] = deduped
-
-    gem_price = gem_product_dict.get("gem_price")
-    if gem_price is None:
-        message = "GeM price not extracted - price-sanity gate is OFF and savings comparison unavailable."
-        if message not in warnings:
-            warnings.append(message)
-    for match in confirmed:
-        price = match.get("price_used")
-        if gem_price is not None and price is not None:
-            match["delta_vs_gem"] = price - gem_price
-            match["cheaper_than_gem"] = price < gem_price
-        match["bulk"] = _norm_domain(match.get("source_domain") or match.get("shop")) in BULK_MARKETPLACES
-    bulk_domains = sorted({_norm_domain(m.get("source_domain")) for m in confirmed if m.get("bulk")})
-    for domain in bulk_domains:
-        message = f"{domain} is a B2B/bulk marketplace - its price may be wholesale, not retail."
-        if message not in warnings:
-            warnings.append(message)
-    priced = [m.get("price_used") for m in confirmed if m.get("price_used") is not None]
-    comparison = {
-        "gem_price": gem_price,
-        "gem_price_type": gem_product_dict.get("gem_price_type", "unknown"),
-        "cheapest_match_price": min(priced) if priced else None,
-        "savings_vs_gem": (gem_price - min(priced)) if (gem_price is not None and priced) else None,
-    }
+    matched_domains, possible_domains, skipped_domains = _aggregate_domains(confirmed, possible, skipped)
+    not_found_on = _not_found_and_issues(
+        tried_domains,
+        matched_domains,
+        possible_domains,
+        skipped_domains,
+        search_issues,
+    )
+    gem_price = _price_flags(gem_product_dict, confirmed, warnings)
+    comparison = _comparison(gem_price, gem_product_dict, confirmed)
 
     result = result_module.build_result(
         gem_url=gem_url,
@@ -634,7 +750,6 @@ def _aggregate(
         trace_id=trace_id,
     )
     return result, confirmed, possible
-
 
 def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: str):
     """One lane's own listings, checked the moment they arrive (GEM_PARALLEL=1).
@@ -777,47 +892,54 @@ def _run_first_pass_lanes(
     return lane_results
 
 
-def _merge_match_results(lane_results: list):
-    """Merge the per-lane match batches (GEM_PARALLEL=1). The same listing can
-    be checked by two lanes (a Flipkart URL arriving from both the direct
-    search and discovery), so decisions are deduped by _listing_key - the
-    first lane's copy wins. Confirmed matches are re-sorted cheapest first,
-    like the matcher does within one batch."""
+def _lane_value(lane, name):
+    return lane.get(name) if isinstance(lane, dict) else getattr(lane, name, None)
+
+
+def _merge_lane_decisions(lane_results: list):
     kept: list = []
     kept_ids: set = set()
     seen_keys: set = set()
-    skipped: list[str] = []
-    seen_skipped: set = set()
     for lane in lane_results:
-        decisions = lane.get("all_decisions") if isinstance(lane, dict) else getattr(lane, "all_decisions", None)
-        for d in decisions or []:
+        for d in _lane_value(lane, "all_decisions") or []:
             key = _listing_key(d.get("candidate_url")) or f"__noid_{len(kept)}"
             if key in seen_keys:
                 continue
             seen_keys.add(key)
             kept.append(d)
             kept_ids.add(id(d))
-        lane_skipped = lane.get("skipped") if isinstance(lane, dict) else getattr(lane, "skipped", None)
-        for u in lane_skipped or []:
+    return kept, kept_ids
+
+
+def _merge_skipped(lane_results: list) -> list:
+    skipped: list[str] = []
+    seen_skipped: set = set()
+    for lane in lane_results:
+        for u in _lane_value(lane, "skipped") or []:
             key = _listing_key(u) or f"__noid_skip_{len(skipped)}"
             if key in seen_skipped:
                 continue
             seen_skipped.add(key)
             skipped.append(u)
+    return skipped
 
+
+def _merge_confirmed(lane_results: list, kept_ids: set) -> list:
     confirmed: list = []
     for lane in lane_results:
-        matches = lane.get("confirmed_matches") if isinstance(lane, dict) else getattr(lane, "confirmed_matches", None)
         # A lane's confirmed entry is the SAME dict object as its all_decisions
         # entry - a duplicate dropped above must not reappear here.
-        for d in matches or []:
+        for d in _lane_value(lane, "confirmed_matches") or []:
             if id(d) in kept_ids:
                 confirmed.append(d)
     confirmed.sort(key=lambda d: d.get("price_used") if d.get("price_used") is not None else float("inf"))
+    return confirmed
+
+
+def _merge_possible(lane_results: list, kept_ids: set) -> list:
     possible: list = []
     for lane in lane_results:
-        entries = lane.get("possible_matches") if isinstance(lane, dict) else getattr(lane, "possible_matches", None)
-        for d in entries or []:
+        for d in _lane_value(lane, "possible_matches") or []:
             if id(d) in kept_ids:
                 possible.append(d)
     possible.sort(
@@ -826,24 +948,36 @@ def _merge_match_results(lane_results: list):
             d.get("price_used") if d.get("price_used") is not None else 0.0,
         )
     )
+    return possible
+
+
+def _merge_not_checked(lane_results: list) -> list:
     not_checked: list[str] = []
     seen_not_checked: set = set()
     for lane in lane_results:
-        entries = lane.get("not_checked") if isinstance(lane, dict) else getattr(lane, "not_checked", None)
-        for u in entries or []:
+        for u in _lane_value(lane, "not_checked") or []:
             key = _listing_key(u) or f"__noid_nc_{len(not_checked)}"
             if key in seen_not_checked:
                 continue
             seen_not_checked.add(key)
             not_checked.append(u)
+    return not_checked
+
+
+def _merge_match_results(lane_results: list):
+    """Merge the per-lane match batches (GEM_PARALLEL=1). The same listing can
+    be checked by two lanes (a Flipkart URL arriving from both the direct
+    search and discovery), so decisions are deduped by _listing_key - the
+    first lane's copy wins. Confirmed matches are re-sorted cheapest first,
+    like the matcher does within one batch."""
+    kept, kept_ids = _merge_lane_decisions(lane_results)
     return matcher.MatchBatchResult(
         all_decisions=kept,
-        confirmed_matches=confirmed,
-        skipped=skipped,
-        possible_matches=possible,
-        not_checked=not_checked,
+        confirmed_matches=_merge_confirmed(lane_results, kept_ids),
+        skipped=_merge_skipped(lane_results),
+        possible_matches=_merge_possible(lane_results, kept_ids),
+        not_checked=_merge_not_checked(lane_results),
     )
-
 
 def _merge_rows(first: list, second: list) -> list:
     """Rows from two passes, first occurrence wins (by URL, else identity)."""
@@ -867,6 +1001,651 @@ def _merge_decisions(first: list, second: list) -> list:
 
 # --- main entry point --------------------------------------------------------------
 
+@dataclass
+class RunContext:
+    """One run's shared state, carried from phase to phase."""
+
+    gem_url: str
+    refresh: bool
+    use_cache: bool
+    trace_id: str
+    trace: dict
+    warnings: list = field(default_factory=list)
+    lane_seconds: dict = field(default_factory=dict)
+    flipkart_browser: object = None
+    flipkart_search_fn: object = None
+    match_fn: object = None
+    gem_product_dict: dict = field(default_factory=dict)
+    normalized: dict = field(default_factory=dict)
+    queries: list = field(default_factory=list)
+    lane_errors: list = field(default_factory=list)
+    lane_mode: bool = False
+    prefilter_dropped: list = field(default_factory=list)
+    flipkart_results: list = field(default_factory=list)
+    flipkart_candidates: list = field(default_factory=list)
+    flipkart_match: object = None
+    flipkart_dropped: list = field(default_factory=list)
+    amazon_results: list = field(default_factory=list)
+    amazon_candidates: list = field(default_factory=list)
+    amazon_match: object = None
+    amazon_dropped: list = field(default_factory=list)
+    discovery_results: list = field(default_factory=list)
+    generic_candidates: list = field(default_factory=list)
+    other_shops_match: object = None
+    other_shops_dropped: list = field(default_factory=list)
+    search_issues: list = field(default_factory=list)
+    tried_domains: set = field(default_factory=set)
+    all_candidates: list = field(default_factory=list)
+    similar_pool: list = field(default_factory=list)
+    match_result: object = None
+    final_match_result: object = None
+    confirmed: list = field(default_factory=list)
+    first_possible: list = field(default_factory=list)
+    first_shops: dict = field(default_factory=dict)
+    retry_trace: dict = field(default_factory=dict)
+    retried_shops: set = field(default_factory=set)
+    similar: list = field(default_factory=list)
+    result: dict = field(default_factory=dict)
+
+
+def _cached_result(gem_url: str, refresh: bool, use_cache: bool) -> Optional[dict]:
+    if refresh or not use_cache:
+        return None
+    cached = _cache_get(gem_url)
+    if cached is None:
+        return None
+    result = dict(cached)
+    result["from_cache"] = True
+    events.emit("cache_hit", gem_url=gem_url)
+    _emit_finished(result)
+    events.emit("done", state=result.get("state"), from_cache=True, trace_id=result.get("trace_id"))
+    return result
+
+
+def _start_browser(ctx: RunContext) -> None:
+    if ctx.flipkart_search_fn is not None:
+        return
+    # One Chrome for the whole run - every query and the retry - and it
+    # starts building NOW, so the 3-8 s startup hides behind the GeM
+    # page fetch and the LLM normalize instead of delaying the first
+    # search. Tests and the replay tool pass their own search function,
+    # so no browser is ever started for them.
+    ctx.flipkart_browser = flipkart_scraper.FlipkartBrowser()
+    ctx.flipkart_browser.start()
+    ctx.flipkart_search_fn = ctx.flipkart_browser.search
+
+
+def read_gem(ctx: RunContext, extract_fn) -> None:
+    events.emit("stage", name="extract", label="Reading the GeM product page")
+    gem_product = extract_fn(ctx.gem_url)
+    gem_product_dict = gem_product.to_dict() if hasattr(gem_product, "to_dict") else gem_product
+    ctx.gem_product_dict = gem_product_dict
+    ctx.trace["stages"]["extraction"] = gem_product_dict
+    events.emit(
+        "gem_product",
+        title=gem_product_dict.get("title"),
+        price=gem_product_dict.get("gem_price"),
+        price_type=gem_product_dict.get("gem_price_type"),
+        brand=gem_product_dict.get("brand"),
+        model=gem_product_dict.get("model"),
+        category=gem_product_dict.get("category_slug"),
+        specs=gem_product_dict.get("specs") or {},
+    )
+    events.emit("product_ready", title=gem_product_dict.get("title"), price=gem_product_dict.get("gem_price"))
+
+
+def understand(ctx: RunContext, normalize_fn) -> None:
+    events.emit("stage", name="normalize", label="Working out what the product really is")
+    try:
+        normalized = normalize_fn(ctx.gem_product_dict)
+    except GatewayExhausted as exc:
+        # Every LLM allowance is gone for the day. The comparison is
+        # still worth running with the GeM title as the identity; the
+        # listings simply cannot be verified (reported per lane below).
+        _note_llm_offline(ctx.warnings, str(exc))
+        normalized = _identity_without_llm(ctx.gem_product_dict)
+    ctx.normalized = normalized
+    ctx.trace["stages"]["normalization"] = normalized
+    events.emit(
+        "normalized",
+        canonical_name=normalized.get("canonical_name"),
+        brand=normalized.get("brand"),
+        model=normalized.get("model"),
+        queries=_str_list(normalized.get("search_queries")),
+        key_identifiers=_str_list(normalized.get("key_identifiers")),
+    )
+
+    queries = _str_list(normalized.get("search_queries"))
+    if not queries:
+        fallback = (normalized.get("canonical_name") or ctx.gem_product_dict.get("title") or "").strip()
+        queries = [fallback] if fallback else [ctx.gem_product_dict.get("category_slug") or "product"]
+    ctx.queries = queries
+
+    # verdicts are shared across the lanes of one run - the
+    # same listing title + price for the same product is one question.
+    if ctx.match_fn is matcher.match_candidates and REUSE_VERDICTS:
+        ctx.match_fn = partial(ctx.match_fn, verdict_cache={})
+
+    # Same deal at the matching step: a lane whose LLM call finds every
+    # endpoint busy or used up reports its listings as skipped.
+    ctx.match_fn = _guarded_match(ctx.match_fn, ctx.warnings)
+
+    if ctx.flipkart_browser is not None:
+        # the Flipkart page loop stops early when page 1 already holds
+        # enough relevant cards - give it the product's words to judge by.
+        ctx.flipkart_search_fn = partial(ctx.flipkart_browser.search, product=prefilter.product_tokens(normalized))
+
+
+def _run_lanes(ctx: RunContext, amazon_search_fn, discover_fn, generic_scrape_fn) -> None:
+    (
+        (ctx.flipkart_results, ctx.flipkart_candidates, ctx.flipkart_match, ctx.flipkart_dropped),
+        (ctx.amazon_results, ctx.amazon_candidates, ctx.amazon_match, ctx.amazon_dropped),
+        (ctx.discovery_results, ctx.generic_candidates, ctx.other_shops_match, ctx.other_shops_dropped),
+    ) = _run_first_pass_lanes(
+        ctx.flipkart_search_fn, amazon_search_fn, ctx.queries,
+        discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn,
+        normalized=ctx.normalized, match_fn=ctx.match_fn,
+        lane_errors=ctx.lane_errors,
+        lane_seconds=ctx.lane_seconds,
+    )
+    ctx.prefilter_dropped = list(ctx.flipkart_dropped) + list(ctx.amazon_dropped) + list(ctx.other_shops_dropped)
+    if _prefilter_top() > 0:
+        ctx.trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": ctx.prefilter_dropped}
+
+
+def _run_sequential_search(ctx: RunContext, amazon_search_fn) -> None:
+    events.emit("shop_started", shop="flipkart.com")
+    events.emit("shop_started", shop="amazon.in")
+    started = time.monotonic()
+    (
+        ctx.flipkart_results,
+        ctx.flipkart_candidates,
+        ctx.amazon_results,
+        ctx.amazon_candidates,
+    ) = _search_marketplaces(
+        ctx.flipkart_search_fn, amazon_search_fn, ctx.queries, normalized=ctx.normalized
+    )
+    ctx.lane_seconds["flipkart"] = time.monotonic() - started
+    ctx.lane_seconds["amazon"] = ctx.lane_seconds["flipkart"]
+    ctx.discovery_results = ctx.generic_candidates = None
+
+
+def _run_sequential_discovery(ctx: RunContext, discover_fn, generic_scrape_fn) -> None:
+    events.emit("shop_started", shop="other")
+    started = time.monotonic()
+    if DISCOVERY_ENABLED:
+        events.emit("stage", name="discovery", label="Looking for other shops")
+        ctx.discovery_results, ctx.generic_candidates = _run_discovery_and_generic_scrape(
+            ctx.queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
+        )
+    else:
+        ctx.discovery_results, ctx.generic_candidates = [], []
+    ctx.lane_seconds["other_shops"] = time.monotonic() - started
+    seen_domains: set = set()
+    for candidate in ctx.generic_candidates:
+        shop = _norm_domain(_cand_dict(candidate).get("source_domain"))
+        if shop and shop not in seen_domains:
+            seen_domains.add(shop)
+            events.emit("shop_started", shop=shop)
+
+
+def _note_discovery_health(ctx: RunContext) -> None:
+    for dr in ctx.discovery_results:
+        d = dr.to_dict() if hasattr(dr, "to_dict") else dr
+        if d.get("blocked"):
+            ctx.search_issues.append(f"discovery blocked for query {d.get('query')!r}")
+        elif d.get("error"):
+            ctx.search_issues.append(f"discovery error for query {d.get('query')!r}: {d['error']}")
+    for gc in ctx.generic_candidates:
+        d = _cand_dict(gc)
+        if d.get("fetch_error") and not d.get("raw_page_text") and not d.get("structured_fields"):
+            ctx.search_issues.append(f"{d.get('source_domain', '?')}: fetch failed ({d['fetch_error']})")
+        elif d.get("source_domain"):
+            ctx.tried_domains.add(d["source_domain"])
+
+
+def _collect_candidates(ctx: RunContext) -> None:
+    ctx.all_candidates = _dedup(
+        [c for c in list(ctx.flipkart_candidates) + list(ctx.amazon_candidates) + ctx.generic_candidates if _usable(c)]
+    )
+    # Everything the run ever saw as a usable listing - the similar-products
+    # call draws from this, retry results included.
+    ctx.similar_pool = list(ctx.all_candidates)
+
+
+def _first_pass_match(ctx: RunContext) -> None:
+    if ctx.lane_mode:
+        # Each lane already checked its own listings (and emitted its own
+        # match stage); merging keeps one row per listing, first lane wins.
+        match_result = _merge_match_results([ctx.flipkart_match, ctx.amazon_match, ctx.other_shops_match])
+    else:
+        events.emit("stage", name="match", label="Checking which listings are the same product")
+        match_input, dropped_now = _prefilter_candidates(ctx.all_candidates, ctx.normalized)
+        ctx.prefilter_dropped.extend(dropped_now)
+        events.emit("candidates_total", count=len(match_input))
+        match_result = ctx.match_fn(ctx.normalized, match_input)
+        if _prefilter_top() > 0:
+            ctx.trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": ctx.prefilter_dropped}
+    ctx.match_result = match_result
+    ctx.final_match_result = match_result
+    ctx.trace["stages"]["matching"] = match_result.to_dict() if hasattr(match_result, "to_dict") else match_result
+    ctx.confirmed = list(match_result.confirmed_matches)
+    ctx.first_possible = list(getattr(match_result, "possible_matches", []) or [])
+
+
+def first_pass(ctx: RunContext, amazon_search_fn, discover_fn, generic_scrape_fn) -> None:
+    ctx.prefilter_dropped = []
+    ctx.lane_errors = []  # filled only by the parallel lanes (see _run_first_pass_lanes)
+    # GEM_STRICT=1 keeps the lanes (searches still run together) but turns
+    # the pre-filter off and the verifier back to one listing at a time.
+    ctx.lane_mode = PARALLEL_SEARCH or STRICT_MODE
+    if ctx.lane_mode:
+        # GEM_PARALLEL=1: three lanes - Flipkart, Amazon and discovery+generic
+        # - search at the same time, each checking its own listings the moment
+        # they arrive (so a fast lane's LLM work overlaps the slow Flipkart lane).
+        _run_lanes(ctx, amazon_search_fn, discover_fn, generic_scrape_fn)
+    else:
+        _run_sequential_search(ctx, amazon_search_fn)
+    ctx.trace["stages"]["flipkart_search"] = [
+        r.to_dict() if hasattr(r, "to_dict") else r for r in ctx.flipkart_results
+    ]
+    ctx.trace["stages"]["amazon_search"] = [
+        r.to_dict() if hasattr(r, "to_dict") else r for r in ctx.amazon_results
+    ]
+
+    # Search health decides who's honestly "searched" vs who failed to scrape.
+    ctx.search_issues = list(ctx.lane_errors)
+    ctx.tried_domains = set()
+    for r in ctx.flipkart_results + ctx.amazon_results:
+        _record_search_health(r, ctx.tried_domains, ctx.search_issues)
+
+    # --- first pass: open discovery + generic scrape for everything else ---
+    if not ctx.lane_mode:
+        _run_sequential_discovery(ctx, discover_fn, generic_scrape_fn)
+    ctx.trace["stages"]["discovery"] = [
+        d.to_dict() if hasattr(d, "to_dict") else d for d in ctx.discovery_results
+    ]
+    ctx.trace["stages"]["generic_scrapes"] = [
+        c.to_dict() if hasattr(c, "to_dict") else c for c in ctx.generic_candidates
+    ]
+
+    _note_discovery_health(ctx)
+    _collect_candidates(ctx)
+    _first_pass_match(ctx)
+
+
+def first_result(ctx: RunContext) -> None:
+    first_shops = _shop_entries(
+        flipkart_results=ctx.flipkart_results,
+        amazon_results=ctx.amazon_results,
+        discovery_results=ctx.discovery_results,
+        flipkart_candidates=ctx.flipkart_candidates,
+        amazon_candidates=ctx.amazon_candidates,
+        generic_candidates=ctx.generic_candidates,
+        match_result=ctx.match_result,
+        prefilter_dropped=ctx.prefilter_dropped,
+        lane_errors=ctx.lane_errors,
+        lane_seconds=ctx.lane_seconds,
+        nothing_found=not ctx.confirmed and not ctx.first_possible,
+        discovered=bool(DISCOVERY_ENABLED),
+    )
+    ctx.first_shops = first_shops
+    ctx.trace["stages"]["shops"] = first_shops
+    shown_result, _, _ = _aggregate(
+        gem_url=ctx.gem_url,
+        gem_product_dict=ctx.gem_product_dict,
+        normalized=ctx.normalized,
+        match_result=ctx.match_result,
+        shops=first_shops,
+        similar=[],
+        warnings=ctx.warnings,
+        search_issues=ctx.search_issues,
+        tried_domains=ctx.tried_domains,
+        trace_id=ctx.trace_id,
+        state="shown",
+    )
+    for name, entry in first_shops.items():
+        events.emit("shop_finished", shop=name, **entry)
+    # Saved before the event so a listener that reads the record (the CLI)
+    # never races the write.
+    _save_run_record(ctx.gem_url, shown_result, ctx.trace_id, state="shown")
+    _emit_finished(shown_result)
+
+
+def _expand_retry(ctx: RunContext, expand_search_fn) -> dict:
+    # expand_search is OPTIONAL logic - if it throws (bad JSON, 429,
+    # timeout) the run must survive on its first-pass results. It
+    # propagated and destroyed a fully successful run.
+    try:
+        return expand_search_fn(
+            ctx.normalized,
+            list(ctx.queries),
+            sorted(ctx.tried_domains | set(KNOWN_MARKETPLACE_DOMAINS)),
+        )
+    except GatewayExhausted as e:
+        # a used-up LLM cannot suggest new words, so the
+        # retry is skipped and the fact is a warning, not an error.
+        ctx.retry_trace["expansion_error"] = f"{type(e).__name__}: {e}"
+        ctx.retry_trace["skipped_reason"] = "LLM limits used up"
+        _note_llm_offline(ctx.warnings, f"Retry skipped: {e}")
+        logger.warning("expand_search found the LLM used up (%s) - skipping retry.", e)
+        return {"new_queries": [], "suggested_domains": [], "notes": ""}
+    except Exception as e:
+        ctx.retry_trace["expansion_error"] = f"{type(e).__name__}: {e}"
+        logger.warning("expand_search failed (%s) - skipping retry, keeping first-pass results.", e)
+        return {"new_queries": [], "suggested_domains": [], "notes": ""}
+
+
+def _retry_marketplace_search(ctx: RunContext, retry_queries, amazon_search_fn, *, skip_flipkart, skip_amazon):
+    try:
+        (
+            retry_flipkart_results,
+            retry_flipkart_candidates,
+            retry_amazon_results,
+            retry_amazon_candidates,
+        ) = _search_marketplaces(
+            ctx.flipkart_search_fn,
+            amazon_search_fn,
+            retry_queries,
+            again=True,
+            normalized=ctx.normalized,
+            skip_flipkart=skip_flipkart,
+            skip_amazon=skip_amazon,
+        )
+        failed = False
+    except Exception as e:  # noqa: BLE001 - the retry must not kill the run
+        ctx.retry_trace["search_error"] = f"{type(e).__name__}: {e}"
+        logger.warning("Retry search failed (%s) - keeping the first-pass result.", e)
+        retry_flipkart_results = retry_flipkart_candidates = []
+        retry_amazon_results = retry_amazon_candidates = []
+        failed = True
+    return (
+        retry_flipkart_results,
+        retry_flipkart_candidates,
+        retry_amazon_results,
+        retry_amazon_candidates,
+        failed,
+    )
+
+
+def _retry_discovery(ctx: RunContext, retry_queries, retry_domains, discover_fn, generic_scrape_fn, *, retry_other, search_failed):
+    if not (DISCOVERY_ENABLED and retry_other and not search_failed):
+        return [], []
+    try:
+        return _run_discovery_and_generic_scrape(
+            retry_queries, retry_domains, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
+        )
+    except Exception as e:  # noqa: BLE001 - the retry must not kill the run
+        ctx.retry_trace["discovery_error"] = f"{type(e).__name__}: {e}"
+        logger.warning("Retry discovery failed (%s) - keeping the first-pass result.", e)
+        return [], []
+
+
+def _note_retry_generic_health(ctx: RunContext, retry_generic_candidates) -> None:
+    for gc in retry_generic_candidates:
+        d = _cand_dict(gc)
+        if d.get("fetch_error") and not d.get("raw_page_text") and not d.get("structured_fields"):
+            ctx.search_issues.append(f"{d.get('source_domain', '?')}: fetch failed on retry ({d['fetch_error']})")
+        elif d.get("source_domain"):
+            ctx.tried_domains.add(d["source_domain"])
+
+
+def _reused_retry_decisions(ctx: RunContext, retry_pool):
+    reused_decisions: list = []
+    if not REUSE_VERDICTS:
+        return retry_pool, reused_decisions
+    reused_decisions = list(ctx.match_result.all_decisions) if hasattr(ctx.match_result, "all_decisions") else []
+    decided_keys = {_listing_key(d.get("candidate_url")) for d in reused_decisions}
+    retry_pool = [c for c in retry_pool if _listing_key(_cand_dict(c).get("url")) not in decided_keys]
+    ctx.retry_trace["reused_verdicts"] = len(reused_decisions)
+    return retry_pool, reused_decisions
+
+
+def _retry_match(ctx: RunContext, retry_candidates: list) -> None:
+    # Re-match EVERYTHING still in play: first-pass candidates
+    # (including any skipped by a transient LLM failure) plus the
+    # retry's new ones, because the retry keeps pass-1 candidates
+    # entirely.
+    retry_pool = _dedup([c for c in list(ctx.all_candidates) + retry_candidates if _usable(c)])
+    ctx.similar_pool.extend(retry_candidates)
+    retry_pool, dropped_now = _prefilter_candidates(retry_pool, ctx.normalized)
+    ctx.prefilter_dropped.extend(dropped_now)
+    if _prefilter_top() > 0:
+        ctx.trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": ctx.prefilter_dropped}
+
+    # GEM_REUSE_VERDICTS: the first pass already asked the LLM about
+    # these listings and the answers will not change - only ask about
+    # what is genuinely new. A listing whose first check was SKIPPED
+    # never got a verdict, so it stays in the pool and is asked again.
+    retry_pool, reused_decisions = _reused_retry_decisions(ctx, retry_pool)
+
+    events.emit("stage", name="match_retry", label="Checking the new listings")
+    if retry_pool:
+        retry_match_result = ctx.match_fn(ctx.normalized, retry_pool)
+    else:
+        retry_match_result = matcher.MatchBatchResult()
+    if reused_decisions:
+        # final all_decisions must still show what happened with the
+        # reused listings - only the confirmed/skipped come from the
+        # retry itself. Possible verdicts from the first pass are
+        # still possible; do not lose them.
+        retry_match_result = matcher.MatchBatchResult(
+            all_decisions=reused_decisions + list(retry_match_result.all_decisions),
+            confirmed_matches=list(retry_match_result.confirmed_matches),
+            skipped=list(retry_match_result.skipped),
+            possible_matches=list(retry_match_result.possible_matches)
+            + [d for d in reused_decisions if d.get("outcome") == "possible"],
+            not_checked=list(retry_match_result.not_checked),
+        )
+    ctx.retry_trace["matching"] = (
+        retry_match_result.to_dict() if hasattr(retry_match_result, "to_dict") else retry_match_result
+    )
+
+    # keep what the first pass already confirmed - a
+    # retry caused by one unfinished shop must not erase another
+    # shop's match.
+    ctx.final_match_result = matcher.MatchBatchResult(
+        all_decisions=_merge_decisions(
+            list(getattr(retry_match_result, "all_decisions", []) or []),
+            list(getattr(ctx.match_result, "all_decisions", []) or []),
+        ),
+        confirmed_matches=_merge_rows(ctx.match_result.confirmed_matches, retry_match_result.confirmed_matches),
+        skipped=list(retry_match_result.skipped),
+        possible_matches=_merge_rows(
+            getattr(ctx.match_result, "possible_matches", []) or [],
+            getattr(retry_match_result, "possible_matches", []) or [],
+        ),
+        not_checked=list(getattr(retry_match_result, "not_checked", []) or []),
+    )
+    ctx.confirmed = list(ctx.final_match_result.confirmed_matches)
+
+
+def _retry_execute(
+    ctx: RunContext,
+    retry_queries,
+    retry_domains,
+    amazon_search_fn,
+    discover_fn,
+    generic_scrape_fn,
+) -> None:
+    retried_shops = ctx.retried_shops
+    # Re-search the two DIRECT scrapers with the expanded queries -
+    # expansion feeds both the direct scrapers and discovery,
+    # so a bad primary query on the working marketplaces was never
+    # retried with the LLM's better phrasing. All retry_queries are
+    # eligible, not just [0].
+    # shops that are not retryable (found/possible, or a
+    # lane that crashed) are skipped - they already answered. A
+    # blocked shop IS retried with the new words; the
+    # block is recorded so a repeat is visible in the trace.
+    skip_flipkart = "flipkart.com" not in retried_shops
+    skip_amazon = "amazon.in" not in retried_shops
+    retry_other = "other" in retried_shops or bool(
+        retried_shops - {"flipkart.com", "amazon.in", "other"}
+    )
+    (
+        retry_flipkart_results,
+        retry_flipkart_candidates,
+        retry_amazon_results,
+        retry_amazon_candidates,
+        retry_search_failed,
+    ) = _retry_marketplace_search(
+        ctx,
+        retry_queries,
+        amazon_search_fn,
+        skip_flipkart=skip_flipkart,
+        skip_amazon=skip_amazon,
+    )
+    ctx.retry_trace["blocked_first_pass"] = [
+        name for name, skipped in (("flipkart", skip_flipkart), ("amazon", skip_amazon)) if skipped
+    ]
+    ctx.trace["stages"]["flipkart_search_retry"] = [
+        r.to_dict() if hasattr(r, "to_dict") else r for r in retry_flipkart_results
+    ]
+    ctx.trace["stages"]["amazon_search_retry"] = [
+        r.to_dict() if hasattr(r, "to_dict") else r for r in retry_amazon_results
+    ]
+    for r in retry_flipkart_results + retry_amazon_results:
+        _record_search_health(r, ctx.tried_domains, ctx.search_issues)
+
+    retry_discovery_results, retry_generic_candidates = _retry_discovery(
+        ctx,
+        retry_queries,
+        retry_domains,
+        discover_fn,
+        generic_scrape_fn,
+        retry_other=retry_other,
+        search_failed=retry_search_failed,
+    )
+    ctx.retry_trace["discovery"] = [
+        d.to_dict() if hasattr(d, "to_dict") else d for d in retry_discovery_results
+    ]
+    ctx.retry_trace["generic_scrapes"] = [
+        c.to_dict() if hasattr(c, "to_dict") else c for c in retry_generic_candidates
+    ]
+    _note_retry_generic_health(ctx, retry_generic_candidates)
+
+    _retry_match(
+        ctx,
+        list(retry_flipkart_candidates) + list(retry_amazon_candidates) + retry_generic_candidates,
+    )
+
+
+def _retry_plan(ctx: RunContext, retry_shops, expand_search_fn, amazon_search_fn, discover_fn, generic_scrape_fn) -> None:
+    ctx.retry_trace["state"] = "updating"
+    ctx.retry_trace["shops"] = sorted(retry_shops)
+    events.emit("retry_started", shops=sorted(retry_shops))
+    events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
+    expansion = _expand_retry(ctx, expand_search_fn)
+    ctx.retry_trace["expansion"] = expansion
+    events.emit("retry_plan", new_queries=_str_list(expansion.get("new_queries")), notes=expansion.get("notes", ""))
+
+    retry_queries = retry_module.fresh_queries(expansion, ctx.queries)
+    # Strict-mode Indian filter: the prompt asks for Indian domains but
+    # doesn't enforce it - a foreign suggestion (bestbuy.com) must not
+    # reopen open-mode .com discovery.
+    retry_domains = [d for d in _str_list(expansion.get("suggested_domains")) if discovery._is_indian_retail(d)] or None  # None -> open discovery
+
+    if not retry_queries:
+        ctx.retry_trace["skipped_reason"] = "expand_search returned no new queries to try"
+        return
+    # Only now is a retry really happening: new words exist, so the
+    # cards can honestly say `retried`.
+    ctx.retried_shops = set(retry_shops)
+    ctx.retry_trace["triggered"] = True
+    _retry_execute(
+        ctx,
+        retry_queries,
+        retry_domains,
+        amazon_search_fn,
+        discover_fn,
+        generic_scrape_fn,
+    )
+
+
+def retry_pass(ctx: RunContext, expand_search_fn, amazon_search_fn, discover_fn, generic_scrape_fn) -> None:
+    ctx.retry_trace = {"triggered": False}
+    ctx.retried_shops = set()
+    retry_shops = retry_module.retryable_shops(
+        ctx.first_shops, nothing_found=not ctx.confirmed and not ctx.first_possible
+    )
+    if ctx.first_shops and RETRY_ENABLED and retry_shops:
+        _retry_plan(ctx, retry_shops, expand_search_fn, amazon_search_fn, discover_fn, generic_scrape_fn)
+    ctx.trace["stages"]["retry"] = ctx.retry_trace
+
+
+def similar_pass(ctx: RunContext) -> None:
+    final_possible = list(getattr(ctx.final_match_result, "possible_matches", []) or [])
+    # Only when the run found nothing at all - not one confirmed match and
+    # not one possible one. A "similar" product is a different thing at a
+    # different price, so it never feeds the cheapest/savings arithmetic.
+    if not ctx.confirmed and not final_possible and ctx.similar_pool:
+        ctx.similar = _similar_products(ctx.normalized, ctx.similar_pool, ctx.warnings)
+    ctx.trace["stages"]["similar"] = ctx.similar
+
+
+def finish(ctx: RunContext) -> None:
+    final_possible = list(getattr(ctx.final_match_result, "possible_matches", []) or [])
+    final_shops = _shop_entries(
+        flipkart_results=ctx.flipkart_results,
+        amazon_results=ctx.amazon_results,
+        discovery_results=ctx.discovery_results,
+        flipkart_candidates=ctx.flipkart_candidates,
+        amazon_candidates=ctx.amazon_candidates,
+        generic_candidates=ctx.generic_candidates,
+        match_result=ctx.final_match_result,
+        prefilter_dropped=ctx.prefilter_dropped,
+        lane_errors=ctx.lane_errors,
+        lane_seconds=ctx.lane_seconds,
+        nothing_found=not ctx.confirmed and not final_possible,
+        retried=ctx.retried_shops if ctx.retry_trace["triggered"] else set(),
+        discovered=bool(DISCOVERY_ENABLED),
+    )
+    ctx.trace["stages"]["shops"] = final_shops
+
+    # --- comparison arithmetic - the actual point of the project ----------------------
+    result, confirmed, final_possible = _aggregate(
+        gem_url=ctx.gem_url,
+        gem_product_dict=ctx.gem_product_dict,
+        normalized=ctx.normalized,
+        match_result=ctx.final_match_result,
+        shops=final_shops,
+        similar=ctx.similar,
+        warnings=ctx.warnings,
+        search_issues=ctx.search_issues,
+        tried_domains=ctx.tried_domains,
+        trace_id=ctx.trace_id,
+        state="done",
+    )
+    ctx.result = result
+    ctx.confirmed = confirmed
+    ctx.trace["final_result"] = {
+        "matches": confirmed,
+        "possible_matches": final_possible,
+        "similar": ctx.similar,
+        "not_found_on": result.get("not_found_on"),
+        "search_issues": ctx.search_issues,
+    }
+
+    if ctx.similar:
+        events.emit("similar_ready", similar=ctx.similar)
+    for name in sorted(ctx.retried_shops if ctx.retry_trace["triggered"] else ()):
+        entry = final_shops.get(name)
+        if entry:
+            events.emit("shop_updated", shop=name, **entry)
+    events.emit("run_updated", result=result)
+    events.emit("done", state="done", trace_id=ctx.trace_id)
+    ctx.trace["events"] = events.snapshot()
+    _write_trace(ctx.trace)
+    _save_run_record(ctx.gem_url, result, ctx.trace_id, state="done")
+    if not ctx.use_cache:
+        logger.info("Not caching this run: cache disabled (demo).")
+    elif ctx.search_issues:
+        logger.info("Not caching this run: %d search issue(s) reported.", len(ctx.search_issues))
+    else:
+        _cache_set(ctx.gem_url, result)
+
+
 def _run_pipeline(
     gem_url: str,
     refresh: bool = False,
@@ -882,501 +1661,48 @@ def _run_pipeline(
     use_cache: bool = True,
 ) -> dict:
     events.emit("run_started", gem_url=gem_url, refresh=refresh)
-    if not refresh and use_cache:
-        cached = _cache_get(gem_url)
-        if cached is not None:
-            result = dict(cached)
-            result["from_cache"] = True
-            events.emit("cache_hit", gem_url=gem_url)
-            _emit_finished(result)
-            events.emit("done", state=result.get("state"), from_cache=True, trace_id=result.get("trace_id"))
-            return result
+    cached = _cached_result(gem_url, refresh, use_cache)
+    if cached is not None:
+        return cached
 
     trace_id = uuid.uuid4().hex[:16]
-    trace: dict = {
-        "trace_id": trace_id,
-        "result_version": RESULT_VERSION,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "gem_url": gem_url,
-        "stages": {},
-    }
-
-    warnings: list[str] = []
-    lane_seconds: dict = {}
-    flipkart_browser = None
+    ctx = RunContext(
+        gem_url=gem_url,
+        refresh=refresh,
+        use_cache=use_cache,
+        trace_id=trace_id,
+        trace={
+            "trace_id": trace_id,
+            "result_version": RESULT_VERSION,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "gem_url": gem_url,
+            "stages": {},
+        },
+        flipkart_search_fn=flipkart_search_fn,
+        match_fn=match_fn,
+    )
     try:
-        if flipkart_search_fn is None:
-            # One Chrome for the whole run - every query and the retry - and it
-            # starts building NOW, so the 3-8 s startup hides behind the GeM
-            # page fetch and the LLM normalize instead of delaying the first
-            # search. Tests and the replay tool pass their own search function,
-            # so no browser is ever started for them.
-            flipkart_browser = flipkart_scraper.FlipkartBrowser()
-            flipkart_browser.start()
-            flipkart_search_fn = flipkart_browser.search
-
-        # --- extract -----------------------------------------------------------
-        events.emit("stage", name="extract", label="Reading the GeM product page")
-        gem_product = extract_fn(gem_url)
-        gem_product_dict = gem_product.to_dict() if hasattr(gem_product, "to_dict") else gem_product
-        trace["stages"]["extraction"] = gem_product_dict
-        events.emit(
-            "gem_product",
-            title=gem_product_dict.get("title"),
-            price=gem_product_dict.get("gem_price"),
-            price_type=gem_product_dict.get("gem_price_type"),
-            brand=gem_product_dict.get("brand"),
-            model=gem_product_dict.get("model"),
-            category=gem_product_dict.get("category_slug"),
-            specs=gem_product_dict.get("specs") or {},
-        )
-        events.emit("product_ready", title=gem_product_dict.get("title"), price=gem_product_dict.get("gem_price"))
-
-        # --- normalize ----------------------------------------------------------
-        events.emit("stage", name="normalize", label="Working out what the product really is")
-        try:
-            normalized = normalize_fn(gem_product_dict)
-        except GatewayExhausted as exc:
-            # Every LLM allowance is gone for the day. The comparison is
-            # still worth running with the GeM title as the identity; the
-            # listings simply cannot be verified (reported per lane below).
-            _note_llm_offline(warnings, str(exc))
-            normalized = _identity_without_llm(gem_product_dict)
-        trace["stages"]["normalization"] = normalized
-        events.emit(
-            "normalized",
-            canonical_name=normalized.get("canonical_name"),
-            brand=normalized.get("brand"),
-            model=normalized.get("model"),
-            queries=_str_list(normalized.get("search_queries")),
-            key_identifiers=_str_list(normalized.get("key_identifiers")),
-        )
-
-        queries = _str_list(normalized.get("search_queries"))
-        if not queries:
-            fallback = (normalized.get("canonical_name") or gem_product_dict.get("title") or "").strip()
-            queries = [fallback] if fallback else [gem_product_dict.get("category_slug") or "product"]
-
-        # verdicts are shared across the lanes of one run - the
-        # same listing title + price for the same product is one question.
-        if match_fn is matcher.match_candidates and REUSE_VERDICTS:
-            match_fn = partial(match_fn, verdict_cache={})
-
-        # Same deal at the matching step: a lane whose LLM call finds every
-        # endpoint busy or used up reports its listings as skipped.
-        match_fn = _guarded_match(match_fn, warnings)
-
-        if flipkart_browser is not None:
-            # the Flipkart page loop stops early when page 1 already holds
-            # enough relevant cards - give it the product's words to judge by.
-            flipkart_search_fn = partial(flipkart_browser.search, product=prefilter.product_tokens(normalized))
-
-        # --- first pass: Flipkart + Amazon direct search -----------------------
-        # Every normalized query is eligible (early-exit once one query has
-        # enough candidates), not just queries[0].
-        prefilter_dropped: list = []
-        lane_errors: list = []  # filled only by the parallel lanes (see _run_first_pass_lanes)
-        # GEM_STRICT=1 keeps the lanes (searches still run together) but turns
-        # the pre-filter off and the verifier back to one listing at a time.
-        lane_mode = PARALLEL_SEARCH or STRICT_MODE
-        if lane_mode:
-            # GEM_PARALLEL=1: three lanes - Flipkart, Amazon and discovery+generic
-            # - search at the same time, each checking its own listings the moment
-            # they arrive (so a fast lane's LLM work overlaps the slow Flipkart lane).
-            (
-                (flipkart_results, flipkart_candidates, flipkart_match, flipkart_dropped),
-                (amazon_results, amazon_candidates, amazon_match, amazon_dropped),
-                (discovery_results, generic_candidates, other_shops_match, other_shops_dropped),
-            ) = _run_first_pass_lanes(
-                flipkart_search_fn, amazon_search_fn, queries,
-                discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn,
-                normalized=normalized, match_fn=match_fn,
-                lane_errors=lane_errors,
-                lane_seconds=lane_seconds,
-            )
-            prefilter_dropped = list(flipkart_dropped) + list(amazon_dropped) + list(other_shops_dropped)
-            if _prefilter_top() > 0:
-                trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
-        else:
-            events.emit("shop_started", shop="flipkart.com")
-            events.emit("shop_started", shop="amazon.in")
-            started = time.monotonic()
-            flipkart_results, flipkart_candidates, amazon_results, amazon_candidates = _search_marketplaces(
-                flipkart_search_fn, amazon_search_fn, queries, normalized=normalized
-            )
-            lane_seconds["flipkart"] = time.monotonic() - started
-            lane_seconds["amazon"] = lane_seconds["flipkart"]
-            discovery_results = generic_candidates = None
-        trace["stages"]["flipkart_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in flipkart_results]
-        trace["stages"]["amazon_search"] = [r.to_dict() if hasattr(r, "to_dict") else r for r in amazon_results]
-
-        # Search health decides who's honestly "searched" vs who failed to scrape.
-        search_issues: list[str] = list(lane_errors)
-        tried_domains: set = set()
-        for r in flipkart_results + amazon_results:
-            _record_search_health(r, tried_domains, search_issues)
-
-        # --- first pass: open discovery + generic scrape for everything else ---
-        if not lane_mode:
-            events.emit("shop_started", shop="other")
-            started = time.monotonic()
-            if DISCOVERY_ENABLED:
-                events.emit("stage", name="discovery", label="Looking for other shops")
-                discovery_results, generic_candidates = _run_discovery_and_generic_scrape(
-                    queries, None, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
-                )
-            else:
-                discovery_results, generic_candidates = [], []
-            lane_seconds["other_shops"] = time.monotonic() - started
-            seen_domains: set = set()
-            for candidate in generic_candidates:
-                shop = _norm_domain(_cand_dict(candidate).get("source_domain"))
-                if shop and shop not in seen_domains:
-                    seen_domains.add(shop)
-                    events.emit("shop_started", shop=shop)
-        trace["stages"]["discovery"] = [d.to_dict() if hasattr(d, "to_dict") else d for d in discovery_results]
-        trace["stages"]["generic_scrapes"] = [c.to_dict() if hasattr(c, "to_dict") else c for c in generic_candidates]
-
-        for dr in discovery_results:
-            d = dr.to_dict() if hasattr(dr, "to_dict") else dr
-            if d.get("blocked"):
-                search_issues.append(f"discovery blocked for query {d.get('query')!r}")
-            elif d.get("error"):
-                search_issues.append(f"discovery error for query {d.get('query')!r}: {d['error']}")
-        for gc in generic_candidates:
-            d = _cand_dict(gc)
-            if d.get("fetch_error") and not d.get("raw_page_text") and not d.get("structured_fields"):
-                search_issues.append(f"{d.get('source_domain', '?')}: fetch failed ({d['fetch_error']})")
-            elif d.get("source_domain"):
-                tried_domains.add(d["source_domain"])
-
-        all_candidates = _dedup(
-            [c for c in list(flipkart_candidates) + list(amazon_candidates) + generic_candidates if _usable(c)]
-        )
-        # Everything the run ever saw as a usable listing - the similar-products
-        # call draws from this, retry results included.
-        similar_pool = list(all_candidates)
-
-        # --- match ---------------------------------------------------------------
-        if lane_mode:
-            # Each lane already checked its own listings (and emitted its own
-            # match stage); merging keeps one row per listing, first lane wins.
-            match_result = _merge_match_results([flipkart_match, amazon_match, other_shops_match])
-        else:
-            events.emit("stage", name="match", label="Checking which listings are the same product")
-            match_input, dropped_now = _prefilter_candidates(all_candidates, normalized)
-            prefilter_dropped.extend(dropped_now)
-            events.emit("candidates_total", count=len(match_input))
-            match_result = match_fn(normalized, match_input)
-            if _prefilter_top() > 0:
-                trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
-        final_match_result = match_result
-        trace["stages"]["matching"] = match_result.to_dict() if hasattr(match_result, "to_dict") else match_result
-
-        confirmed = list(match_result.confirmed_matches)
-        first_possible = list(getattr(match_result, "possible_matches", []) or [])
-
-        # --- first honest result, before any retry -------------------------------
-        # The page gets a full answer now (state "shown") and the
-        # retry, if it happens, updates it. Shops that are still unfinished say
-        # so instead of pretending to be "not found".
-        first_shops = _shop_entries(
-            flipkart_results=flipkart_results,
-            amazon_results=amazon_results,
-            discovery_results=discovery_results,
-            flipkart_candidates=flipkart_candidates,
-            amazon_candidates=amazon_candidates,
-            generic_candidates=generic_candidates,
-            match_result=match_result,
-            prefilter_dropped=prefilter_dropped,
-            lane_errors=lane_errors,
-            lane_seconds=lane_seconds,
-            nothing_found=not confirmed and not first_possible,
-            discovered=bool(DISCOVERY_ENABLED),
-        )
-        trace["stages"]["shops"] = first_shops
-        first_result, _, _ = _aggregate(
-            gem_url=gem_url,
-            gem_product_dict=gem_product_dict,
-            normalized=normalized,
-            match_result=match_result,
-            shops=first_shops,
-            similar=[],
-            warnings=warnings,
-            search_issues=search_issues,
-            tried_domains=tried_domains,
-            trace_id=trace_id,
-            state="shown",
-        )
-        for name, entry in first_shops.items():
-            events.emit("shop_finished", shop=name, **entry)
-        # Saved before the event so a listener that reads the record (the CLI)
-        # never races the write.
-        _save_run_record(gem_url, first_result, trace_id, state="shown")
-        _emit_finished(first_result)
-
-        # --- retry: only the shops that are honestly retryable ---------------------------
-        retry_trace = {"triggered": False}
-        retried_shops: set = set()
-        retry_shops = retry_module.retryable_shops(
-            first_shops, nothing_found=not confirmed and not first_possible
-        )
-        if first_shops and RETRY_ENABLED and retry_shops:
-            retry_trace["state"] = "updating"
-            retry_trace["shops"] = sorted(retry_shops)
-            events.emit("retry_started", shops=sorted(retry_shops))
-            events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
-            # expand_search is OPTIONAL logic - if it throws (bad JSON, 429,
-            # timeout) the run must survive on its first-pass results. It
-            # propagated and destroyed a fully successful run.
-            try:
-                expansion = expand_search_fn(normalized, list(queries), sorted(tried_domains | set(KNOWN_MARKETPLACE_DOMAINS)))
-            except GatewayExhausted as e:
-                # a used-up LLM cannot suggest new words, so the
-                # retry is skipped and the fact is a warning, not an error.
-                retry_trace["expansion_error"] = f"{type(e).__name__}: {e}"
-                retry_trace["skipped_reason"] = "LLM limits used up"
-                _note_llm_offline(warnings, f"Retry skipped: {e}")
-                logger.warning("expand_search found the LLM used up (%s) - skipping retry.", e)
-                expansion = {"new_queries": [], "suggested_domains": [], "notes": ""}
-            except Exception as e:
-                retry_trace["expansion_error"] = f"{type(e).__name__}: {e}"
-                logger.warning("expand_search failed (%s) - skipping retry, keeping first-pass results.", e)
-                expansion = {"new_queries": [], "suggested_domains": [], "notes": ""}
-            retry_trace["expansion"] = expansion
-            events.emit("retry_plan", new_queries=_str_list(expansion.get("new_queries")), notes=expansion.get("notes", ""))
-
-            retry_queries = retry_module.fresh_queries(expansion, queries)
-            # Strict-mode Indian filter: the prompt asks for Indian domains but
-            # doesn't enforce it - a foreign suggestion (bestbuy.com) must not
-            # reopen open-mode .com discovery.
-            retry_domains = [d for d in _str_list(expansion.get("suggested_domains")) if discovery._is_indian_retail(d)] or None  # None -> open discovery
-
-            if retry_queries:
-                # Only now is a retry really happening: new words exist, so the
-                # cards can honestly say `retried`.
-                retried_shops = set(retry_shops)
-                retry_trace["triggered"] = True
-                # Re-search the two DIRECT scrapers with the expanded queries -
-                # expansion feeds both the direct scrapers and discovery,
-                # so a bad primary query on the working marketplaces was never
-                # retried with the LLM's better phrasing. All retry_queries are
-                # eligible, not just [0].
-                # shops that are not retryable (found/possible, or a
-                # lane that crashed) are skipped - they already answered. A
-                # blocked shop IS retried with the new words; the
-                # block is recorded so a repeat is visible in the trace.
-                skip_flipkart = "flipkart.com" not in retried_shops
-                skip_amazon = "amazon.in" not in retried_shops
-                retry_other = "other" in retried_shops or bool(
-                    retried_shops - {"flipkart.com", "amazon.in", "other"}
-                )
-                try:
-                    (
-                        retry_flipkart_results,
-                        retry_flipkart_candidates,
-                        retry_amazon_results,
-                        retry_amazon_candidates,
-                    ) = _search_marketplaces(
-                        flipkart_search_fn,
-                        amazon_search_fn,
-                        retry_queries,
-                        again=True,
-                        normalized=normalized,
-                        skip_flipkart=skip_flipkart,
-                        skip_amazon=skip_amazon,
-                    )
-                    retry_search_failed = False
-                except Exception as e:  # noqa: BLE001 - the retry must not kill the run
-                    retry_trace["search_error"] = f"{type(e).__name__}: {e}"
-                    logger.warning("Retry search failed (%s) - keeping the first-pass result.", e)
-                    retry_flipkart_results = retry_flipkart_candidates = []
-                    retry_amazon_results = retry_amazon_candidates = []
-                    retry_search_failed = True
-                retry_trace["blocked_first_pass"] = [
-                    name for name, skipped in (("flipkart", skip_flipkart), ("amazon", skip_amazon)) if skipped
-                ]
-                trace["stages"]["flipkart_search_retry"] = [
-                    r.to_dict() if hasattr(r, "to_dict") else r for r in retry_flipkart_results
-                ]
-                trace["stages"]["amazon_search_retry"] = [
-                    r.to_dict() if hasattr(r, "to_dict") else r for r in retry_amazon_results
-                ]
-                for r in retry_flipkart_results + retry_amazon_results:
-                    _record_search_health(r, tried_domains, search_issues)
-
-                if DISCOVERY_ENABLED and retry_other and not retry_search_failed:
-                    try:
-                        retry_discovery_results, retry_generic_candidates = _run_discovery_and_generic_scrape(
-                            retry_queries, retry_domains, discover_fn=discover_fn, generic_scrape_fn=generic_scrape_fn
-                        )
-                    except Exception as e:  # noqa: BLE001 - the retry must not kill the run
-                        retry_trace["discovery_error"] = f"{type(e).__name__}: {e}"
-                        logger.warning("Retry discovery failed (%s) - keeping the first-pass result.", e)
-                        retry_discovery_results, retry_generic_candidates = [], []
-                else:
-                    retry_discovery_results, retry_generic_candidates = [], []
-                retry_trace["discovery"] = [d.to_dict() if hasattr(d, "to_dict") else d for d in retry_discovery_results]
-                retry_trace["generic_scrapes"] = [c.to_dict() if hasattr(c, "to_dict") else c for c in retry_generic_candidates]
-                for gc in retry_generic_candidates:
-                    d = _cand_dict(gc)
-                    if d.get("fetch_error") and not d.get("raw_page_text") and not d.get("structured_fields"):
-                        search_issues.append(f"{d.get('source_domain', '?')}: fetch failed on retry ({d['fetch_error']})")
-                    elif d.get("source_domain"):
-                        tried_domains.add(d["source_domain"])
-
-                # Re-match EVERYTHING still in play: first-pass candidates
-                # (including any skipped by a transient LLM failure) plus the
-                # retry's new ones, because the retry keeps pass-1 candidates
-                # entirely.
-                retry_pool = _dedup(
-                    [c for c in list(all_candidates) + list(retry_flipkart_candidates) + list(retry_amazon_candidates)
-                     + retry_generic_candidates if _usable(c)]
-                )
-                similar_pool.extend(
-                    list(retry_flipkart_candidates) + list(retry_amazon_candidates) + list(retry_generic_candidates)
-                )
-                retry_pool, dropped_now = _prefilter_candidates(retry_pool, normalized)
-                prefilter_dropped.extend(dropped_now)
-                if _prefilter_top() > 0:
-                    trace["stages"]["prefilter"] = {"top": _prefilter_top(), "dropped": prefilter_dropped}
-
-                # GEM_REUSE_VERDICTS: the first pass already asked the LLM about
-                # these listings and the answers will not change - only ask about
-                # what is genuinely new. A listing whose first check was SKIPPED
-                # never got a verdict, so it stays in the pool and is asked again.
-                reused_decisions: list = []
-                if REUSE_VERDICTS:
-                    reused_decisions = list(match_result.all_decisions) if hasattr(match_result, "all_decisions") else []
-                    decided_keys = {_listing_key(d.get("candidate_url")) for d in reused_decisions}
-                    retry_pool = [c for c in retry_pool if _listing_key(_cand_dict(c).get("url")) not in decided_keys]
-                    retry_trace["reused_verdicts"] = len(reused_decisions)
-
-                events.emit("stage", name="match_retry", label="Checking the new listings")
-                if retry_pool:
-                    retry_match_result = match_fn(normalized, retry_pool)
-                else:
-                    retry_match_result = matcher.MatchBatchResult()
-                if reused_decisions:
-                    # final all_decisions must still show what happened with the
-                    # reused listings - only the confirmed/skipped come from the
-                    # retry itself. Possible verdicts from the first pass are
-                    # still possible; do not lose them.
-                    retry_match_result = matcher.MatchBatchResult(
-                        all_decisions=reused_decisions + list(retry_match_result.all_decisions),
-                        confirmed_matches=list(retry_match_result.confirmed_matches),
-                        skipped=list(retry_match_result.skipped),
-                        possible_matches=list(retry_match_result.possible_matches)
-                        + [d for d in reused_decisions if d.get("outcome") == "possible"],
-                        not_checked=list(retry_match_result.not_checked),
-                    )
-                retry_trace["matching"] = retry_match_result.to_dict() if hasattr(retry_match_result, "to_dict") else retry_match_result
-
-                # keep what the first pass already confirmed - a
-                # retry caused by one unfinished shop must not erase another
-                # shop's match.
-                final_match_result = matcher.MatchBatchResult(
-                    all_decisions=_merge_decisions(
-                        list(getattr(retry_match_result, "all_decisions", []) or []),
-                        list(getattr(match_result, "all_decisions", []) or []),
-                    ),
-                    confirmed_matches=_merge_rows(
-                        match_result.confirmed_matches, retry_match_result.confirmed_matches
-                    ),
-                    skipped=list(retry_match_result.skipped),
-                    possible_matches=_merge_rows(
-                        getattr(match_result, "possible_matches", []) or [],
-                        getattr(retry_match_result, "possible_matches", []) or [],
-                    ),
-                    not_checked=list(getattr(retry_match_result, "not_checked", []) or []),
-                )
-                confirmed = list(final_match_result.confirmed_matches)
-            else:
-                retry_trace["skipped_reason"] = "expand_search returned no new queries to try"
-
-        trace["stages"]["retry"] = retry_trace
-
-        final_possible = list(getattr(final_match_result, "possible_matches", []) or [])
-
-        # --- similar products ------------------------------------------------------
-        # Only when the run found nothing at all - not one confirmed match and
-        # not one possible one. A "similar" product is a different thing at a
-        # different price, so it never feeds the cheapest/savings arithmetic.
-        similar: list = []
-        if not confirmed and not final_possible and similar_pool:
-            similar = _similar_products(normalized, similar_pool, warnings)
-        trace["stages"]["similar"] = similar
-
-        final_shops = _shop_entries(
-            flipkart_results=flipkart_results,
-            amazon_results=amazon_results,
-            discovery_results=discovery_results,
-            flipkart_candidates=flipkart_candidates,
-            amazon_candidates=amazon_candidates,
-            generic_candidates=generic_candidates,
-            match_result=final_match_result,
-            prefilter_dropped=prefilter_dropped,
-            lane_errors=lane_errors,
-            lane_seconds=lane_seconds,
-            nothing_found=not confirmed and not final_possible,
-            retried=retried_shops if retry_trace["triggered"] else set(),
-            discovered=bool(DISCOVERY_ENABLED),
-        )
-        trace["stages"]["shops"] = final_shops
-
-        # --- comparison arithmetic - the actual point of the project ----------------------
-        result, confirmed, final_possible = _aggregate(
-            gem_url=gem_url,
-            gem_product_dict=gem_product_dict,
-            normalized=normalized,
-            match_result=final_match_result,
-            shops=final_shops,
-            similar=similar,
-            warnings=warnings,
-            search_issues=search_issues,
-            tried_domains=tried_domains,
-            trace_id=trace_id,
-            state="done",
-        )
-        trace["final_result"] = {
-            "matches": confirmed,
-            "possible_matches": final_possible,
-            "similar": similar,
-            "not_found_on": result.get("not_found_on"),
-            "search_issues": search_issues,
-        }
-
-        if similar:
-            events.emit("similar_ready", similar=similar)
-        for name in sorted(retried_shops if retry_trace["triggered"] else ()):
-            entry = final_shops.get(name)
-            if entry:
-                events.emit("shop_updated", shop=name, **entry)
-        events.emit("run_updated", result=result)
-        events.emit("done", state="done", trace_id=trace_id)
-        trace["events"] = events.snapshot()
-        _write_trace(trace)
-        _save_run_record(gem_url, result, trace_id, state="done")
-        if not use_cache:
-            logger.info("Not caching this run: cache disabled (demo).")
-        elif search_issues:
-            logger.info("Not caching this run: %d search issue(s) reported.", len(search_issues))
-        else:
-            _cache_set(gem_url, result)
-
-        return result
+        _start_browser(ctx)
+        read_gem(ctx, extract_fn)
+        understand(ctx, normalize_fn)
+        first_pass(ctx, amazon_search_fn, discover_fn, generic_scrape_fn)
+        first_result(ctx)
+        retry_pass(ctx, expand_search_fn, amazon_search_fn, discover_fn, generic_scrape_fn)
+        similar_pass(ctx)
+        finish(ctx)
+        return ctx.result
     except Exception as exc:
         # Any failure after the trace dict exists: write a partial trace first,
         # then re-raise the same exception so callers still see the error.
-        trace["error"] = f"{type(exc).__name__}: {exc}"
-        trace["events"] = events.snapshot()
-        _write_trace(trace)
+        ctx.trace["error"] = f"{type(exc).__name__}: {exc}"
+        ctx.trace["events"] = events.snapshot()
+        _write_trace(ctx.trace)
         raise
     finally:
         # The run owns its Chrome: every exit path (success, failure, early
         # return) goes through here, so it is quit exactly once.
-        if flipkart_browser is not None:
-            flipkart_browser.close()
+        if ctx.flipkart_browser is not None:
+            ctx.flipkart_browser.close()
 
 
 def run_pipeline(gem_url: str, refresh: bool = False, *, on_event=None, **overrides) -> dict:

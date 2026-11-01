@@ -120,6 +120,79 @@ def _sort_matches(rows: list[dict]) -> list[dict]:
     )
 
 
+def _result_rows(matches, possible_matches, similar):
+    match_rows = [_match_view(d) for d in (matches or [])]
+    possible_rows = [_match_view(d, possible=True) for d in (possible_matches or [])]
+    similar_rows = sorted(
+        (dict(row) for row in (similar or [])),
+        key=lambda row: (_price(row.get("price")) is None, _price(row.get("price")) or 0.0),
+    )
+    return match_rows, possible_rows, similar_rows
+
+
+def _fix_shop_honesty(shops: dict, match_rows: list[dict], possible_rows: list[dict]) -> None:
+    """Honesty check 1: a shop cannot be "found" with zero matches."""
+    matched_shops = {row["shop"] for row in match_rows}
+    possible_shops = {row["shop"] for row in possible_rows}
+    for name, entry in shops.items():
+        entry.setdefault("status", SHOP_NOT_FOUND)
+        entry.setdefault("reason", "")
+        if entry["status"] == SHOP_FOUND and name not in matched_shops:
+            entry["status"] = SHOP_POSSIBLE if name in possible_shops else SHOP_NOT_FOUND
+            entry["reason"] = entry.get("reason") or "no confirmed match in the final result"
+        entry["matches"] = sum(1 for row in match_rows if row["shop"] == name)
+        if entry["status"] != SHOP_FOUND and not entry.get("reason"):
+            entry["reason"] = "searched, nothing confirmed"
+
+
+def _cheapest_match(match_rows: list[dict], gem_product: dict, comparison: dict):
+    """Honesty check 2: cheapest needs a priced, in-stock match and a GeM price."""
+    sorted_rows = _sort_matches(match_rows)
+    gem_price = _price(gem_product.get("gem_price"))
+    priced_in_stock = [
+        row for row in sorted_rows if row.get("in_stock", True) and _price(row.get("price")) is not None
+    ]
+    cheapest = None
+    if gem_price is not None and priced_in_stock:
+        best = priced_in_stock[0]  # sorted_rows is cheapest-first, in-stock first
+        best_price = _price(best.get("price"))
+        cheapest = {
+            "shop": best["shop"],
+            "title": best["title"],
+            "price": best_price,
+            "url": best["url"],
+            "saving_vs_gem": round(gem_price - best_price, 2),
+            "bulk": bool(best.get("bulk")),
+        }
+        comparison = dict(comparison)
+        comparison.setdefault("cheapest_match_price", best_price)
+        comparison.setdefault("savings_vs_gem", cheapest["saving_vs_gem"])
+    return gem_price, cheapest, comparison
+
+
+def _add_unfinished_warnings(shops: dict, warnings: list) -> None:
+    """Honesty check 3: never say "nothing found" while a shop was not looked at."""
+    for name, entry in shops.items():
+        if entry.get("status") in UNFINISHED_STATUSES:
+            reason = entry.get("reason") or entry["status"]
+            line = f"{name}: {entry['status']} ({reason})"
+            if line not in warnings:
+                warnings.append(line)
+
+
+def _gem_view(gem_url: str, gem_product: dict, normalized: dict, described_by: str | None, gem_price) -> dict:
+    return {
+        "url": gem_url or gem_product.get("url"),
+        "title": gem_product.get("title"),
+        "canonical_name": normalized.get("canonical_name") or gem_product.get("title"),
+        "brand": normalized.get("brand") or gem_product.get("brand"),
+        "model": normalized.get("model") or gem_product.get("model"),
+        "price": gem_product.get("price")
+        or {"low": gem_price, "high": gem_price, "kind": gem_product.get("gem_price_type", "unknown")},
+        "described_by": described_by or normalized.get("described_by") or "llm",
+    }
+
+
 def build_result(
     *,
     gem_url: str,
@@ -150,73 +223,17 @@ def build_result(
     comparison = dict(comparison or {})
     shops = {str(name): dict(entry) for name, entry in (shops or {}).items()}
 
-    match_rows = [_match_view(d) for d in (matches or [])]
-    possible_rows = [_match_view(d, possible=True) for d in (possible_matches or [])]
-    similar_rows = sorted(
-        (dict(row) for row in (similar or [])),
-        key=lambda row: (_price(row.get("price")) is None, _price(row.get("price")) or 0.0),
-    )
-
-    matched_shops = {row["shop"] for row in match_rows}
-    possible_shops = {row["shop"] for row in possible_rows}
-
-    # Honesty check 1: a shop cannot be "found" with zero matches.
-    for name, entry in shops.items():
-        entry.setdefault("status", SHOP_NOT_FOUND)
-        entry.setdefault("reason", "")
-        if entry["status"] == SHOP_FOUND and name not in matched_shops:
-            entry["status"] = SHOP_POSSIBLE if name in possible_shops else SHOP_NOT_FOUND
-            entry["reason"] = entry.get("reason") or "no confirmed match in the final result"
-        entry["matches"] = sum(1 for row in match_rows if row["shop"] == name)
-        if entry["status"] != SHOP_FOUND and not entry.get("reason"):
-            entry["reason"] = "searched, nothing confirmed"
-
-    # Honesty check 2: cheapest needs a priced, in-stock match and a GeM price.
-    sorted_rows = _sort_matches(match_rows)
-    gem_price = _price(gem_product.get("gem_price"))
-    priced_in_stock = [
-        row for row in sorted_rows if row.get("in_stock", True) and _price(row.get("price")) is not None
-    ]
-    cheapest = None
-    if gem_price is not None and priced_in_stock:
-        best = priced_in_stock[0]  # sorted_rows is cheapest-first, in-stock first
-        best_price = _price(best.get("price"))
-        cheapest = {
-            "shop": best["shop"],
-            "title": best["title"],
-            "price": best_price,
-            "url": best["url"],
-            "saving_vs_gem": round(gem_price - best_price, 2),
-            "bulk": bool(best.get("bulk")),
-        }
-        comparison = dict(comparison)
-        comparison.setdefault("cheapest_match_price", best_price)
-        comparison.setdefault("savings_vs_gem", cheapest["saving_vs_gem"])
-
-    # Honesty check 3: never say "nothing found" while a shop was not looked at.
-    for name, entry in shops.items():
-        if entry.get("status") in UNFINISHED_STATUSES:
-            reason = entry.get("reason") or entry["status"]
-            line = f"{name}: {entry['status']} ({reason})"
-            if line not in warnings:
-                warnings.append(line)
+    match_rows, possible_rows, similar_rows = _result_rows(matches, possible_matches, similar)
+    _fix_shop_honesty(shops, match_rows, possible_rows)
+    gem_price, cheapest, comparison = _cheapest_match(match_rows, gem_product, comparison)
+    _add_unfinished_warnings(shops, warnings)
 
     compared_with = sorted(
         name
         for name, entry in shops.items()
         if entry.get("status") in (SHOP_FOUND, SHOP_POSSIBLE, SHOP_NOT_FOUND)
     )
-
-    gem_view = {
-        "url": gem_url or gem_product.get("url"),
-        "title": gem_product.get("title"),
-        "canonical_name": normalized.get("canonical_name") or gem_product.get("title"),
-        "brand": normalized.get("brand") or gem_product.get("brand"),
-        "model": normalized.get("model") or gem_product.get("model"),
-        "price": gem_product.get("price")
-        or {"low": gem_price, "high": gem_price, "kind": gem_product.get("gem_price_type", "unknown")},
-        "described_by": described_by or normalized.get("described_by") or "llm",
-    }
+    gem_view = _gem_view(gem_url, gem_product, normalized, described_by, gem_price)
 
     return {
         # --- v2 ---
