@@ -2,11 +2,12 @@
 import json
 import threading
 import time
+from contextlib import ExitStack
 
 import pytest
 from fastapi.testclient import TestClient
 
-from api.server import create_app
+from api.server import MAX_EVENT_STREAMS, create_app
 from core import events, pipeline
 from llm import router as router_module
 from llm.router import Endpoint, Router
@@ -419,3 +420,83 @@ def test_llm_status_marks_an_endpoint_that_used_up_its_allowance(client, monkeyp
     body = client.get("/api/llm/status").json()
     assert body["endpoints"][0]["state"] == "limit"
     assert "used up until" in body["endpoints"][0]["reason"]
+
+
+def _start_blocked_run():
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_runner(gem_url, refresh, on_event):
+        with events.capture(on_event):
+            events.emit("run_started", gem_url=gem_url, refresh=refresh)
+            events.emit("stage", name="extract", label="Reading")
+        started.set()
+        release.wait(5)
+        return {"matches": [], "from_cache": False}
+
+    app = create_app(runner=blocking_runner, demo=False)
+    client = TestClient(app)
+    run_id = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+    assert started.wait(2)
+    return client, app, run_id, release
+
+
+def test_a_running_job_returns_its_event_count_and_no_error():
+    client, _app, run_id, release = _start_blocked_run()
+    try:
+        run = client.get(f"/api/runs/{run_id}").json()
+        assert run["status"] == "running"
+        assert run["event_count"] == 2
+        assert run["error"] is None
+    finally:
+        release.set()
+        wait_until_finished(client, run_id)
+
+
+def test_the_ninth_event_stream_is_refused():
+    client, app, run_id, release = _start_blocked_run()
+    try:
+        with ExitStack() as stack:
+            for _ in range(MAX_EVENT_STREAMS):
+                response = stack.enter_context(client.stream("GET", f"/api/runs/{run_id}/events"))
+                assert response.status_code == 200
+            ninth = stack.enter_context(client.stream("GET", f"/api/runs/{run_id}/events"))
+            assert ninth.status_code == 429
+            ninth.read()
+            detail = ninth.json()["detail"]
+            assert "Too many live event streams" in detail
+            assert str(MAX_EVENT_STREAMS) in detail
+            assert app.state.event_streams.active == MAX_EVENT_STREAMS
+    finally:
+        release.set()
+        wait_until_finished(client, run_id)
+    deadline = time.time() + 2
+    while app.state.event_streams.active and time.time() < deadline:
+        time.sleep(0.01)
+    assert app.state.event_streams.active == 0
+
+
+def test_a_closed_tab_frees_its_event_stream_slot():
+    client, app, run_id, release = _start_blocked_run()
+    streams = []
+    try:
+        for _ in range(MAX_EVENT_STREAMS):
+            context = client.stream("GET", f"/api/runs/{run_id}/events")
+            response = context.__enter__()
+            assert response.status_code == 200
+            streams.append(context)
+        assert app.state.event_streams.active == MAX_EVENT_STREAMS
+
+        streams.pop().__exit__(None, None, None)
+        deadline = time.time() + 2
+        while app.state.event_streams.active == MAX_EVENT_STREAMS and time.time() < deadline:
+            time.sleep(0.01)
+        assert app.state.event_streams.active == MAX_EVENT_STREAMS - 1
+
+        with client.stream("GET", f"/api/runs/{run_id}/events") as replacement:
+            assert replacement.status_code == 200
+            assert app.state.event_streams.active == MAX_EVENT_STREAMS
+    finally:
+        for context in streams:
+            context.__exit__(None, None, None)
+        release.set()
+        wait_until_finished(client, run_id)

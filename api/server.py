@@ -17,11 +17,13 @@ import json
 import os
 import re
 import subprocess
+import threading
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
+from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -42,6 +44,7 @@ from core.gem_url import looks_like_gem_url
 
 FRONTEND_DIR = BASE_DIR / "frontend"
 SSE_HEARTBEAT_SECONDS = 15.0
+MAX_EVENT_STREAMS = 8
 TRACE_TEXT_LIMIT = 1000
 CSP = (
     "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
@@ -76,6 +79,26 @@ def _llm_ready(demo: bool) -> Optional[int]:
     except Exception:
         return None
     return sum(1 for row in rows if row.get("state") == "ready")
+
+
+class _StreamSlots:
+    """Counts live SSE responses, so the ninth is refused instead of queued."""
+
+    def __init__(self, limit: int = MAX_EVENT_STREAMS):
+        self.limit = limit
+        self.active = 0
+        self._lock = threading.Lock()
+
+    def try_acquire(self) -> bool:
+        with self._lock:
+            if self.active >= self.limit:
+                return False
+            self.active += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self.active = max(0, self.active - 1)
 
 
 class RunRequest(BaseModel):
@@ -212,6 +235,7 @@ def create_app(
 
     app = FastAPI(title="GeM Price Comparison API", lifespan=lifespan)
     app.state.manager = manager
+    app.state.event_streams = _StreamSlots()
 
     origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
     if origins:
@@ -291,26 +315,44 @@ def create_app(
         }
 
     @app.get("/api/runs/{run_id}/events")
-    def stream_events(run_id: str, request: Request, after: int = 0):
+    async def stream_events(run_id: str, request: Request, after: int = 0):
         job = manager.get(run_id)
         if job is None:
             raise HTTPException(status_code=404, detail="No such run.")
+        if not app.state.event_streams.try_acquire():
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many live event streams (limit {app.state.event_streams.limit}). Close a tab and try again.",
+            )
         # A browser that reconnects sends Last-Event-ID; continue after it.
         last_id = request.headers.get("last-event-id")
         start = int(last_id) if last_id and last_id.isdigit() else after
 
-        def stream():
+        async def stream():
             index = start
-            while True:
-                new, done = job.wait_for_events(index, SSE_HEARTBEAT_SECONDS)
-                for event in new:
-                    yield f"id: {event['seq']}\ndata: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                index += len(new)
-                if done:
-                    yield f"event: done\ndata: {json.dumps({'status': job.status})}\n\n"
-                    return
-                if not new:
-                    yield ": keep-alive\n\n"
+            try:
+                while True:
+                    new, done = await to_thread.run_sync(
+                        job.wait_for_events,
+                        index,
+                        SSE_HEARTBEAT_SECONDS,
+                        abandon_on_cancel=True,
+                    )
+                    for event in new:
+                        yield f"id: {event['seq']}\ndata: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    index += len(new)
+                    if done:
+                        yield f"event: done\ndata: {json.dumps({'status': job.status})}\n\n"
+                        return
+                    if not new:
+                        # The wait may have been the only thing on this
+                        # connection for 15 s - if the tab is gone, stop
+                        # here and give the slot back.
+                        if await request.is_disconnected():
+                            return
+                        yield ": keep-alive\n\n"
+            finally:
+                app.state.event_streams.release()
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
