@@ -191,3 +191,38 @@ def test_a_thousand_events_replay_quickly():
     )
     assert out["shops"] == 1
     assert out["ms"] < 300, f"1000 events took {out['ms']:.1f} ms"
+
+def test_is_product_url_accepts_and_rejects():
+    assert _js("r.isProductUrl('https://mkp.gem.gov.in/computer-mouse/logitech-m650/p-5812034-2-cat.html')") is True
+    assert _js("r.isProductUrl('https://mkp.gem.gov.in/search?q=mouse')") is False
+    assert _js("r.isProductUrl('http://GEM.GOV.IN/a/b/p-1-2-cat.html?q=1')") is True
+    assert _js("r.isProductUrl('javascript:alert(1)')") is False
+    assert _js("r.isProductUrl('')") is False
+
+
+def test_scale_for_uses_25_percent_steps():
+    rows = [{"delta": 150, "price": 1149, "isGem": False}, {"delta": 0, "price": 1299, "isGem": True}]
+    out = _js("r.scaleFor(" + __import__("json").dumps(rows) + ")")
+    assert out["half"] == 0.25
+    rows2 = [{"delta": 700, "price": 500, "isGem": False}, {"delta": 0, "price": 1299, "isGem": True}]
+    out2 = _js("r.scaleFor(" + __import__("json").dumps(rows2) + ")")
+    assert out2["half"] in (0.5, 0.75, 1.0)
+
+
+def test_lane_rows_drops_marketplaces():
+    stats = {"shops": {"flipkart.com": {}, "amazon.in": {}, "shop.in": {"seen": 3, "kept": 2, "dropped": 1}}}
+    out = _js("r.laneRows(" + __import__("json").dumps(stats) + ")")
+    assert [row["key"] for row in out] == ["shop.in"]
+    assert out[0]["kept"] == 2
+
+
+def test_signed_count_formats_signs():
+    assert _js("r.signedCount(12)") == "+12"
+    assert _js("r.signedCount(-3)") == "-3"
+    assert _js("r.signedCount(0)") == "0"
+
+
+def test_should_auto_collapse_only_at_done_without_manual_toggle():
+    assert _js("r.shouldAutoCollapse(false, 'done')") is True
+    assert _js("r.shouldAutoCollapse(true, 'done')") is False
+    assert _js("r.shouldAutoCollapse(false, 'running')") is False
