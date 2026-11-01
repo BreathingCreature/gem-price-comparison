@@ -1,127 +1,279 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GeM Price Comparison</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>GeM Price Comparison</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">GeM</span>
-      <div>
-        <h1>Price Comparison</h1>
-        <p class="sub">Paste a GeM product link and watch every step as it happens.</p>
-      </div>
-    </div>
-    <div class="top-right">
-      <span id="demo-badge" class="pill demo" hidden>demo mode: fake data</span>
-      <span id="clock" class="clock" title="Time since the run started" hidden>00:00</span>
-      <span id="status-pill" class="pill">idle</span>
-    </div>
-  </header>
-
-  <form id="run-form" class="run-form">
-    <input id="gem-url" type="url" required placeholder="https://mkp.gem.gov.in/.../p-123-456-cat.html" aria-label="GeM product link">
-    <label class="check"><input id="refresh" type="checkbox"> Refresh (ignore the saved result)</label>
-    <button id="run-btn" type="submit">Compare prices</button>
-  </form>
-  <p id="form-error" class="error" role="alert" hidden></p>
-
-  <main>
-    <section id="start-screen" class="card">
-      <h2>Recent runs</h2>
-      <p id="recent-empty" class="muted" hidden>No saved runs yet. The first comparison will show up here.</p>
-      <ul id="recent-runs" class="recent"></ul>
-    </section>
-
-    <section id="result-screen" hidden>
-
-      <section class="card product">
-        <div class="product-head">
-          <div>
-            <h2 id="result-title">Product</h2>
-            <p class="muted" id="result-price"></p>
-          </div>
-          <span id="result-state" class="pill">running</span>
-        </div>
-        <div id="product-chips" class="chips"></div>
-        <p id="cheapest-line" class="cheapest"></p>
-      </section>
-
-      <ol id="steps" class="steps" aria-label="Progress"></ol>
-
-      <div id="shop-cards" class="shops"></div>
-
-      <div class="columns">
-        <section class="card activity">
-          <div class="activity-head">
-            <h2>Live activity</h2>
-            <span id="activity-count" class="muted"></span>
-          </div>
-          <div class="toggles">
-            <label class="check"><input id="show-all" type="checkbox" checked> Show every step</label>
-            <label class="check"><input id="open-details" type="checkbox"> Open all details</label>
-            <label class="check"><input id="auto-scroll" type="checkbox" checked> Follow the latest</label>
-          </div>
-          <div id="llm-line" class="llm-line muted"></div>
-          <ol id="feed" class="feed"></ol>
-          <p id="feed-empty" class="muted" hidden>Nothing yet. The steps appear here the moment they happen.</p>
-        </section>
-
-        <div class="results">
-          <section id="matches-section" class="card" hidden>
-            <h2>Matches</h2>
-            <p id="matches-empty" class="muted" hidden>No confirmed match yet.</p>
-            <div class="scroll">
-              <table class="grid">
-                <thead><tr><th>Shop</th><th>Price</th><th>Vs GeM</th><th>Sure</th><th>Why</th><th>Link</th></tr></thead>
-                <tbody id="matches-body"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section id="possible-section" class="card" hidden>
-            <h2>Possible matches</h2>
-            <p class="muted">Looks right but something is missing. Check these by hand.</p>
-            <div class="scroll">
-              <table class="grid">
-                <thead><tr><th>Shop</th><th>Title</th><th>Price</th><th>Why</th><th>Link</th></tr></thead>
-                <tbody id="possible-body"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section id="similar-section" class="card" hidden>
-            <h2>Similar (not the same product)</h2>
-            <ul id="similar-list" class="plain"></ul>
-          </section>
-
-          <section id="warnings-section" class="card" hidden>
-            <h2>Warnings</h2>
-            <ul id="warnings-list" class="plain warn-list"></ul>
-          </section>
-
-          <section class="card">
-            <button id="llm-toggle" type="button" class="linkish">Show LLM endpoints</button>
-            <div id="llm-body" hidden>
-              <p class="muted" id="llm-strategy"></p>
-              <div class="scroll">
-                <table class="grid">
-                  <thead><tr><th>Endpoint</th><th>State</th><th>Calls</th><th>Errors</th><th>Note</th></tr></thead>
-                  <tbody id="providers-body"></tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <script src="render.js"></script>
-  <script src="app.js"></script>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="topbar">
+<a class="brand" href="/" aria-label="GeM Price Comparison, home">
+<svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+<rect x="2" y="2" width="36" height="36" rx="11" fill="currentColor"></rect>
+<path class="brand-glyph" d="M13 12h11.5a4.5 4.5 0 0 1 0 9H17l7.5 7"></path>
+<circle class="brand-dot" cx="27" cy="27" r="1.8"></circle>
+</svg>
+<span class="brand-name">GeM Price Comparison</span>
+</a>
+<div class="top-actions">
+<button id="llm-health" class="health" hidden title="LLM endpoint health">
+<span id="llm-health-dot" class="dot" aria-hidden="true"></span>
+<span id="llm-health-text">Checking LLM endpoints</span>
+</button>
+<button id="theme-toggle" class="icon-button" aria-label="Switch to dark theme" title="Switch theme">
+<svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="12" r="4"></circle>
+<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+</svg>
+<svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true">
+<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path>
+</svg>
+</button>
+<span id="demo-badge" class="badge badge-demo" hidden title="Demo data: fake shops, a fake LLM and a fake GeM page. No network calls are made.">Demo data</span>
+</div>
+</header>
+<main id="main" class="shell">
+<section id="start-screen" class="screen" aria-labelledby="hero-title">
+<div class="hero">
+<p class="kicker">A price check for public buying</p>
+<h1 id="hero-title">Is the GeM price fair?</h1>
+<p class="lede">Paste a GeM product link. The tool reads the listing, searches Indian shops for the same product, and shows the first honest answer while the rest of the run finishes.</p>
+<form id="run-form" class="run-form" novalidate>
+<div class="search-control">
+<label class="sr-only" for="gem-url">GeM product link</label>
+<input id="gem-url" name="gem-url" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://mkp.gem.gov.in/.../p-123-456-cat.html" aria-describedby="url-error">
+<button id="run-btn" class="button button-primary" type="submit">Compare</button>
+</div>
+<p id="url-error" class="form-error" role="alert" hidden></p>
+<label class="switch">
+<input id="refresh" type="checkbox">
+<span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+<span class="switch-text">Refresh <span class="hint">Ignore the saved result</span></span>
+</label>
+</form>
+</div>
+<section class="explain" aria-labelledby="steps-title">
+<div class="section-head">
+<h2 id="steps-title">What happens when you press Compare</h2>
+<p>Five stages, one pipeline. The page only shows what the run actually reports.</p>
+</div>
+<ol class="steps">
+<li class="step">
+<span class="step-icon" aria-hidden="true">
+<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"></path><path d="M14 3v4h4M9 12h6M9 16h6"></path></svg>
+</span>
+<span class="step-number">01</span>
+<h3>Read the GeM page</h3>
+<p>Plain HTTP and selectors pull the title, brand, model, specs and price. No model is involved yet.</p>
+</li>
+<li class="step">
+<span class="step-icon" aria-hidden="true">
+<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path><path d="M18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z"></path></svg>
+</span>
+<span class="step-number">02</span>
+<h3>Understand the product (LLM)</h3>
+<p>The LLM turns the listing into a search identity: a canonical name, brand, model, key identifiers and search words.</p>
+</li>
+<li class="step">
+<span class="step-icon" aria-hidden="true">
+<svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5"></path><path d="M4 9v11h16V9"></path><path d="M3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"></path><path d="M9 20v-6h6v6"></path></svg>
+</span>
+<span class="step-number">03</span>
+<h3>Search three lanes at once</h3>
+<p>Flipkart, Amazon and other Indian shops run together. A web search finds the other shops; every page is fetched by code.</p>
+</li>
+<li class="step">
+<span class="step-icon" aria-hidden="true">
+<svg viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg>
+</span>
+<span class="step-number">04</span>
+<h3>Filter, then check each listing</h3>
+<p>A cheap title filter keeps the strongest listings per shop. The LLM then judges each one against the reference product.</p>
+</li>
+<li class="step">
+<span class="step-icon" aria-hidden="true">
+<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"></path><path d="M8.5 12l2.4 2.4 4.6-5"></path></svg>
+</span>
+<span class="step-number">05</span>
+<h3>Safety checks and one retry</h3>
+<p>Code checks the currency, the price band and the confidence threshold. The first result appears at once; gaps are retried once.</p>
+</li>
+</ol>
+</section>
+<section class="recent" aria-labelledby="recent-title">
+<div class="section-head">
+<h2 id="recent-title">Recent runs</h2>
+<p id="recent-note">Saved on this machine, newest first.</p>
+</div>
+<div id="recent-grid" class="recent-grid" aria-live="polite"></div>
+<p id="recent-empty" class="empty">No runs yet. Paste a GeM link above and the first result will appear as soon as a shop answers.</p>
+</section>
+</section>
+<section id="run-screen" class="screen" hidden aria-labelledby="verdict-title">
+<div id="connection-banner" class="connection" role="status" hidden>
+<span id="connection-text">Reconnecting</span>
+<button id="retry-connection" class="button button-quiet">Retry now</button>
+</div>
+<div id="page-alert" class="sr-only" aria-live="polite"></div>
+<div class="runbar">
+<button id="back-btn" class="button button-quiet">
+<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>
+Back
+</button>
+<div class="runbar-status">
+<span id="run-clock" class="clock">00:00</span>
+<span id="run-state-label" class="run-state">Starting</span>
+</div>
+<button id="copy-link" class="button button-quiet">Copy link</button>
+</div>
+<div id="run-error" class="alert alert-bad" role="alert" hidden>
+<strong>The run failed.</strong>
+<span id="run-error-text"></span>
+</div>
+<article id="verdict" class="verdict" data-kind="searching" aria-labelledby="verdict-title">
+<div class="verdict-product">
+<p id="verdict-kicker" class="kicker">Reading the GeM page</p>
+<h1 id="verdict-title">Looking for the same product</h1>
+<div id="gem-meta" class="chips"></div>
+<p id="understanding" class="understanding"></p>
+<div id="search-words" class="search-words"></div>
+</div>
+<div class="verdict-answer">
+<p id="answer-kicker" class="answer-kicker">Searching shops</p>
+<p id="answer-price" class="answer-price">Searching</p>
+<p id="answer-shop" class="answer-shop"></p>
+<p id="answer-saving" class="answer-saving"></p>
+<a id="answer-link" class="button button-primary" target="_blank" rel="noopener noreferrer" hidden>Open the listing</a>
+<div id="price-bars" class="bars" aria-label="Prices found, compared with GeM"></div>
+<p id="answer-detail" class="answer-detail">The first honest result appears as soon as a shop answers.</p>
+</div>
+</article>
+<section class="card pipeline-card" aria-labelledby="pipeline-title">
+<div class="section-head section-head-tight">
+<h2 id="pipeline-title">Pipeline</h2>
+<p>Every counter below comes from the run's own events.</p>
+</div>
+<div id="pipeline-map" class="pipeline-map">
+<svg id="map-links" class="map-links" aria-hidden="true"></svg>
+<div id="node-read" class="map-node" data-state="waiting">
+<span class="node-label">Read GeM page</span>
+<span id="node-read-value" class="node-value">waiting</span>
+</div>
+<div id="node-understand" class="map-node" data-state="waiting">
+<span class="node-label">Understand (LLM)</span>
+<span id="node-understand-value" class="node-value">waiting</span>
+</div>
+<div id="map-lanes" class="map-lanes"></div>
+<div id="node-checks" class="map-node" data-state="waiting">
+<span class="node-label">Checks and first result</span>
+<span id="node-checks-value" class="node-value">waiting</span>
+</div>
+<div id="node-retry" class="map-node" data-state="waiting">
+<span class="node-label">Retry gaps</span>
+<span id="node-retry-value" class="node-value">not needed yet</span>
+</div>
+</div>
+<div id="status-legend" class="legend" aria-label="Shop status meanings">
+<p class="legend-intro"><strong>Shop states.</strong> "Not found" means the shop was searched and nothing matched. "Could not search" means it was blocked or skipped; the answer is then incomplete, not a no.</p>
+<ul class="legend-list">
+<li><span class="status-chip status-found">Found a match</span> A confirmed match was kept.</li>
+<li><span class="status-chip status-possible">Possible only</span> A listing looked close but was not confirmed.</li>
+<li><span class="status-chip status-not-found">Not found</span> Searched, nothing matched.</li>
+<li><span class="status-chip status-warning">Could not search</span> Blocked, skipped or out of time.</li>
+</ul>
+</div>
+</section>
+<section class="card tabs-card" aria-label="Run details">
+<div class="tabbar">
+<div id="tablist" class="tablist" role="tablist" aria-label="Run details">
+<button id="tab-matches" class="tab" role="tab" aria-selected="true" aria-controls="panel-matches" data-tab="matches">Matches <span id="count-matches" class="tab-count">0</span></button>
+<button id="tab-possible" class="tab" role="tab" aria-selected="false" aria-controls="panel-possible" data-tab="possible" tabindex="-1">Possible <span id="count-possible" class="tab-count">0</span></button>
+<button id="tab-activity" class="tab" role="tab" aria-selected="false" aria-controls="panel-activity" data-tab="activity" tabindex="-1">Activity <span id="count-activity" class="tab-count">0</span></button>
+<button id="tab-system" class="tab" role="tab" aria-selected="false" aria-controls="panel-system" data-tab="system" tabindex="-1">LLM and system</button>
+</div>
+</div>
+<div id="panel-matches" class="tab-panel" role="tabpanel" aria-labelledby="tab-matches" tabindex="0">
+<p id="matches-empty" class="empty">No confirmed match yet. This tab fills in when a shop returns the same product.</p>
+<div id="matches-table-wrap" class="table-wrap" hidden>
+<table class="data-table">
+<thead>
+<tr><th scope="col">Shop</th><th scope="col">Listing</th><th scope="col">Price</th><th scope="col">Against GeM</th><th scope="col">Confidence</th><th scope="col">Checks</th><th scope="col"><span class="sr-only">Link</span></th></tr>
+</thead>
+<tbody id="matches-body"></tbody>
+</table>
+</div>
+<div id="matches-cards" class="match-cards"></div>
+<p class="note">Prices are for the listing as shown. Check quantity, colour and bundle before you buy.</p>
+<div class="panel-actions">
+<button id="copy-summary" class="button button-quiet">Copy summary</button>
+<button id="download-csv" class="button button-quiet">Download CSV</button>
+</div>
+</div>
+<div id="panel-possible" class="tab-panel" role="tabpanel" aria-labelledby="tab-possible" tabindex="0" hidden>
+<p id="possible-empty" class="empty">No possible matches. This tab lists listings that looked close but were not confirmed.</p>
+<div id="possible-table-wrap" class="table-wrap" hidden>
+<table class="data-table">
+<thead>
+<tr><th scope="col">Shop</th><th scope="col">Listing</th><th scope="col">Price</th><th scope="col">Why not confirmed</th><th scope="col"><span class="sr-only">Link</span></th></tr>
+</thead>
+<tbody id="possible-body"></tbody>
+</table>
+</div>
+<div id="possible-cards" class="match-cards"></div>
+</div>
+<div id="panel-activity" class="tab-panel" role="tabpanel" aria-labelledby="tab-activity" tabindex="0" hidden>
+<div class="activity-tools">
+<div id="activity-filters" class="filter-row" role="group" aria-label="Filter activity"></div>
+<label class="field">
+<span class="sr-only">Search activity</span>
+<input id="activity-search" type="search" placeholder="Search activity" autocomplete="off">
+</label>
+<label class="check"><input id="follow-latest" type="checkbox" checked> Follow the latest</label>
+<label class="check"><input id="open-details" type="checkbox"> Open all details</label>
+<span id="activity-count" class="activity-count"></span>
+</div>
+<ol id="activity-list" class="feed" aria-label="Activity feed"></ol>
+<p id="activity-empty" class="empty">Events appear here as the run moves.</p>
+</div>
+<div id="panel-system" class="tab-panel" role="tabpanel" aria-labelledby="tab-system" tabindex="0" hidden>
+<p id="llm-strategy" class="strategy">LLM endpoint status is loading.</p>
+<div class="table-wrap">
+<table class="data-table compact">
+<thead>
+<tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">State</th><th scope="col">Calls</th><th scope="col">Errors</th><th scope="col">Average</th><th scope="col">Note</th></tr>
+</thead>
+<tbody id="llm-table-body"></tbody>
+</table>
+</div>
+<p id="llm-run-summary" class="run-llm"></p>
+<dl id="run-stats" class="run-stats"></dl>
+</div>
+</section>
+<section id="similar-section" class="card" hidden aria-labelledby="similar-title">
+<div class="section-head section-head-tight">
+<h2 id="similar-title">Similar products</h2>
+<p>Near misses, not the same product. They are never used for the cheapest price.</p>
+</div>
+<div id="similar-list" class="match-cards"></div>
+</section>
+<section id="warnings-section" class="card" hidden aria-labelledby="warnings-title">
+<div class="section-head section-head-tight">
+<h2 id="warnings-title">Warnings</h2>
+<p>Things this run could not verify or wants you to check by hand.</p>
+</div>
+<ul id="warnings-list" class="warnings"></ul>
+</section>
+</section>
+</main>
+<footer class="foot">
+<p>Prices are a snapshot from the shops that answered. Unknown stays unknown.</p>
+</footer>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="render.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

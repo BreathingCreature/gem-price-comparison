@@ -61,7 +61,72 @@ def read_stream(client, run_id, query=""):
 
 
 def test_health_says_whether_it_is_demo_mode(client):
-    assert client.get("/api/health").json() == {"ok": True, "demo": False}
+    body = client.get("/api/health").json()
+    assert body["ok"] is True and body["demo"] is False
+    assert set(body) == {"ok", "demo", "llm_ready", "gates", "version"}
+    assert body["gates"] == {"low_ratio": 0.15, "high_ratio": 5.0, "min_confidence": 0.75}
+    assert body["llm_ready"] is None or isinstance(body["llm_ready"], int)
+    assert body["version"] is None or isinstance(body["version"], str)
+
+
+def test_every_response_carries_the_security_headers(client):
+    expected = (
+        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+        "connect-src 'self'; base-uri 'none'; form-action 'self'"
+    )
+    for path in ("/", "/api/health"):
+        headers = client.get(path).headers
+        assert headers["content-security-policy"] == expected
+        assert headers["x-content-type-options"] == "nosniff"
+        assert headers["referrer-policy"] == "no-referrer"
+
+
+def test_cors_is_off_until_origins_are_configured(monkeypatch):
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    plain = TestClient(create_app(runner=fake_runner, demo=False))
+    response = plain.get("/api/health", headers={"Origin": "https://elsewhere.test"})
+    assert "access-control-allow-origin" not in response.headers
+
+    monkeypatch.setenv("CORS_ORIGINS", "https://elsewhere.test")
+    allowed = TestClient(create_app(runner=fake_runner, demo=False))
+    response = allowed.get("/api/health", headers={"Origin": "https://elsewhere.test"})
+    assert response.headers["access-control-allow-origin"] == "https://elsewhere.test"
+
+
+def test_the_same_link_and_refresh_return_the_running_job(monkeypatch):
+    monkeypatch.delenv("GEM_JOBS", raising=False)
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_runner(gem_url, refresh, on_event):
+        started.set()
+        release.wait(5)
+        return {"matches": [], "from_cache": False}
+
+    client = TestClient(create_app(runner=blocking_runner, demo=False))
+    first = client.post("/api/runs", json={"gem_url": GEM_URL}).json()
+    assert started.wait(2)
+    again = client.post("/api/runs", json={"gem_url": GEM_URL}).json()
+    assert again["run_id"] == first["run_id"]
+    assert again["queue_position"] == 0
+
+    different_refresh = client.post("/api/runs", json={"gem_url": GEM_URL, "refresh": True}).json()
+    assert different_refresh["run_id"] != first["run_id"]
+    assert different_refresh["status"] == "queued"
+    assert different_refresh["queue_position"] == 1
+
+    summary = client.get(f"/api/runs/{different_refresh['run_id']}").json()
+    assert summary["queue_position"] == 1 and summary["status"] == "queued"
+
+    release.set()
+    assert wait_until_finished(client, first["run_id"])["status"] == "done"
+    assert wait_until_finished(client, different_refresh["run_id"])["status"] == "done"
+
+
+def test_demo_health_has_no_llm_count_and_keeps_the_gates():
+    body = TestClient(create_app(demo=True)).get("/api/health").json()
+    assert body["demo"] is True
+    assert body["llm_ready"] is None
+    assert body["gates"]["min_confidence"] == 0.75
 
 
 def test_a_link_that_is_not_gem_is_refused(client):
@@ -191,11 +256,19 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     assert run["status"] == "done"
     result = run["result"]
     assert result["state"] == "done"
-    assert [(m["shop"], m["price"]) for m in result["matches"]] == [("flipkart.com", 1149.0), ("amazon.in", 1199.0)]
+    assert [(m["shop"], m["price"]) for m in result["matches"]] == [
+        ("flipkart.com", 1149.0),
+        ("amazon.in", 1199.0),
+        ("indiamart.com", 1249.0),
+    ]
+    assert [m["bulk"] for m in result["matches"]] == [False, False, True]
     assert result["cheapest"]["shop"] == "flipkart.com"
     assert result["cheapest"]["saving_vs_gem"] == 150.0
+    assert [(p["shop"], p["why"]) for p in result["possible_matches"]] == [("amazon.in", "different pack")]
+    assert any("B2B/bulk" in warning for warning in result["warnings"])
     assert result["shops"]["amazon.in"]["status"] == "found"
     assert result["shops"]["flipkart.com"]["status"] == "found" and result["shops"]["flipkart.com"]["retried"] is True
+    assert result["shops"]["indiamart.com"]["status"] == "found"
     assert result["shops"]["example-shop.in"]["status"] == "not_found"
     seen, _ = read_stream(client, run_id)
     types = {e["type"] for e in seen}
@@ -217,7 +290,8 @@ def test_gem_jobs_two_runs_really_run_at_the_same_time(monkeypatch):
         return {"matches": [], "from_cache": False}
 
     client = TestClient(create_app(runner=overlapping_runner, demo=False))
-    run_ids = [client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"] for _ in range(2)]
+    urls = [GEM_URL, "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-501-600-cat.html"]
+    run_ids = [client.post("/api/runs", json={"gem_url": url}).json()["run_id"] for url in urls]
     for run_id in run_ids:
         assert wait_until_finished(client, run_id, timeout=8.0)["status"] == "done"
 
@@ -234,7 +308,10 @@ def test_without_gem_jobs_the_second_run_stays_queued(monkeypatch):
     client = TestClient(create_app(runner=blocking_runner, demo=False))
     first = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
     assert started.wait(2)
-    second = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
+    second = client.post(
+        "/api/runs",
+        json={"gem_url": "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-501-600-cat.html"},
+    ).json()["run_id"]
 
     statuses = {r["id"]: r["status"] for r in client.get("/api/runs").json()["runs"]}
     assert statuses[first] == "running"
@@ -283,6 +360,8 @@ def test_recent_runs_read_from_disk_after_a_restart():
     assert listed[0]["id"] == "savedrun1"
     assert listed[0]["title"] == "Saved Mouse"
     assert listed[0]["cheapest_price"] == 999.0
+    assert listed[0]["saving_vs_gem"] == 100.0
+    assert listed[0]["queue_position"] == 0
     assert listed[0]["live"] is False
 
 

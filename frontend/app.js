@@ -1,562 +1,126 @@
-// GeM Price Comparison frontend. Plain JavaScript, no build step.
-// It talks to the backend only through the routes in docs/api.md and uses
-// frontend/render.js for every formatted string and every sentence of the
-// live activity feed. All text goes in through h() / textContent; scraped
-// pages never get to inject markup.
-(function () {
-  "use strict";
-
-  var API = window.GEM_API_BASE || "";
-  var R = window.GemRender;
-  var $ = function (id) { return document.getElementById(id); };
-
-  var MAX_FEED_LINES = 600;  // the browser stays fast on very long runs
-
-  var state;
-
-  function freshState() {
-    return {
-      runId: null, source: null, active: false, finished: false,
-      result: null, retrying: [], cards: {}, stats: R.newStats(),
-      feedLines: 0, hiddenLines: 0, timerId: null, startedAt: null
-    };
-  }
-  state = freshState();
-
-  // ---- tiny DOM helper (text only, so scraped titles can never inject HTML) ----
-  function h(tag, attrs) {
-    var el = document.createElement(tag);
-    attrs = attrs || {};
-    Object.keys(attrs).forEach(function (k) {
-      if (k === "class") el.className = attrs[k];
-      else if (k === "text") el.textContent = attrs[k];
-      else if (k === "hidden") el.hidden = !!attrs[k];
-      else el.setAttribute(k, attrs[k]);
-    });
-    for (var i = 2; i < arguments.length; i++) {
-      var c = arguments[i];
-      if (c == null) continue;
-      el.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    }
-    return el;
-  }
-  function clear(el) { while (el && el.firstChild) el.removeChild(el.firstChild); }
-  function linkOrText(url) {
-    var href = R.safeHref(url);
-    if (href) return h("a", { href: href, target: "_blank", rel: "noopener noreferrer", text: "Open" });
-    return h("span", { class: "muted", text: url || "-" });
-  }
-  function setPill(text, kind) {
-    var pill = $("status-pill");
-    pill.textContent = text;
-    pill.className = "pill" + (kind ? " " + kind : "");
-  }
-  function money(value) { return R.money(value); }
-
-  // ---- start screen ----
-  function loadRecent() {
-    fetch(API + "/api/runs").then(function (r) { return r.json(); }).then(function (body) {
-      var list = $("recent-runs");
-      clear(list);
-      var runs = (body && body.runs) || [];
-      $("recent-empty").hidden = runs.length > 0;
-      runs.forEach(function (run) {
-        var price = run.cheapest_price != null ? "cheapest " + money(run.cheapest_price) : "not found";
-        var when = run.checked_at ? String(run.checked_at).replace("T", " ").slice(0, 16) : (run.live ? "now" : "");
-        var button = h("button", { type: "button", class: "recent-item" },
-          h("span", { class: "recent-title", text: run.title || run.gem_url || "(untitled run)" }),
-          h("span", { class: "muted", text: price + (when ? "  ·  " + when : "") }));
-        button.addEventListener("click", function () { openSavedRun(run.id); });
-        list.appendChild(h("li", null, button));
-      });
-    }).catch(function () { /* the list simply stays empty */ });
-  }
-
-  function showScreen(which) {
-    $("start-screen").hidden = which !== "start";
-    $("result-screen").hidden = which !== "result";
-  }
-
-  // ---- the product box: what GeM says, what the LLM understood ----
-  function renderHeader(result) {
-    var gem = (result && result.gem) || {};
-    var seen = state.stats.gem || {};
-    var title = gem.title || seen.title;
-    if (title) $("result-title").textContent = title;
-    var price = gem.price || null;
-    var low = price ? price.low : seen.price;
-    var high = price ? price.high : null;
-    var kind = price ? (price.kind || "unknown") : (seen.priceType || "price");
-    if (low != null) {
-      $("result-price").textContent = "GeM price " + money(low) + (high != null && high !== low ? " to " + money(high) : "") + " (" + kind + ")";
-    } else if (result || state.stats.gem) {
-      $("result-price").textContent = "GeM price not found on the page";
-    }
-    if (result) {
-      $("result-state").textContent = R.stateLabel(result, state.finished ? "done" : "running");
-      $("result-state").className = "pill " + (result.from_cache ? "cached" : (state.finished ? "done" : "running"));
-      $("cheapest-line").textContent = result.matches && result.matches.length || result.cheapest ? R.cheapestLine(result) : "";
-    }
-    renderChips(gem);
-  }
-
-  function renderChips(gem) {
-    var box = $("product-chips");
-    clear(box);
-    var p = state.stats.product;
-    var brand = (p && p.brand) || gem.brand;
-    var model = (p && p.model) || gem.model;
-    if (p && p.name) box.appendChild(h("span", { class: "chip", text: "understood as: " + p.name }));
-    if (brand) box.appendChild(h("span", { class: "chip", text: "brand: " + brand }));
-    if (model) box.appendChild(h("span", { class: "chip", text: "model: " + model }));
-    if (p) p.queries.forEach(function (q) { box.appendChild(h("span", { class: "chip query", text: "search: " + q })); });
-  }
-
-  // ---- progress strip ----
-  function renderSteps() {
-    var list = $("steps");
-    clear(list);
-    R.STEPS.forEach(function (step) {
-      var cls = state.stats.doneSteps[step.id] ? "done" : (state.stats.step === step.id && !state.finished ? "active" : "");
-      list.appendChild(h("li", { class: cls, text: step.label }));
-    });
-  }
-
-  // ---- shop cards ----
-  function cardOrder(key) {
-    if (key === "flipkart.com") return 0;
-    if (key === "amazon.in") return 1;
-    if (key === "other") return 9;
-    return 5;
-  }
-
-  function cardFor(shop) {
-    if (state.cards[shop]) return state.cards[shop];
-    var badge = h("span", { class: "badge", text: "waiting" });
-    var big = h("p", { class: "big", text: "" });
-    var live = h("p", { class: "line", text: "" });
-    var doing = h("p", { class: "doing", text: "" });
-    var reason = h("p", { class: "reason muted" });
-    var fill = h("span");
-    var bar = h("div", { class: "bar" }, fill);
-    var el = h("article", { class: "shop-card shop-running", "data-order": String(cardOrder(shop)) },
-      h("div", { class: "row" }, h("h3", { text: shop === "other" ? "other shops" : shop }), badge),
-      big, live, doing, reason, bar);
-    var container = $("shop-cards");
-    var before = null;
-    for (var i = 0; i < container.children.length; i++) {
-      if (Number(container.children[i].getAttribute("data-order")) > cardOrder(shop)) { before = container.children[i]; break; }
-    }
-    container.insertBefore(el, before);
-    state.cards[shop] = { el: el, badge: badge, big: big, live: live, doing: doing, reason: reason, fill: fill, final: false };
-    return state.cards[shop];
-  }
-
-  // Counters and "what it is doing now", from the event counters.
-  function paintLive(shop) {
-    var card = cardFor(shop);
-    var s = state.stats.shops[shop];
-    if (!s) return;
-    card.live.textContent = R.liveShopLine(s);
-    if (!card.final) {
-      card.doing.textContent = s.activity || "";
-      var total = Math.max(s.checking, s.judged, 1);
-      var pct = s.judged ? Math.round(100 * s.judged / total) : (s.queries ? Math.round(100 * s.queriesDone / s.queries / 2) : 0);
-      card.fill.style.width = Math.min(pct, 100) + "%";
-    }
-  }
-
-  function fillCard(shop, entry) {
-    var card = cardFor(shop);
-    card.final = true;
-    card.badge.textContent = (entry.status || "unknown").replace(/_/g, " ");
-    var retry = R.retryLabel(shop, state.retrying);
-    card.big.textContent = entry.matches > 0 && entry.price != null ? money(entry.price) : "";
-    card.live.textContent = R.shopSummary(entry);
-    card.doing.textContent = retry;
-    card.reason.textContent = R.shopNeedsReason(entry) ? (entry.reason || "") : "";
-    card.fill.style.width = "100%";
-    card.el.className = "shop-card " + R.statusClass(entry.status) + (retry ? " shop-retrying" : "");
-    card.el.dataset.shop = shop;
-  }
-
-  function renderMatches(result) {
-    result = result || {};
-    var rows = R.matchRows(result);
-    clear($("matches-body"));
-    rows.forEach(function (row) {
-      $("matches-body").appendChild(h("tr", { class: row.inStock ? "" : "out-of-stock" },
-        h("td", { text: row.bulk ? row.shop + " (B2B)" : row.shop }),
-        h("td", { text: row.priceText }),
-        h("td", { class: row.cheaper ? "ok" : "", text: row.vsGem }),
-        h("td", { text: row.confidence }),
-        h("td", { text: row.reason }),
-        h("td", null, linkOrText(row.url))));
-    });
-    $("matches-section").hidden = rows.length === 0 && !state.active;
-    $("matches-empty").hidden = rows.length > 0;
-
-    var possible = R.possibleRows(result);
-    clear($("possible-body"));
-    possible.forEach(function (row) {
-      $("possible-body").appendChild(h("tr", null,
-        h("td", { text: row.shop }),
-        h("td", { text: row.title }),
-        h("td", { text: row.priceText }),
-        h("td", { text: row.why }),
-        h("td", null, linkOrText(row.url))));
-    });
-    $("possible-section").hidden = possible.length === 0;
-
-    var similar = R.similarRows(result);
-    clear($("similar-list"));
-    similar.forEach(function (row) {
-      $("similar-list").appendChild(h("li", null,
-        h("span", { text: row.title + "  (" + row.shop + ")" }),
-        h("span", { class: "price", text: row.priceText }),
-        linkOrText(row.url)));
-    });
-    // The similar list is only for a run with nothing at all; a match makes
-    // "similar" noise.
-    $("similar-section").hidden = !(R.showsSimilar(result) && !state.active);
-
-    var warnings = result.warnings || [];
-    clear($("warnings-list"));
-    warnings.forEach(function (text) { $("warnings-list").appendChild(h("li", { text: text })); });
-    $("warnings-section").hidden = warnings.length === 0;
-  }
-
-  function renderResult(result) {
-    if (!result) return;
-    state.result = result;
-    Object.keys(result.shops || {}).forEach(function (shop) { fillCard(shop, result.shops[shop]); });
-    renderHeader(result);
-    renderMatches(result);
-  }
-
-  function renderRetrying() {
-    state.retrying.forEach(function (shop) {
-      var card = state.cards[shop];
-      if (card) {
-        card.doing.textContent = "↻ retrying…";
-        card.el.className = card.el.className + " shop-retrying";
-        card.final = false;
-        card.fill.style.width = "10%";
-      }
-    });
-  }
-
-  // ---- live activity feed ----
-  var ICONS = { step: "▶", search: "⌕", filter: "≡", llm: "✶", verdict: "✔", shop: "■", retry: "↻", warn: "!", info: "i" };
-
-  function formatTime(seconds) {
-    return R.clock(seconds);
-  }
-
-  function addFeedLine(event) {
-    var line = R.describeEvent(event);
-    if (!line) return;
-    var feed = $("feed");
-    var main = h("span", { class: "main", text: line.text });
-    var body;
-    if (line.detail && line.detail.length) {
-      var sub = h("div", { class: "sub-lines" });
-      line.detail.forEach(function (text) { sub.appendChild(h("div", { text: text })); });
-      var details = h("details", null, h("summary", null, main), sub);
-      if ($("open-details").checked) details.open = true;
-      body = details;
-    } else {
-      body = main;
-    }
-    var cls = (line.level || "") + (line.key ? "" : " detail-only");
-    var item = h("li", { class: cls.trim() },
-      h("span", { class: "t", text: formatTime(event.t) }),
-      h("span", { class: "icon", text: ICONS[line.kind] || "•" }),
-      h("span", { class: "msg" }, body));
-    var follow = $("auto-scroll").checked;
-    feed.appendChild(item);
-    state.feedLines += 1;
-    while (feed.children.length > MAX_FEED_LINES) {
-      feed.removeChild(feed.firstChild);
-      state.hiddenLines += 1;
-    }
-    $("feed-empty").hidden = true;
-    $("activity-count").textContent = state.feedLines + " steps" + (state.hiddenLines ? " (older " + state.hiddenLines + " hidden)" : "");
-    if (follow) feed.scrollTop = feed.scrollHeight;
-  }
-
-  function renderLlmLine() {
-    var llm = state.stats.llm;
-    var text = "";
-    if (llm.calls || llm.cached) {
-      text = llm.calls + " LLM call" + (llm.calls === 1 ? "" : "s") + (llm.failed ? " (" + llm.failed + " failed)" : "") +
-        (llm.cached ? ", " + llm.cached + " reused" : "") + (llm.seconds ? ", " + llm.seconds.toFixed(1) + " s of waiting in total" : "");
-    }
-    $("llm-line").textContent = text;
-  }
-
-  function applyFeedMode() {
-    $("feed").className = "feed" + ($("show-all").checked ? "" : " compact");
-  }
-
-  // ---- saved runs: replay the events that the trace kept ----
-  function replayTrace(traceId) {
-    if (!traceId) return;
-    fetch(API + "/api/traces/" + traceId).then(function (r) { return r.ok ? r.json() : null; }).then(function (trace) {
-      if (!trace || !trace.events || !trace.events.length) {
-        $("feed-empty").hidden = false;
-        return;
-      }
-      trace.events.forEach(function (event) {
-        try {
-          R.applyEvent(state.stats, event);
-          addFeedLine(event);
-        } catch (e) { /* one odd event must not stop the replay */ }
-      });
-      Object.keys(state.stats.shops).forEach(function (shop) { if (!state.cards[shop]) cardFor(shop); });
-      if (state.result) renderResult(state.result);
-      renderSteps();
-      renderLlmLine();
-      renderHeader(state.result);
-    }).catch(function () { $("feed-empty").hidden = false; });
-  }
-
-  // ---- LLM status ----
-  function loadProviders() {
-    fetch(API + "/api/llm/status").then(function (r) { return r.json(); }).then(function (data) {
-      clear($("providers-body"));
-      $("llm-strategy").textContent = data.error ? "Config problem: " + data.error : "Strategy: " + data.strategy;
-      (data.endpoints || []).forEach(function (endpoint) {
-        $("providers-body").appendChild(h("tr", null,
-          h("td", { text: endpoint.endpoint }),
-          h("td", { class: endpoint.state === "ready" ? "ok" : endpoint.state === "limit" ? "bad" : "warn", text: endpoint.state }),
-          h("td", { text: String(endpoint.calls) }),
-          h("td", { text: String(endpoint.errors) }),
-          h("td", { text: endpoint.reason || endpoint.last_error || "" })));
-      });
-    }).catch(function () { /* the panel just stays as it was */ });
-  }
-
-  // ---- clock ----
-  function tick() {
-    if (!state.active || !state.startedAt) return;
-    $("clock").textContent = R.clock((Date.now() - state.startedAt) / 1000);
-  }
-  function startClock() { stopClock(); $("clock").hidden = false; state.timerId = setInterval(tick, 500); }
-  function stopClock() { if (state.timerId) clearInterval(state.timerId); state.timerId = null; }
-
-  // ---- events ----
-  function handle(event) {
-    // Every event first updates the counters and adds a feed line; the cases
-    // below only do the extra work that some events need.
-    R.applyEvent(state.stats, event);
-    addFeedLine(event);
-    Object.keys(state.stats.shops).forEach(function (shop) { paintLive(shop); });
-    renderSteps();
-    renderLlmLine();
-    if (event.type === "gem_product" || event.type === "normalized") renderHeader(state.result);
-
-    switch (event.type) {
-      case "run_started":
-        state.startedAt = Date.now();
-        state.active = true;
-        $("run-btn").disabled = true;
-        setPill("running", "running");
-        break;
-      case "shop_started":
-        cardFor(R.shopKey(event.shop));
-        break;
-      case "shop_finished":
-        fillCard(R.shopKey(event.shop), event);
-        break;
-      case "shop_updated":
-        state.retrying = state.retrying.filter(function (s) { return s !== event.shop; });
-        fillCard(R.shopKey(event.shop), event);
-        break;
-      case "retry_started":
-        state.retrying = event.shops || [];
-        renderRetrying();
-        $("result-state").textContent = "updating…";
-        break;
-      case "run_finished":
-        state.result = event.result || state.result;
-        if (state.result) renderResult(state.result);
-        break;
-      case "run_updated":
-        state.result = event.result || state.result;
-        state.retrying = [];
-        if (state.result) renderResult(state.result);
-        break;
-      case "similar_ready":
-        if (state.result) {
-          state.result.similar = event.similar || [];
-          renderMatches(state.result);
-        }
-        break;
-      case "done":
-        finishRun("done");
-        break;
-      case "run_failed":
-        finishRun("failed");
-        showFailure(event.error || event.message || "The run failed.");
-        break;
-      default:
-        break; // unknown event types are ignored on purpose
-    }
-  }
-
-  function showFailure(message) {
-    $("form-error").textContent = message;
-    $("form-error").hidden = false;
-  }
-
-  function finishRun(kind) {
-    state.finished = true;
-    state.active = false;
-    stopClock();
-    $("run-btn").disabled = false;
-    setPill(kind === "failed" ? "failed" : "done", kind);
-    renderSteps();
-    if (state.result) {
-      renderHeader(state.result);
-      renderMatches(state.result);
-    }
-    if (state.source) { state.source.close(); state.source = null; }
-    loadRecent();
-  }
-
-  function attach(runId) {
-    state.runId = runId;
-    if (state.source) state.source.close();
-    var source = new EventSource(API + "/api/runs/" + runId + "/events");
-    state.source = source;
-    source.onmessage = function (msg) {
-      var event;
-      try { event = JSON.parse(msg.data); } catch (e) { return; }
-      // One malformed or unexpected event must never blank the page.
-      try { handle(event); } catch (e) {
-        if (window.console && console.warn) console.warn("event handler failed", e);
-      }
-    };
-    source.addEventListener("done", function (msg) {
-      var payload = {};
-      try { payload = JSON.parse(msg.data); } catch (e) { payload = {}; }
-      finishRun(payload.status === "failed" ? "failed" : "done");
-    });
-    source.onerror = function () {
-      // EventSource reconnects on its own and sends Last-Event-ID, so the
-      // stream continues exactly after the last event this page saw.
-      if (state.finished) source.close();
-    };
-    startClock();
-    tick();
-  }
-
-  function resetRun() {
-    if (state.source) state.source.close();
-    stopClock();
-    state = freshState();
-    clear($("shop-cards"));
-    clear($("matches-body"));
-    clear($("possible-body"));
-    clear($("similar-list"));
-    clear($("warnings-list"));
-    clear($("feed"));
-    clear($("product-chips"));
-    $("feed-empty").hidden = false;
-    $("activity-count").textContent = "";
-    $("llm-line").textContent = "";
-    $("clock").hidden = true;
-    ["matches-section", "possible-section", "similar-section", "warnings-section"].forEach(function (id) { $(id).hidden = true; });
-    $("form-error").hidden = true;
-    setPill("running", "running");
-    renderSteps();
-  }
-
-  function startRun(url, refresh) {
-    resetRun();
-    showScreen("result");
-    $("gem-url").value = url;
-    $("result-title").textContent = "Starting…";
-    $("result-price").textContent = "";
-    $("result-state").textContent = "running";
-    $("cheapest-line").textContent = "";
-    $("result-state").className = "pill running";
-    $("clock").textContent = "00:00";
-    fetch(API + "/api/runs", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gem_url: url, refresh: !!refresh })
-    }).then(function (r) {
-      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
-    }).then(function (res) {
-      if (!res.ok) {
-        showFailure(typeof res.body.detail === "string" ? res.body.detail : "The server did not accept that link.");
-        $("run-btn").disabled = false;
-        return;
-      }
-      try { history.replaceState(null, "", "?run=" + res.body.run_id); } catch (e) { /* not important */ }
-      attach(res.body.run_id);
-    }).catch(function () {
-      showFailure("Could not reach the server. Is it running?");
-      $("run-btn").disabled = false;
-    });
-  }
-
-  function openSavedRun(runId) {
-    resetRun();
-    showScreen("result");
-    setPill("saved", "cached");
-    fetch(API + "/api/runs/" + runId).then(function (r) { return r.ok ? r.json() : null; }).then(function (run) {
-      if (!run || !run.result) {
-        showFailure("That saved run could not be opened.");
-        return;
-      }
-      state.runId = run.id;
-      state.result = run.result;
-      state.finished = true;
-      if (run.result.from_cache === false) run.result.from_cache = true;
-      $("gem-url").value = run.gem_url || "";
-      renderResult(run.result);
-      renderHeader(run.result);
-      setPill("cached", "cached");
-      replayTrace(run.result.trace_id);
-    }).catch(function () { showFailure("Could not reach the server. Is it running?"); });
-  }
-
-  // ---- page setup ----
-  $("run-form").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var url = $("gem-url").value.trim();
-    if (!/^https?:\/\/[^/]*gem\.gov\.in\//i.test(url)) {
-      showFailure("That does not look like a GeM product link (gem.gov.in).");
-      return;
-    }
-    startRun(url, $("refresh").checked);
-  });
-  $("llm-toggle").addEventListener("click", function () {
-    var body = $("llm-body");
-    body.hidden = !body.hidden;
-    $("llm-toggle").textContent = body.hidden ? "Show LLM endpoints" : "Hide LLM endpoints";
-    if (!body.hidden) loadProviders();
-  });
-  $("show-all").addEventListener("change", applyFeedMode);
-  $("open-details").addEventListener("change", function () {
-    var open = $("open-details").checked;
-    var all = $("feed").querySelectorAll("details");
-    for (var i = 0; i < all.length; i++) all[i].open = open;
-  });
-
-  renderSteps();
-  applyFeedMode();
-  loadRecent();
-  fetch(API + "/api/health").then(function (r) { return r.json(); }).then(function (body) {
-    $("demo-badge").hidden = !body.demo;
-  }).catch(function () {});
-
-  var existing = new URLSearchParams(location.search).get("run");
-  if (existing) {
-    openSavedRun(existing);
-  } else {
-    showScreen("start");
-  }
-})();
+/* Last-Event-ID is used on reconnect; unknown event types are ignored on purpose. */
+(function(){"use strict";var API=window.GEM_API_BASE||"";var R=window.GemRender;var $=function(id){return document.getElementById(id);};var MAX_FEED_LINES=600;var GEM_LINK=/^https?:\/\/([^/]+\.)?gem\.gov\.in\//i;var THEME_KEY="gem-price-theme";var state={health:null,demo:false,gates:{},providers:null,runs:[],view:"start",runId:null,source:null,lastSeq:0,startedAt:null,finishedAt:null,timerId:null,pending:[],frame:null,replayMode:false,stats:R.newStats(),result:null,retrying:[],runtimeWarnings:[],feed:[],feedHidden:0,filter:"all",query:"",filterShopsKey:"",activeTab:"matches",submitting:false,active:false,queued:false,finished:false,failed:false,renderedResult:null,lastClock:""};function h(tag,attrs){var el=document.createElement(tag);attrs=attrs||{};Object.keys(attrs).forEach(function(key){var value=attrs[key];if(value==null)return;if(key==="text")el.textContent=String(value);else if(key==="class")el.className=String(value);else if(key==="dataset"){Object.keys(value).forEach(function(name){el.dataset[name]=String(value[name]);});}else if(key==="onclick")el.addEventListener("click",value);else el.setAttribute(key,String(value));});for(var i=2;i<arguments.length;i+=1)append(el,arguments[i]);return el;}
+function append(el,child){if(child==null||child===false)return;if(Array.isArray(child)){child.forEach(function(item){append(el,item);});return;}
+if(child.nodeType)el.appendChild(child);else el.appendChild(document.createTextNode(String(child)));}
+function clear(el){if(!el)return;while(el.firstChild)el.removeChild(el.firstChild);}
+function setText(el,text){if(!el)return;var value=text==null?"":String(text);if(el.textContent!==value)el.textContent=value;}
+function setState(el,value){if(!el)return;if(el.dataset.state!==value)el.dataset.state=value;}
+function linkOrText(url,label,attrs){var href=R.safeHref(url);if(href){var linkAttrs={href:href,target:"_blank",rel:"noopener noreferrer",class:(attrs&&attrs.class)||""};var link=h("a",linkAttrs,label);return link;}
+return h("span",{class:(attrs&&attrs.class)||""},label);}
+function toast(message){var el=$("toast");setText(el,message);el.hidden=false;if(state.toastTimer)clearTimeout(state.toastTimer);state.toastTimer=setTimeout(function(){el.hidden=true;},2400);}
+function announce(message){setText($("page-alert"),message);}
+function savedTheme(){try{var value=window.localStorage.getItem(THEME_KEY);return value==="light"||value==="dark"?value:null;}catch (e){return null;}}
+function currentTheme(){var set=document.documentElement.getAttribute("data-theme");if(set==="light"||set==="dark")return set;return window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}
+function applyTheme(theme){document.documentElement.setAttribute("data-theme",theme);try{window.localStorage.setItem(THEME_KEY,theme);}catch (e){}
+var button=$("theme-toggle");if(button){button.setAttribute("aria-label",theme==="dark"?"Switch to light theme":"Switch to dark theme");button.setAttribute("title",theme==="dark"?"Switch to light theme":"Switch to dark theme");}}
+function initTheme(){var theme=savedTheme();if(theme)applyTheme(theme);else{var button=$("theme-toggle");if(button){button.setAttribute("aria-label",currentTheme()==="dark"?"Switch to light theme":"Switch to dark theme");button.setAttribute("title",currentTheme()==="dark"?"Switch to light theme":"Switch to dark theme");}}}
+function loadHealth(){fetch(API+"/api/health").then(function(response){return response.ok?response.json():null;}).then(function(body){if(!body)return;state.health=body;state.demo=!!body.demo;state.gates=body.gates||{};if(body.llm_ready!=null)state.llmReady=body.llm_ready;$("demo-badge").hidden=!state.demo;if(!state.demo)loadProviders();else{$("llm-health").hidden=true;setText($("llm-strategy"),"Demo mode uses a fake LLM. Endpoint status is not used.");renderSystem();}}).catch(function(){});}
+function loadProviders(){fetch(API+"/api/llm/status").then(function(response){return response.json();}).then(function(data){state.providers=data;renderProviders();renderHealth();renderSystem();}).catch(function(){state.providers=null;$("llm-health").hidden=true;setText($("llm-strategy"),"LLM endpoint status is unavailable.");});}
+function renderHealth(){var button=$("llm-health");if(!button)return;if(state.demo){button.hidden=true;return;}
+var endpoints=(state.providers&&state.providers.endpoints)||[];if(!endpoints.length){button.hidden=true;return;}
+var ready=endpoints.filter(function(row){return row.state==="ready";}).length;state.llmReady=ready;state.llmTotal=endpoints.length;button.hidden=false;button.dataset.state=ready===endpoints.length?"ok":ready>0?"warn":"bad";setText($("llm-health-text"),ready+" of "+endpoints.length+" LLM endpoints ready");button.setAttribute("title",endpoints.map(function(row){return row.endpoint+": "+row.state;}).join("\n"));}
+function loadRuns(){fetch(API+"/api/runs").then(function(response){return response.json();}).then(function(body){state.runs=(body&&body.runs)||[];paintRecent();}).catch(function(){state.runs=[];paintRecent();});}
+function paintRecent(){var grid=$("recent-grid");var empty=$("recent-empty");clear(grid);if(!state.runs.length){empty.hidden=false;setText($("recent-note"),"Saved on this machine, newest first.");return;}
+empty.hidden=true;var shown=state.runs.slice(0,8);setText($("recent-note"),state.runs.length>shown.length?"The last "+shown.length+" of "+state.runs.length+" runs on this machine.":state.runs.length+" saved or live run"+(state.runs.length===1?"":"s")+".");var fragment=document.createDocumentFragment();shown.forEach(function(run){var status=R.recentState(run);var card=h("button",{class:"recent-card",type:"button"},h("span",{class:"recent-title",text:R.runTitle(null,run.title||"Untitled run")}),h("span",{class:"recent-line"},h("span",{class:"recent-price",text:run.cheapest_price!=null?R.money(run.cheapest_price):"No confirmed price"}),h("span",{class:"recent-state"+(status==="failed"?" is-failed":status==="cached"?" is-cached":""),text:recentLabel(status)})),h("span",{class:"recent-meta"},h("span",{text:recentTime(run,status)}),savingChip(run)));card.addEventListener("click",function(){openSavedRun(run.id);});fragment.appendChild(card);});grid.appendChild(fragment);}
+function recentLabel(status){if(status==="running")return"Running";if(status==="failed")return"Failed";if(status==="cached")return"Cached";return"Done";}
+function recentTime(run,status){if(status==="running")return"starting now";if(run.checked_at)return R.relativeTime(run.checked_at);if(run.created)return R.relativeTime(new Date(run.created*1000).toISOString());return"saved run";}
+function savingChip(run){if(run.saving_vs_gem==null)return"";var saving=Number(run.saving_vs_gem);return h("span",{class:"recent-saving"+(saving<0?" is-dearer":""),text:saving>=0?R.money(saving)+" less":R.money(Math.abs(saving))+" more"});}
+function showScreen(name){state.view=name;$("start-screen").hidden=name!=="start";$("run-screen").hidden=name!=="run";if(name==="start"){stopClock();closeSource();updateTitle();}}
+function formError(message){var el=$("url-error");setText(el,message||"");el.hidden=!message;}
+function startRun(url,refresh){if(state.submitting)return;state.submitting=true;var button=$("run-btn");button.disabled=true;setText(button,"Starting");formError("");fetch(API+"/api/runs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({gem_url:url,refresh:!!refresh})}).then(function(response){return response.json().then(function(body){return{ok:response.ok,body:body};});}).then(function(result){state.submitting=false;button.disabled=false;setText(button,"Compare");if(!result.ok){formError(typeof result.body.detail==="string"?result.body.detail:"The server did not accept that link.");return;}
+beginRun(result.body.run_id,result.body.status,result.body.queue_position);}).catch(function(){state.submitting=false;button.disabled=false;setText(button,"Compare");formError("Could not reach the server. Is it running?");});}
+function beginRun(runId,status,queuePosition){closeSource();resetRunView();state.runId=runId;try{window.history.replaceState(null,"","?run="+encodeURIComponent(runId));}catch (e){}
+showScreen("run");setText($("verdict-title"),"Starting the run");setText($("verdict-kicker"),"Reading the GeM page");setText($("run-state-label"),status==="queued"?queuedLabel(queuePosition):"Running");announce(status==="queued"?queuedLabel(queuePosition)+".":"Run started.");attach(runId);}
+function queuedLabel(position){var ahead=Number(position);if(!isFinite(ahead)||ahead<=0)return"Waiting to start";return"Waiting, "+ahead+" run"+(ahead===1?"":"s")+" ahead";}
+function openSavedRun(runId){closeSource();resetRunView();state.runId=runId;showScreen("run");setText($("run-state-label"),"Opening the saved run");setText($("verdict-title"),"Opening the saved run");announce("Opening the saved run.");fetch(API+"/api/runs/"+encodeURIComponent(runId)).then(function(response){return response.ok?response.json():null;}).then(function(run){if(!run||!run.result){showRunError("That saved run could not be opened.");setText($("run-state-label"),"Not available");finishClockOnly();return;}
+state.result=run.result;state.finished=true;state.failed=run.status==="failed";state.active=false;state.renderedResult=null;paintAll();replayTrace(run.result.trace_id);if(run.live&&run.status!=="done"&&run.status!=="failed"){state.finished=false;attach(runId);}else{setText($("run-state-label"),run.result.from_cache?"Cached result":"Saved result");finishClockOnly();}
+try{window.history.replaceState(null,"","?run="+encodeURIComponent(runId));}catch (e){}}).catch(function(){showRunError("Could not reach the server. Is it running?");setText($("run-state-label"),"Not available");finishClockOnly();});}
+function replayTrace(traceId){if(!traceId){setText($("activity-empty"),"This saved run kept no event trace.");$("activity-empty").hidden=false;return;}
+fetch(API+"/api/traces/"+encodeURIComponent(traceId)).then(function(response){return response.ok?response.json():null;}).then(function(trace){var events=(trace&&trace.events)||[];if(!events.length){setText($("activity-empty"),"This saved run kept no event trace.");$("activity-empty").hidden=false;return;}
+state.replayMode=true;events.forEach(function(event){queueEvent(event);});}).catch(function(){setText($("activity-empty"),"The event trace for this saved run could not be read.");$("activity-empty").hidden=false;});}
+function closeSource(){if(state.source){state.source.close();state.source=null;}
+if(state.reconnectTimer){clearTimeout(state.reconnectTimer);state.reconnectTimer=null;}
+$("connection-banner").hidden=true;}
+function attach(runId){closeSource();state.runId=runId;connect(runId,state.lastSeq);}
+function connect(runId,after){var suffix=after?"?after="+encodeURIComponent(after):"";var source=new EventSource(API+"/api/runs/"+runId+"/events"+suffix);state.source=source;source.onopen=function(){$("connection-banner").hidden=true;if(state.reconnectTimer){clearTimeout(state.reconnectTimer);state.reconnectTimer=null;}};source.onmessage=function(msg){state.lastSeqAt=Date.now();$("connection-banner").hidden=true;var event;try{event=JSON.parse(msg.data);}catch (e){return;}
+queueEvent(event);};source.addEventListener("done",function(msg){var payload={};try{payload=JSON.parse(msg.data);}catch (e){payload={};}
+queueEvent({type:"stream_done",status:payload.status||"done"});});source.onerror=function(){if(state.finished){source.close();return;}
+$("connection-banner").hidden=false;setText($("connection-text"),"Reconnecting to the run");if(state.reconnectTimer)clearTimeout(state.reconnectTimer);state.reconnectTimer=setTimeout(function(){if(state.finished)return;setText($("connection-text"),"Connection lost. The run may still be going on the server.");announce("Connection lost.");},15000);};}
+function queueEvent(event){state.pending.push(event);if(!state.frame)state.frame=window.requestAnimationFrame(flushEvents);}
+function flushEvents(){state.frame=null;var batch=state.pending;state.pending=[];var replaying=state.replayMode;batch.forEach(function(event){try{handle(event);}catch (e){if(window.console&&console.warn)console.warn("event handler failed",e);}});if(replaying){state.replayMode=false;paintAll();}else{paintLive();}}
+function handle(event){if(!event||!event.type)return;if(event.seq!=null&&!isNaN(Number(event.seq)))state.lastSeq=Math.max(state.lastSeq,Number(event.seq));if(state.replayMode){R.applyEvent(state.stats,event);addFeedEntry(event);return;}
+R.applyEvent(state.stats,event);addFeedEntry(event);switch(event.type){case "run_started":state.active=true;state.queued=false;state.startedAt=Date.now();state.finished=false;state.failed=false;startClock();setText($("run-state-label"),"Running");announce("Run started.");break;case "cache_hit":setText($("run-state-label"),"Cached result");break;case "gem_product":paintVerdict();break;case "normalized":paintVerdict();break;case "shop_started":state.renderedResult=null;break;case "shop_finished":state.renderedResult=null;break;case "shop_updated":state.retrying=state.retrying.filter(function(shop){return shop!==event.shop;});state.renderedResult=null;break;case "retry_started":state.retrying=event.shops||[];setText($("run-state-label"),"First result in, retry running");announce("Retry started for "+(event.shops||[]).join(", ")+".");break;case "run_finished":if(event.result)state.result=event.result;state.retrying=[];state.renderedResult=null;setText($("run-state-label"),"First result ready");announce(firstResultAnnouncement(state.result));break;case "run_updated":if(event.result)state.result=event.result;state.retrying=[];state.renderedResult=null;break;case "similar_ready":if(state.result){state.result.similar=event.similar||[];state.renderedResult=null;}
+break;case "llm_unavailable":addRuntimeWarning("No LLM is available right now, so listings cannot be checked."+(event.reason?" "+event.reason:""));break;case "lane_failed":addRuntimeWarning("The "+(event.lane||"shop")+" part crashed: "+(event.error||"unknown error"));break;case "run_failed":addRuntimeWarning("The run failed: "+(event.error||event.message||"unknown error"));showRunError(event.error||event.message||"The run failed.");finishRun("failed");break;case "done":finishRun("done");break;case "stream_done":finishRun(event.status==="failed"?"failed":"done");break;default:break;}}
+function addRuntimeWarning(message){if(message&&state.runtimeWarnings.indexOf(message)<0)state.runtimeWarnings.push(message);paintWarnings();}
+function firstResultAnnouncement(result){if(!result)return"First result ready.";if(result.cheapest)return"First result ready. Best price "+R.money(result.cheapest.price)+" on "+result.cheapest.shop+".";if((result.matches||[]).length)return"First result ready. A match was confirmed.";if((result.possible_matches||[]).length)return"First result ready. Only possible matches so far.";return"First result ready. No confirmed match yet.";}
+function resetRunView(){state.stats=R.newStats();state.result=null;state.retrying=[];state.runtimeWarnings=[];state.feed=[];state.feedHidden=0;state.filter="all";state.query="";state.filterShopsKey="";state.activeTab="matches";state.lastSeq=0;state.renderedResult=null;state.active=false;state.queued=false;state.finished=false;state.failed=false;state.startedAt=null;state.finishedAt=null;stopClock();setText($("run-clock"),"00:00");setText($("run-state-label"),"Starting");$("run-error").hidden=true;setText($("run-error-text"),"");$("connection-banner").hidden=true;setText($("page-alert"),"");selectTab("matches",false);clear($("gem-meta"));clear($("search-words"));clear($("price-bars"));clear($("matches-body"));clear($("matches-cards"));clear($("possible-body"));clear($("possible-cards"));clear($("similar-list"));clear($("warnings-list"));clear($("activity-list"));clear($("activity-filters"));setText($("understanding"),"");setText($("answer-kicker"),"Searching shops");setText($("answer-price"),"Searching");setText($("answer-shop"),"");setText($("answer-saving"),"");setText($("answer-detail"),"The first honest result appears as soon as a shop answers.");$("answer-link").hidden=true;$("verdict").dataset.kind="searching";$("activity-empty").hidden=false;setText($("activity-empty"),"Events appear here as the run moves.");setText($("activity-count"),"");setText($("llm-run-summary"),"");clear($("run-stats"));$("similar-section").hidden=true;$("warnings-section").hidden=true;$("matches-empty").hidden=false;$("matches-table-wrap").hidden=true;$("possible-empty").hidden=false;$("possible-table-wrap").hidden=true;paintMap();paintCounts();}
+function startClock(){stopClock();state.timerId=setInterval(tickClock,500);tickClock();}
+function stopClock(){if(state.timerId)clearInterval(state.timerId);state.timerId=null;}
+function finishClockOnly(){stopClock();state.active=false;updateTitle();}
+function tickClock(){if(!state.active||!state.startedAt)return;var text=R.clock((Date.now()-state.startedAt)/1000);if(text!==state.lastClock){state.lastClock=text;setText($("run-clock"),text);updateTitle();}}
+function finishRun(status){if(state.finished&&status!=="failed")return;state.finished=true;state.active=false;state.failed=status==="failed";state.finishedAt=Date.now();stopClock();closeSource();if(state.failed){setText($("run-state-label"),"Failed");announce("The run failed.");}else{setText($("run-state-label"),state.result&&state.result.from_cache?"Cached result":"Done");announce(doneAnnouncement());}
+if(!state.result&&state.runId){fetch(API+"/api/runs/"+encodeURIComponent(state.runId)).then(function(response){return response.json();}).then(function(run){if(run&&run.result){state.result=run.result;state.renderedResult=null;}
+paintAll();loadRuns();}).catch(function(){loadRuns();});}else{paintAll();loadRuns();}
+updateTitle();}
+function doneAnnouncement(){if(!state.result)return"Run complete.";if(state.result.cheapest){return"Run complete. Best price "+R.money(state.result.cheapest.price)+" on "+state.result.cheapest.shop+".";}
+if((state.result.matches||[]).length)return"Run complete. A match was confirmed.";return"Run complete. No confirmed match.";}
+function showRunError(message){setText($("run-error-text"),message||"The run failed.");$("run-error").hidden=false;state.renderedResult=null;}
+function paintLive(){paintMap();paintCounts();paintVerdict();if(state.renderedResult!==state.result){state.renderedResult=state.result;paintMatches();paintPossible();paintSimilar();paintWarnings();}
+paintSystem();paintActivityState();updateTitle();}
+function paintAll(){paintMap();paintCounts();paintVerdict();state.renderedResult=state.result;paintMatches();paintPossible();paintSimilar();paintWarnings();paintSystem();paintActivityState();updateTitle();}
+function paintCounts(){var counts=R.tabCounts(state.result,state.stats);setText($("count-matches"),counts.matches);setText($("count-possible"),counts.possible);setText($("count-activity"),counts.activity);}
+function paintVerdict(){var result=state.result;var model=R.answerModel(result,{active:state.active,finished:state.finished,retrying:state.retrying});var verdict=$("verdict");verdict.dataset.kind=model.kind;setText($("answer-kicker"),model.kicker);setText($("answer-detail"),model.detail);setText($("answer-shop"),model.shop?"on "+model.shop:"");if(model.price!=null){setText($("answer-price"),R.money(model.price));}else{setText($("answer-price"),model.headline||"No price yet");}
+var saving=result?R.savingInfo(result):null;var savingEl=$("answer-saving");savingEl.className="answer-saving"+(saving&&saving.dearer?" is-dearer":"");if(saving){setText(savingEl,saving.cheaper?"saves "+R.money(saving.amount)+", "+saving.percent.toFixed(1)+"%":saving.dearer?"costs "+R.money(Math.abs(saving.amount))+" more, "+Math.abs(saving.percent).toFixed(1)+"%":"the same price as GeM");}else{setText(savingEl,"");}
+var link=$("answer-link");var href=model.url?R.safeHref(model.url):null;if(href){link.href=href;link.hidden=false;}else{link.removeAttribute("href");link.hidden=true;}
+paintProduct(model);paintBars(result);}
+function paintProduct(model){var gem=state.stats.gem||{};var product=state.stats.product||{};var result=state.result;var title=result&&result.gem&&result.gem.title?result.gem.title:gem.title;setText($("verdict-title"),title||"Looking for the same product");setText($("verdict-kicker"),result?"The GeM listing":(gem.title?"Reading the GeM page":"Starting the run"));var meta=$("gem-meta");clear(meta);var priceView=result&&result.gem?result.gem.price:null;if(!priceView&&gem.price!=null)priceView={low:gem.price,high:gem.price,kind:gem.priceType||"unknown"};if(priceView&&priceView.low!=null){meta.appendChild(h("span",{class:"chip is-price",text:R.moneyRange(priceView)+" on GeM, "+R.priceKindLabel(priceView.kind)}));}
+var brand=result&&result.gem?result.gem.brand:(gem.brand||product.brand);var modelName=result&&result.gem?result.gem.model:(gem.model||product.model);if(brand)meta.appendChild(h("span",{class:"chip"},h("strong",{text:"Brand"})," "+brand));if(modelName)meta.appendChild(h("span",{class:"chip"},h("strong",{text:"Model"})," "+modelName));var understood=result&&result.gem&&result.gem.canonical_name?result.gem.canonical_name:product.name;setText($("understanding"),understood?"Understood as "+understood+".":"");var words=$("search-words");clear(words);var queries=(product.queries||[]).slice(0,4);queries.forEach(function(query){words.appendChild(h("span",{class:"word",text:"Search: "+query}));});}
+function paintBars(result){var container=$("price-bars");clear(container);if(!result)return;var model=R.barRows(result);if(model.rows.length<2)return;model.rows.forEach(function(row){var fill=h("span",{class:"bar-fill"});fill.style.width=Math.max(0,Math.min(100,row.width))+"%";var tagParts=[];if(row.isGem)tagParts.push("GeM");if(row.cheapest)tagParts.push("cheapest");if(row.bulk)tagParts.push("B2B");if(!row.inStock)tagParts.push("out of stock");var bar=h("div",{class:"bar-row"+(row.isGem?" is-gem":"")+(row.cheapest?" is-cheapest":"")+(row.bulk?" is-bulk":"")},h("span",{class:"bar-label",text:row.label}),h("span",{class:"bar-track"},fill),h("span",{class:"bar-price",text:R.money(row.price)+(tagParts.length?" ":"")},tagParts.length?h("span",{class:"bar-tag",text:tagParts.join(", ")}):""));container.appendChild(bar);});}
+function paintMap(){var model=R.pipelineModel(state.stats);updateMapNode("node-read","node-read-value",model.read);updateMapNode("node-understand","node-understand-value",model.understand);updateMapNode("node-checks","node-checks-value",model.checks);updateMapNode("node-retry","node-retry-value",model.retry);model.lanes.forEach(function(lane){var laneEl=document.getElementById("lane-"+lane.id);setState(laneEl,laneState(lane));setText(document.getElementById("lane-"+lane.id+"-status"),lane.statusLabel);setText(document.getElementById("lane-"+lane.id+"-chip"),lane.statusLabel);if(laneEl)laneEl.setAttribute("title",lane.help||"");lane.nodes.forEach(function(node){var nodeEl=document.getElementById("lane-"+lane.id+"-"+node.id);setState(nodeEl,node.state);setText(document.getElementById("lane-"+lane.id+"-"+node.id+"-value"),node.value);});});scheduleMapLinks();}
+function buildLanes(){var wrap=$("map-lanes");clear(wrap);var nodes=[["search","Search"],["filter","Filter"],["verify","Verify"],["gates","Gates"]];R.LANES.forEach(function(lane){var laneNodes=h("div",{class:"lane-nodes"});nodes.forEach(function(node){laneNodes.appendChild(h("div",{id:"lane-"+lane.id+"-"+node[0],class:"lane-node",dataset:{state:"waiting"}},h("span",{class:"lane-node-label",text:node[1]}),h("span",{id:"lane-"+lane.id+"-"+node[0]+"-value",class:"lane-node-value",text:"waiting"})));});wrap.appendChild(h("div",{id:"lane-"+lane.id,class:"lane",dataset:{state:"waiting"}},h("div",{class:"lane-head"},h("span",{class:"lane-name",text:lane.label}),h("span",{id:"lane-"+lane.id+"-status",class:"lane-status",text:"Waiting"})),laneNodes,h("span",{id:"lane-"+lane.id+"-chip",class:"lane-chip",text:"Waiting"})));});}
+function updateMapNode(nodeId,valueId,node){setState(document.getElementById(nodeId),node.state);setText(document.getElementById(valueId),node.value);}
+function laneState(lane){var states=lane.nodes.map(function(node){return node.state;});if(states.indexOf("blocked")>=0)return"blocked";if(states.indexOf("warning")>=0)return"warning";if(states.indexOf("active")>=0)return"active";if(states.every(function(value){return value==="done";}))return"done";return"waiting";}
+var mapLinkFrame=null;function scheduleMapLinks(){if(mapLinkFrame)return;mapLinkFrame=window.requestAnimationFrame(function(){mapLinkFrame=null;drawMapLinks();});}
+function drawMapLinks(){var map=$("pipeline-map");var svg=$("map-links");if(!map||!svg||$("run-screen").hidden){if(svg)clear(svg);return;}
+clear(svg);var mapRect=map.getBoundingClientRect();if(!mapRect.width)return;function box(id){var el=document.getElementById(id);if(!el)return null;var rect=el.getBoundingClientRect();return{left:rect.left-mapRect.left,right:rect.right-mapRect.left,top:rect.top-mapRect.top,bottom:rect.bottom-mapRect.top,cx:rect.left-mapRect.left+rect.width/2,cy:rect.top-mapRect.top+rect.height/2};}
+function connect(fromId,toId,fromState,toState){var a=box(fromId);var b=box(toId);if(!a||!b)return;var horizontal=b.left>=a.right-2;var line=document.createElementNS("http://www.w3.org/2000/svg","line");if(horizontal){line.setAttribute("x1",a.right);line.setAttribute("y1",a.cy);line.setAttribute("x2",b.left);line.setAttribute("y2",b.cy);}else{line.setAttribute("x1",a.cx);line.setAttribute("y1",a.bottom);line.setAttribute("x2",b.cx);line.setAttribute("y2",b.top);}
+var active=toState==="active"||fromState==="active";var done=(fromState==="done"||fromState==="active")&&(toState==="done"||toState==="active");if(done)line.setAttribute("class","is-done");if(active)line.setAttribute("class","is-active");svg.appendChild(line);}
+var model=R.pipelineModel(state.stats);connect("node-read","node-understand",model.read.state,model.understand.state);model.lanes.forEach(function(lane){connect("node-understand","lane-"+lane.id+"-search",model.understand.state,lane.nodes[0].state);connect("lane-"+lane.id+"-search","lane-"+lane.id+"-filter",lane.nodes[0].state,lane.nodes[1].state);connect("lane-"+lane.id+"-filter","lane-"+lane.id+"-verify",lane.nodes[1].state,lane.nodes[2].state);connect("lane-"+lane.id+"-verify","lane-"+lane.id+"-gates",lane.nodes[2].state,lane.nodes[3].state);connect("lane-"+lane.id+"-gates","node-checks",lane.nodes[3].state,model.checks.state);});connect("node-checks","node-retry",model.checks.state,model.retry.state);}
+function paintMatches(){var result=state.result;var rows=R.matchRows(result,state.gates);var empty=$("matches-empty");var wrap=$("matches-table-wrap");var body=$("matches-body");var cards=$("matches-cards");clear(body);clear(cards);empty.hidden=rows.length>0;wrap.hidden=rows.length===0;if(!rows.length)return;var fragment=document.createDocumentFragment();rows.forEach(function(row){fragment.appendChild(matchTableRow(row));cards.appendChild(matchCard(row));});body.appendChild(fragment);}
+function matchTableRow(row){var tr=h("tr");var shopCell=h("td",{class:"cell-shop"},row.shop);if(row.bulk)shopCell.appendChild(h("span",{class:"tag tag-bulk",text:"B2B"}));if(!row.inStock)shopCell.appendChild(h("span",{class:"tag tag-out",text:"Out of stock"}));tr.appendChild(shopCell);var titleCell=h("td");var title=h("span",{class:"cell-title"});title.appendChild(linkOrText(row.url,row.title||"Untitled listing"));titleCell.appendChild(title);tr.appendChild(titleCell);tr.appendChild(h("td",{class:"cell-price",text:row.priceText}));var deltaCell=h("td");deltaCell.appendChild(deltaView(row));tr.appendChild(deltaCell);var confidenceCell=h("td");confidenceCell.appendChild(confidenceView(row));tr.appendChild(confidenceCell);var checksCell=h("td");checksCell.appendChild(whyDetails(row.reason,row.checks));tr.appendChild(checksCell);var linkCell=h("td");linkCell.appendChild(linkOrText(row.url,"Open",{class:"button button-quiet"}));tr.appendChild(linkCell);return tr;}
+function matchCard(row){var card=h("article",{class:"match-card"},h("div",{class:"match-card-head"},h("span",{class:"match-card-shop"},row.shop,row.bulk?h("span",{class:"tag tag-bulk",text:"B2B"}):"",row.inStock?"":h("span",{class:"tag tag-out",text:"Out of stock"})),h("span",{class:"match-card-price",text:row.priceText})),h("span",{class:"match-card-title"},linkOrText(row.url,row.title||"Untitled listing")),h("div",{class:"match-card-meta"},deltaView(row),confidenceView(row),linkOrText(row.url,"Open listing",{class:"button button-quiet"})),whyDetails(row.reason,row.checks));return card;}
+function deltaView(row){var wrap=h("div",{class:"delta"});var text=row.delta==null?"GeM price unknown":row.vsGem;wrap.appendChild(h("span",{class:"delta-text"+(row.delta==null?"":row.delta<=0?" is-less":" is-more"),text:text}));var gemPrice=state.result&&state.result.gem&&state.result.gem.price?state.result.gem.price.low:null;if(row.price!=null&&gemPrice){var width=Math.min(100,Math.round((Math.abs(Number(row.price)-Number(gemPrice))/Number(gemPrice))*100));var track=h("span",{class:"delta-track"});var fill=h("span",{class:"delta-fill"+(row.delta!=null&&row.delta>0?" is-more":"")});fill.style.width=Math.max(2,width)+"%";track.appendChild(fill);wrap.appendChild(track);}
+return wrap;}
+function confidenceView(row){var min=Number(state.gates.min_confidence!=null?state.gates.min_confidence:0.75);var cls=row.confidence==null?"":row.confidence>=min?" is-high":" is-low";var wrap=h("div",{class:"confidence"+cls});wrap.appendChild(h("span",{class:"confidence-text",text:row.confidenceText||"unknown"}));var track=h("span",{class:"confidence-track"});var fill=h("span",{class:"confidence-fill"});fill.style.width=Math.max(0,Math.min(100,row.confidenceWidth||0))+"%";track.appendChild(fill);wrap.appendChild(track);return wrap;}
+function whyDetails(reason,checks){var details=h("details",{class:"why"});details.appendChild(h("summary",{text:"Why"}));var body=h("div",{class:"why-body"});if(reason)body.appendChild(h("p",{text:reason}));if(checks&&checks.length){var list=h("ul");checks.forEach(function(check){list.appendChild(h("li",{text:check}));});body.appendChild(list);}
+details.appendChild(body);return details;}
+function paintPossible(){var result=state.result;var rows=R.possibleRows(result);var empty=$("possible-empty");var wrap=$("possible-table-wrap");var body=$("possible-body");var cards=$("possible-cards");clear(body);clear(cards);empty.hidden=rows.length>0;wrap.hidden=rows.length===0;if(!rows.length)return;var fragment=document.createDocumentFragment();rows.forEach(function(row){var tr=h("tr");tr.appendChild(h("td",{class:"cell-shop",text:row.shop}));var titleCell=h("td");titleCell.appendChild(h("span",{class:"cell-title"},linkOrText(row.url,row.title||"Untitled listing")));tr.appendChild(titleCell);tr.appendChild(h("td",{class:"cell-price",text:row.priceText}));tr.appendChild(h("td",{text:row.why}));var linkCell=h("td");linkCell.appendChild(linkOrText(row.url,"Open",{class:"button button-quiet"}));tr.appendChild(linkCell);fragment.appendChild(tr);cards.appendChild(h("article",{class:"match-card"},h("div",{class:"match-card-head"},h("span",{class:"match-card-shop",text:row.shop}),h("span",{class:"match-card-price",text:row.priceText})),h("span",{class:"match-card-title"},linkOrText(row.url,row.title||"Untitled listing")),h("p",{class:"hint",text:"Why not confirmed: "+row.why}),linkOrText(row.url,"Open listing",{class:"button button-quiet"})));});body.appendChild(fragment);}
+function paintSimilar(){var show=R.showsSimilar(state.result);$("similar-section").hidden=!show;var list=$("similar-list");clear(list);if(!show)return;R.similarRows(state.result).forEach(function(row){list.appendChild(h("article",{class:"match-card"},h("div",{class:"match-card-head"},h("span",{class:"match-card-shop",text:row.shop||"shop"}),h("span",{class:"match-card-price",text:row.priceText})),h("span",{class:"match-card-title"},linkOrText(row.url,row.title||"Untitled listing")),h("span",{class:"hint",text:"Similar, not the same product."})));});}
+function paintWarnings(){var warnings=[];if(state.result&&state.result.warnings)warnings=warnings.concat(state.result.warnings);state.runtimeWarnings.forEach(function(warning){if(warnings.indexOf(warning)<0)warnings.push(warning);});var section=$("warnings-section");var list=$("warnings-list");clear(list);section.hidden=warnings.length===0;warnings.forEach(function(warning){list.appendChild(h("li",{class:state.runtimeWarnings.indexOf(warning)>=0?"is-run":"",text:warning}));});}
+function paintSystem(){var llm=state.stats.llm||{};var cached=state.result&&state.result.from_cache;setText($("llm-run-summary"),llm.calls?"This run: "+llm.calls+" LLM call"+(llm.calls===1?"":"s")+", "+llm.failed+" failed, "+llm.cached+" reused, "+llm.seconds.toFixed(1)+" s waiting in total.":"This run has no LLM calls yet.");var stats=$("run-stats");clear(stats);var elapsed=state.startedAt?(Date.now()-state.startedAt)/1000:0;[["Run time",R.clock(elapsed)],["Events seen",String(state.stats.events)],["Saved cache",cached?"yes, served from cache":state.result?"no":"not yet"]].forEach(function(pair){stats.appendChild(h("div",null,h("dt",{text:pair[0]}),h("dd",{text:pair[1]})));});}
+function renderProviders(){var body=$("llm-table-body");clear(body);if(!state.providers)return;if(state.providers.error){setText($("llm-strategy"),"Config problem: "+state.providers.error);return;}
+setText($("llm-strategy"),"Strategy: "+(state.providers.strategy||"unknown")+". One row per endpoint.");(state.providers.endpoints||[]).forEach(function(row){var stateClass=row.state==="ready"?"is-ready":row.state==="disabled"?"":row.state==="limit"?"is-bad":"is-warn";var note=row.reason||row.last_error||"";var tr=h("tr",null,h("td",{text:row.provider||""}),h("td",{text:row.model||row.endpoint||""}),h("td",null,h("span",{class:"state-dot "+stateClass,text:" "}),row.state),h("td",{text:String(row.calls==null?0:row.calls)}),h("td",{text:String(row.errors==null?0:row.errors)}),h("td",{text:row.avg_seconds==null?"unknown":Number(row.avg_seconds).toFixed(2)+" s"}),h("td",{text:note}));body.appendChild(tr);});}
+function addFeedEntry(event){var line=R.describeEvent(event);if(!line)return;var li=h("li",{class:"feed-line is-"+line.kind+(line.level?" is-"+line.level:"")+(line.key?" is-key":"")});li.appendChild(h("span",{class:"feed-text",text:line.text}));var details=Array.isArray(line.detail)?line.detail.filter(Boolean):(line.detail?[line.detail]:[]);if(details.length){var detail=h("details",{class:"feed-detail"});detail.open=$("open-details").checked;detail.appendChild(h("summary",{text:"Details"}));var list=h("ul");details.forEach(function(item){list.appendChild(h("li",{text:item}));});detail.appendChild(list);li.appendChild(detail);}
+var shop=R.eventShopKey(event);li.dataset.shop=shop||"";li.dataset.key=line.key?"1":"0";li.dataset.level=line.level||"";li.dataset.search=(line.text+" "+details.join(" ")).toLowerCase();$("activity-list").appendChild(li);var entry={event:event,line:line,el:li};state.feed.push(entry);if(state.feed.length>MAX_FEED_LINES){var old=state.feed.shift();if(old.el&&old.el.parentNode)old.el.parentNode.removeChild(old.el);state.feedHidden+=1;}
+applyFeedFilter(entry);if($("follow-latest").checked)feedScrollToEnd();}
+function feedScrollToEnd(){var feed=$("activity-list");feed.scrollTop=feed.scrollHeight;}
+function feedMatches(entry){if(state.query&&entry.el.dataset.search.indexOf(state.query)<0)return false;if(state.filter==="all")return true;if(state.filter==="key")return entry.el.dataset.key==="1";if(state.filter==="warn")return entry.el.dataset.level==="warn"||entry.el.dataset.level==="bad";if(state.filter.indexOf("shop:")===0)return entry.el.dataset.shop===state.filter.slice(5);return true;}
+function applyFeedFilter(entry){entry.el.hidden=!feedMatches(entry);}
+function applyFeedFilters(){state.feed.forEach(applyFeedFilter);paintActivityState();}
+function paintActivityState(){var visible=0;state.feed.forEach(function(entry){if(!entry.el.hidden)visible+=1;});$("activity-empty").hidden=visible>0;if(!state.feed.length)setText($("activity-empty"),"Events appear here as the run moves.");else if(!visible)setText($("activity-empty"),"No activity lines match this filter.");setText($("activity-count"),state.feed.length?visible+" of "+state.feed.length+" lines"+(state.feedHidden?", "+state.feedHidden+" older hidden":""):"");buildFeedFilters();}
+function buildFeedFilters(){var shops=Object.keys(state.stats.shops||{}).filter(function(key){return key!=="other";}).sort();var key=shops.join("|");if(key===state.filterShopsKey)return;state.filterShopsKey=key;var row=$("activity-filters");clear(row);var options=[["all","All"],["key","Key steps"],["warn","Warnings"]];shops.forEach(function(shop){options.push(["shop:"+shop,R.shopKey(shop)]);});options.forEach(function(option){var button=h("button",{class:"filter-button",type:"button","aria-pressed":state.filter===option[0]?"true":"false",text:option[1]});button.dataset.filter=option[0];button.addEventListener("click",function(){state.filter=option[0];Array.prototype.forEach.call(row.children,function(child){child.setAttribute("aria-pressed",child.dataset.filter===state.filter?"true":"false");});applyFeedFilters();});row.appendChild(button);});}
+var TAB_ORDER=["matches","possible","activity","system"];function selectTab(name,focus){if(TAB_ORDER.indexOf(name)<0)name="matches";state.activeTab=name;TAB_ORDER.forEach(function(tab){var button=$("tab-"+tab);var selected=tab===name;button.setAttribute("aria-selected",selected?"true":"false");button.tabIndex=selected?0:-1;$("panel-"+tab).hidden=!selected;});if(focus)$("tab-"+name).focus();}
+function onTabKey(event){var index=TAB_ORDER.indexOf(state.activeTab);if(event.key==="ArrowRight")index=(index+1)%TAB_ORDER.length;else if(event.key==="ArrowLeft")index=(index+TAB_ORDER.length-1)%TAB_ORDER.length;else if(event.key==="Home")index=0;else if(event.key==="End")index=TAB_ORDER.length-1;else return;event.preventDefault();selectTab(TAB_ORDER[index],true);}
+function copyText(text,message){function fallback(){var area=document.createElement("textarea");area.value=text;area.setAttribute("readonly","");area.style.position="fixed";area.style.left="-9999px";document.body.appendChild(area);area.select();var ok=false;try{ok=document.execCommand("copy");}catch (e){ok=false;}
+document.body.removeChild(area);toast(ok?message:"Copy did not work in this browser.");}
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){toast(message);}).catch(fallback);}else{fallback();}}
+function downloadCsv(){if(!state.result)return;var blob=new Blob([R.csvText(state.result)],{type:"text/csv;charset=utf-8"});var url=URL.createObjectURL(blob);var link=document.createElement("a");link.href=url;link.download="gem-price-comparison.csv";document.body.appendChild(link);link.click();document.body.removeChild(link);URL.revokeObjectURL(url);toast("CSV downloaded.");}
+function updateTitle(){var title="GeM Price Comparison";if(state.view==="run"){if(state.failed){title="Failed, GeM Price Comparison";}else if(state.finished&&state.result){var saving=R.savingInfo(state.result);if(saving&&saving.cheaper)title="Saves "+R.money(saving.amount)+" ("+saving.percent.toFixed(1)+"%), GeM Price Comparison";else if(saving&&saving.dearer)title=R.money(Math.abs(saving.amount))+" more ("+Math.abs(saving.percent).toFixed(1)+"%), GeM Price Comparison";else if(state.result.cheapest)title="Best "+R.money(state.result.cheapest.price)+", GeM Price Comparison";else title="No confirmed match, GeM Price Comparison";}else if(state.active&&state.startedAt){title="("+R.clock((Date.now()-state.startedAt)/1000)+") Running, GeM Price Comparison";}else if(state.queued){title="Waiting, GeM Price Comparison";}}
+if(document.title!==title)document.title=title;}
+function bindEvents(){$("theme-toggle").addEventListener("click",function(){applyTheme(currentTheme()==="dark"?"light":"dark");});$("run-form").addEventListener("submit",function(event){event.preventDefault();if(state.submitting)return;var url=$("gem-url").value.trim();if(!/^https?:\/\//i.test(url)){formError("Enter a full link starting with http:// or https://.");$("gem-url").focus();return;}
+if(!state.demo&&!GEM_LINK.test(url)){formError("That does not look like a GeM product link (gem.gov.in).");$("gem-url").focus();return;}
+formError("");startRun(url,$("refresh").checked);});$("gem-url").addEventListener("input",function(){formError("");});$("back-btn").addEventListener("click",function(){closeSource();try{window.history.replaceState(null,"",window.location.pathname);}catch (e){}
+showScreen("start");loadRuns();});$("retry-connection").addEventListener("click",function(){if(!state.runId)return;closeSource();connect(state.runId,state.lastSeq);setText($("connection-text"),"Reconnecting to the run");});$("copy-link").addEventListener("click",function(){if(!state.runId)return;var url;try{url=new URL(window.location.href);url.searchParams.set("run",state.runId);url=url.toString();}catch (e){url="?run="+encodeURIComponent(state.runId);}
+copyText(url,"Link copied.");});$("copy-summary").addEventListener("click",function(){if(!state.result)return;copyText(R.summaryText(state.result),"Summary copied.");});$("download-csv").addEventListener("click",downloadCsv);$("tablist").addEventListener("keydown",onTabKey);TAB_ORDER.forEach(function(tab){$("tab-"+tab).addEventListener("click",function(){selectTab(tab,false);});});$("activity-search").addEventListener("input",function(){state.query=$("activity-search").value.trim().toLowerCase();applyFeedFilters();});$("follow-latest").addEventListener("change",function(){if($("follow-latest").checked)feedScrollToEnd();});$("open-details").addEventListener("change",function(){var open=$("open-details").checked;Array.prototype.forEach.call($("activity-list").querySelectorAll("details"),function(detail){detail.open=open;});});window.addEventListener("resize",scheduleMapLinks);if(window.ResizeObserver){var observer=new ResizeObserver(scheduleMapLinks);observer.observe($("pipeline-map"));}}
+function init(){initTheme();buildLanes();bindEvents();selectTab("matches",false);loadHealth();loadRuns();updateTitle();paintRecent();var params=new URLSearchParams(window.location.search);var runId=params.get("run");if(runId)openSavedRun(runId);}
+init();})();

@@ -63,21 +63,24 @@ class Job:
                 self._cond.wait(timeout)
             return list(self.events[start:]), self.status in FINAL_STATES
 
-    def summary(self) -> dict:
+    def summary(self, queue_position: int = 0) -> dict:
         result = self.result if isinstance(self.result, dict) else {}
         product = result.get("gem_product") if isinstance(result.get("gem_product"), dict) else {}
         comparison = result.get("comparison") if isinstance(result.get("comparison"), dict) else {}
+        cheapest = result.get("cheapest") if isinstance(result.get("cheapest"), dict) else {}
         return {
             "id": self.id,
             "gem_url": self.gem_url,
             "refresh": self.refresh,
             "status": self.status,
+            "queue_position": queue_position if self.status == "queued" else 0,
             "created": self.created,
             "started": self.started,
             "finished": self.finished,
             "event_count": len(self.events),
             "title": product.get("title"),
-            "cheapest_price": comparison.get("cheapest_match_price"),
+            "cheapest_price": comparison.get("cheapest_match_price", cheapest.get("price")),
+            "saving_vs_gem": cheapest.get("saving_vs_gem"),
             "match_count": len(result.get("matches") or []),
         }
 
@@ -96,13 +99,41 @@ class JobManager:
         self._lock = threading.Lock()
 
     def submit(self, gem_url: str, refresh: bool = False) -> Job:
-        job = Job(gem_url, refresh)
         with self._lock:
+            # The same link with the same refresh flag is the same job while it
+            # is queued or running. Return that job instead of scraping twice.
+            for job_id in reversed(self._order):
+                other = self._jobs.get(job_id)
+                if (
+                    other is not None
+                    and other.status not in FINAL_STATES
+                    and other.gem_url == gem_url
+                    and other.refresh == refresh
+                ):
+                    return other
+            job = Job(gem_url, refresh)
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._forget_old_jobs()
         threading.Thread(target=self._run, args=(job,), daemon=True, name=f"job-{job.id}").start()
         return job
+
+    def queue_position(self, job_id: str) -> int:
+        with self._lock:
+            return self._position_locked(job_id)
+
+    def _position_locked(self, job_id: str) -> int:
+        job = self._jobs.get(job_id)
+        if job is None or job.status != "queued":
+            return 0
+        ahead = 0
+        for other_id in self._order:
+            if other_id == job_id:
+                break
+            other = self._jobs.get(other_id)
+            if other is not None and other.status not in FINAL_STATES:
+                ahead += 1
+        return ahead
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
@@ -111,7 +142,7 @@ class JobManager:
     def recent(self, limit: int = 20) -> list[dict]:
         with self._lock:
             ids = self._order[-limit:][::-1]
-            return [self._jobs[i].summary() for i in ids]
+            return [self._jobs[i].summary(self._position_locked(i)) for i in ids]
 
     def _forget_old_jobs(self) -> None:
         while len(self._order) > self._keep:

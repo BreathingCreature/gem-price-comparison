@@ -4,8 +4,9 @@
 
 Every event comes from core/pipeline.py, so the page is exercised exactly as
 it is in a live run: a shop cards fills in when its search ends, one shop is
-blocked and then found on the retry, one shop is honestly "not found". Short
-pauses make the cards fill one by one instead of all at once.
+blocked and then found on the retry, one shop is honestly "not found". The
+demo also has one possible match (a different pack) and one B2B row so those
+states can be reviewed. Short pauses make the cards fill one by one.
 
 No network, no LLM, no browser. The demo never reads or writes the result
 cache (a fake answer must not be served to a real run later).
@@ -26,7 +27,9 @@ FIRST_QUERY = "logitech m650 wireless mouse"
 RETRY_QUERY = "logitech m650 signature wireless mouse"
 DEMO_FLIPKART_PRICE = 1149.0
 DEMO_AMAZON_PRICE = 1199.0
+DEMO_PACK_PRICE = 2199.0
 DEMO_OTHER_PRICE = 699.0
+DEMO_B2B_PRICE = 1249.0
 
 
 def _pause(seconds: float = DEMO_DELAY) -> None:
@@ -119,6 +122,12 @@ def _amazon_search(query: str) -> SearchScrapeResult:
                 "Logitech M650 Signature Wireless Mouse",
                 DEMO_AMAZON_PRICE,
             ),
+            _candidate(
+                "amazon.in",
+                "https://www.amazon.in/demo-m650-pack2",
+                "Logitech M650 Signature Wireless Mouse (Pack of 2)",
+                DEMO_PACK_PRICE,
+            ),
             _candidate("amazon.in", "https://www.amazon.in/demo-m221", "Logitech M221 Silent Wireless Mouse", 799.0),
         ],
         pages_scraped=1,
@@ -130,17 +139,20 @@ def _discover(queries, allowed_domains):
     _pause()
     from discovery.discover import DiscoveryResult
 
+    urls = ["https://www.example-shop.in/m221", "https://www.indiamart.com/demo-m650"]
     return [
         DiscoveryResult(
             query=queries[0] if queries else FIRST_QUERY,
-            raw_urls=["https://www.example-shop.in/m221"],
-            filtered_urls=["https://www.example-shop.in/m221"],
+            raw_urls=urls,
+            filtered_urls=urls,
         )
     ]
 
 
 def _generic_scrape(url: str) -> CandidateResult:
     _pause()
+    if "indiamart.com" in url:
+        return _candidate("indiamart.com", url, "Logitech M650 Signature Wireless Mouse", DEMO_B2B_PRICE)
     return _candidate("example-shop.in", url, "Logitech M221 Silent Mouse", DEMO_OTHER_PRICE)
 
 
@@ -160,19 +172,35 @@ def _expand_search(normalized, queries, domains):
 
 def _demo_match(normalized, candidates, **_kwargs) -> matcher.MatchBatchResult:
     """A fake verifier that follows the prompt rules: same model number and a
-    sensible price means "match", a different model means "no match". It emits
-    the same checking/verdict events the real matcher emits."""
+    sensible price means "match", a different model means "no match", and a
+    different pack of the same model is a "possible" match. It emits the same
+    checking/verdict events the real matcher emits."""
     decisions = []
     confirmed = []
+    possible = []
     total = len(candidates)
     for position, candidate in enumerate(candidates, start=1):
         data = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
         fields = data.get("structured_fields") if isinstance(data.get("structured_fields"), dict) else {}
         title = fields.get("title") or ""
         price = fields.get("price")
-        is_match = "M650" in title and "M221" not in title
-        confidence = 0.94 if is_match else 0.9
-        reason = "Same model number and a plausible price." if is_match else "Different model (M221)."
+        is_pack = "pack of 2" in title.lower()
+        is_match = "M650" in title and "M221" not in title and not is_pack
+        if is_pack:
+            outcome = "possible"
+            confidence = 0.62
+            reason = "Different pack: this price is for two mice."
+            why = "different pack"
+        elif is_match:
+            outcome = "match"
+            confidence = 0.94
+            reason = "Same model number and a plausible price."
+            why = ""
+        else:
+            outcome = "no_match"
+            confidence = 0.9
+            reason = "Different model (M221)."
+            why = ""
         events.emit(
             "candidate_checking",
             url=data.get("url"),
@@ -198,14 +226,18 @@ def _demo_match(normalized, candidates, **_kwargs) -> matcher.MatchBatchResult:
             "is_match": is_match,
             "confidence": confidence,
             "reason": reason,
-            "price_used": price if is_match else None,
+            "price_used": price,
             "extraction_source": "scraper",
             "structured_fields": fields,
-            "outcome": "match" if is_match else "no_match",
+            "outcome": outcome,
         }
+        if why:
+            decision["why"] = why
         decisions.append(decision)
-        if is_match:
+        if outcome == "match":
             confirmed.append(decision)
+        elif outcome == "possible":
+            possible.append(decision)
         events.emit(
             "candidate_verdict",
             url=data.get("url"),
@@ -213,14 +245,16 @@ def _demo_match(normalized, candidates, **_kwargs) -> matcher.MatchBatchResult:
             is_match=is_match,
             confidence=confidence,
             reason=reason,
-            price=price if is_match else None,
+            price=price,
+            outcome=outcome,
         )
     confirmed.sort(key=lambda d: d["price_used"])
+    possible.sort(key=lambda d: (d.get("price_used") is None, d.get("price_used") or 0.0))
     return matcher.MatchBatchResult(
         all_decisions=decisions,
         confirmed_matches=confirmed,
         skipped=[],
-        possible_matches=[],
+        possible_matches=possible,
         not_checked=[],
     )
 

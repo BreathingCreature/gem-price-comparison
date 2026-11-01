@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -28,14 +30,52 @@ from pydantic import BaseModel
 
 from api.jobs import JobManager
 from core import pipeline, runs as runs_store
-from core.config import BASE_DIR, logger
+from core.config import (
+    BASE_DIR,
+    MATCH_CONFIDENCE_THRESHOLD,
+    PRICE_SANITY_HIGH_RATIO,
+    PRICE_SANITY_LOW_RATIO,
+    logger,
+)
 from core.errors import redact
 from core.gem_url import looks_like_gem_url
 
 FRONTEND_DIR = BASE_DIR / "frontend"
 SSE_HEARTBEAT_SECONDS = 15.0
 TRACE_TEXT_LIMIT = 1000
+CSP = (
+    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    "connect-src 'self'; base-uri 'none'; form-action 'self'"
+)
 _TRACE_TEXT_KEYS = ("raw_page_text", "page_text", "html", "raw_html")
+
+
+@lru_cache(maxsize=1)
+def _git_version() -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = proc.stdout.strip()
+    return value if proc.returncode == 0 and value else None
+
+
+def _llm_ready(demo: bool) -> Optional[int]:
+    if demo:
+        return None
+    try:
+        from llm.router import get_router
+
+        rows = get_router().status()
+    except Exception:
+        return None
+    return sum(1 for row in rows if row.get("state") == "ready")
 
 
 class RunRequest(BaseModel):
@@ -48,8 +88,8 @@ def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) 
 
 
 def _warm_up() -> None:
-    """E8: pay the first-run costs at server start instead of inside the
-    user's first run — build the LLM router (reads llm_providers.json) and
+    """Pay the first-run costs at server start instead of inside the
+    user's first run. Build the LLM router (reads llm_providers.json) and
     resolve the Chrome driver once (Selenium Manager does its download
     check on the very first call, 1-5 s). A broken environment is a warning
     here, not a surprise mid-run crash."""
@@ -99,7 +139,9 @@ def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
                 "state": job.get("status"),
                 "status": job.get("status"),
                 "cheapest_price": job.get("cheapest_price"),
+                "saving_vs_gem": job.get("saving_vs_gem"),
                 "match_count": job.get("match_count"),
+                "queue_position": job.get("queue_position", 0),
                 "checked_at": None,
                 "from_cache": False,
                 "live": True,
@@ -111,6 +153,8 @@ def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
         if not run_id or run_id in seen:
             continue
         seen.add(run_id)
+        result = record.get("result") if isinstance(record.get("result"), dict) else {}
+        cheapest = result.get("cheapest") if isinstance(result.get("cheapest"), dict) else {}
         entries.append(
             {
                 "id": run_id,
@@ -119,7 +163,9 @@ def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
                 "state": record.get("state") or "done",
                 "status": record.get("state") or "done",
                 "cheapest_price": record.get("cheapest_price"),
+                "saving_vs_gem": cheapest.get("saving_vs_gem"),
                 "match_count": record.get("match_count"),
+                "queue_position": 0,
                 "checked_at": record.get("checked_at"),
                 "from_cache": bool(record.get("from_cache")),
                 "live": False,
@@ -148,7 +194,7 @@ def create_app(
         else:
             runner = _real_runner
 
-    # B9: one run at a time by default — two is the most Chrome and the
+    # One run at a time by default: two is the most Chrome and the
     # shops tolerate together, and only when asked for (GEM_JOBS=2).
     raw_jobs = os.getenv("GEM_JOBS", "1")
     try:
@@ -167,19 +213,43 @@ def create_app(
     app = FastAPI(title="GeM Price Comparison API", lifespan=lifespan)
     app.state.manager = manager
 
-    origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
-    app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+    origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+    if origins:
+        # Empty by default: the page is served from this app, so it needs no CORS.
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "demo": demo}
+        return {
+            "ok": True,
+            "demo": demo,
+            "llm_ready": _llm_ready(bool(demo)),
+            "gates": {
+                "low_ratio": PRICE_SANITY_LOW_RATIO,
+                "high_ratio": PRICE_SANITY_HIGH_RATIO,
+                "min_confidence": MATCH_CONFIDENCE_THRESHOLD,
+            },
+            "version": _git_version(),
+        }
 
     @app.post("/api/runs", status_code=202)
     def start_run(body: RunRequest):
         if not demo and not looks_like_gem_url(body.gem_url):
             raise HTTPException(status_code=422, detail="That does not look like a GeM product link (gem.gov.in).")
         job = manager.submit(body.gem_url.strip(), body.refresh)
-        return {"run_id": job.id, "status": job.status}
+        return {
+            "run_id": job.id,
+            "status": job.status,
+            "queue_position": manager.queue_position(job.id),
+        }
 
     @app.get("/api/runs")
     def list_runs():
@@ -189,7 +259,7 @@ def create_app(
     def get_run(run_id: str):
         job = manager.get(run_id)
         if job is not None:
-            summary = job.summary()
+            summary = job.summary(manager.queue_position(job.id))
             result = job.result
             state = (result or {}).get("state") or job.status
             return {
