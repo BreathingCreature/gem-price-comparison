@@ -50,7 +50,7 @@ next. See [docs/llm-providers.md](docs/llm-providers.md).
 | `python -m uvicorn api.server:app --port 8000` | Web page on http://127.0.0.1:8000 |
 | `GEM_DEMO=1 python -m uvicorn api.server:app` | Web page with fake data, no scraping, no LLM |
 | `python tools/doctor.py` | Offline health check |
-| `python tools/doctor.py --live` | Live: LLM endpoints, search engines, one canary per shop |
+| `python tools/doctor.py --live` | Live: LLM endpoints, search engines, one canary per shop, a real Flipkart and Amazon search, and a deliberate failover |
 | `python tools/doctor.py --clean` | Remove old traces, run records and debug pages |
 | `python tools/probe_endpoints.py` | One line per LLM endpoint (finish reason, rate-limit header names) |
 | `python tools/free_models.py` | Probe free/discovered models; `--write` keeps the fastest correct ones |

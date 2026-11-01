@@ -8,9 +8,8 @@ that page looks real it is used; otherwise the page is re-checked once, and
 only then does headless Chrome via base.build_stealth_driver() take over.
 The fast path exists because Chrome startup dominates a run's wall time.
 
-Selectors WILL drift over time (Flipkart changes markup periodically) —
-these were correct as of the old repo's last test, not guaranteed current.
-If search() returns zero candidates with blocked=False, that's the first
+Selectors WILL drift over time (Flipkart changes markup periodically). If
+search() returns zero candidates with blocked=False, that's the first
 thing to suspect: check the debug HTML this module saves on a zero-card
 page against the selectors below and update them.
 """
@@ -39,7 +38,7 @@ _BLOCK_PHRASES = ["flipkart recaptcha", "recaptcha", "please verify you are a hu
 # Flipkart says this when the query genuinely has no products.
 _NO_RESULTS_PHRASES = ["no products found", "no results found", "didn't find any products"]
 
-# MRP / struck-out price containers — never the selling price.
+# MRP / struck-out price containers - never the selling price.
 _MRP_CLASSES = ("div._3I9_wc", "div.yRaY8j", "div._3auQ3N")
 
 _OUT_OF_STOCK_PHRASES = ["sold out", "out of stock", "currently unavailable"]
@@ -73,7 +72,7 @@ def _scroll_to_load_cards(driver, *, max_rounds: int = 8, stop_when_over: int = 
     """Scroll to coax Flipkart's lazy-loaded result cards in. The old loop
     always ran all 8 rounds: its '>50 links' exit almost never triggers
     (result pages usually hold ~20-40 cards). Two rounds in a row that add
-    no new product links mean the page is done — stop there."""
+    no new product links mean the page is done - stop there."""
     from selenium.webdriver.common.by import By
 
     previous = -1
@@ -109,14 +108,14 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
         driver.get(url)
     except Exception as e:
         # Same slow-page tolerance as amazon: a nav timeout doesn't mean the
-        # page failed — wait for the background load and keep page_source.
+        # page failed - wait for the background load and keep page_source.
         logger.warning(
-            "flipkart navigation slow on %r p%d (%s: %s) — waiting for the page to finish, keeping page_source.",
+            "flipkart navigation slow on %r p%d (%s: %s) - waiting for the page to finish, keeping page_source.",
             query, page, type(e).__name__, str(e)[:120],
         )
         time.sleep(random.uniform(4.0, 6.0))
 
-    # Page 2+ especially renders its shell first and fills cards via JS —
+    # Page 2+ especially renders its shell first and fills cards via JS -
     # reading too early gave "no cards parsed" on live runs. Wait for a
     # reasonable number of product links before the scroll pass.
     try:
@@ -124,7 +123,7 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
             lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[data-id], a[href*='/p/']")) >= 5
         )
     except TimeoutException:
-        logger.info("flipkart cards for %r p%d not rendered after wait — parsing whatever is present.", query, page)
+        logger.info("flipkart cards for %r p%d not rendered after wait - parsing whatever is present.", query, page)
 
     time.sleep(random.uniform(2.0, 3.0))  # initial render
     if detect_block(driver, _BLOCK_PHRASES):
@@ -154,7 +153,7 @@ def strip_emi_text(text: str) -> str:
 
 
 def parse_cards_from_html(html: str) -> list[dict]:
-    """Pure function, no browser — this is what's actually testable without
+    """Pure function, no browser - this is what's actually testable without
     Selenium/Chrome installed. Current Flipkart layout: card container
     div.nZIRY7, title div.RG5Slk, price div.hZ3P6w.DeU9vF, with older-layout
     fallbacks kept alongside."""
@@ -176,7 +175,7 @@ def parse_cards_from_html(html: str) -> list[dict]:
             name = name.split("₹")[0].strip()[:200]
             name = name.replace("Add to Compare", "").strip()
 
-        # Struck-out MRP containers are never the selling price — remove them
+        # Struck-out MRP containers are never the selling price - remove them
         # before ANY price read, so the fallback cannot grab the MRP just
         # because the selling-price class drifted to an unknown name.
         for mrp in card.select(", ".join(_MRP_CLASSES)):
@@ -197,7 +196,7 @@ def parse_cards_from_html(html: str) -> list[dict]:
         link_el = card.select_one('a[href*="/p/"]')
         if link_el is None and getattr(card, "name", None) == "a" and "/p/" in (card.get("href") or ""):
             link_el = card
-        # Keep the full href including ?pid=... — stripping the query collapsed
+        # Keep the full href including ?pid=... - stripping the query collapsed
         # distinct variants onto one URL whose price belonged to another variant.
         link = (
             urljoin("https://www.flipkart.com", link_el["href"])
@@ -238,14 +237,14 @@ def _fetch_light_page(query: str, page: int = 1) -> str | None:
     """One plain HTTP GET of a Flipkart search page (no browser).
 
     Returns None when curl_cffi is missing, the request errors, the status is
-    not 200, or the page is a bot-wall — the caller then uses Chrome. One
-    attempt only: the spec's cost model is a single cheap request, not a
-    fingerprint tournament that can burn a minute before Chrome starts.
+    not 200, or the page is a bot-wall - the caller then uses Chrome. One
+    attempt only: one cheap request, not a fingerprint tournament that can
+    burn a minute before Chrome starts.
     """
     try:
         from curl_cffi import requests as curl_requests
     except ImportError:
-        logger.info("curl_cffi not installed — skipping the Flipkart fast path.")
+        logger.info("curl_cffi not installed - skipping the Flipkart fast path.")
         return None
 
     url = f"https://www.flipkart.com/search?q={quote_plus(query)}&page={page}"
@@ -326,7 +325,7 @@ def _search_light(
                 return None  # page 1 decides: Chrome takes over
             break  # page 1 was good; keep what it gave us
         if page == 1 and not _light_page_is_usable(html):
-            logger.info("Flipkart fast path for %r does not look real — using Chrome.", query)
+            logger.info("Flipkart fast path for %r does not look real - using Chrome.", query)
             return None
         if page > 1 and not _light_page_is_usable(html) and not _genuine_no_results(html):
             break  # page 1 was fine; a later page being odd only stops paging
@@ -366,11 +365,11 @@ def _save_debug(html: str, prefix: str) -> None:
 
 
 def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages: int = 3, product: set[str] | None = None) -> SearchScrapeResult:
-    """One search on an already-open driver — the whole search() body. Split
+    """One search on an already-open driver - the whole search() body. Split
     out so a run can reuse one Chrome (FlipkartBrowser) instead of starting
     a new one per query.
 
-    product, when given, is the reference product's words (C6): the page loop
+    product, when given, is the reference product's words: the page loop
     stops early once page 1 holds enough relevant cards, instead of always
     chasing the 15-card target through pages 2 and 3."""
     candidates: list[CandidateResult] = []
@@ -394,9 +393,9 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
                 debug_path = DEBUG_DIR / f"flipkart_block_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
                 try:
                     debug_path.write_text(driver.page_source, encoding="utf-8")
-                    logger.warning("Flipkart blocked/CAPTCHA on %r page %d — stopping, no bypass. Saved %s", query, page, debug_path)
+                    logger.warning("Flipkart blocked/CAPTCHA on %r page %d - stopping, no bypass. Saved %s", query, page, debug_path)
                 except Exception:
-                    logger.warning("Flipkart blocked/CAPTCHA on %r page %d — stopping, no bypass.", query, page)
+                    logger.warning("Flipkart blocked/CAPTCHA on %r page %d - stopping, no bypass.", query, page)
                 break
 
             cards = parse_cards_from_html(html)
@@ -405,20 +404,20 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
             # before giving up. Page-1 results are already in hand, so a
             # second failure just stops pagination as before.
             if not cards and page >= 2:
-                logger.info("Flipkart page %d for %r: zero cards — reloading once (lazy-load miss).", page, query)
+                logger.info("Flipkart page %d for %r: zero cards - reloading once (lazy-load miss).", page, query)
                 time.sleep(random.uniform(1.5, 2.5))
                 html = _load_search_page(driver, query, page)
                 if html is None:
-                    # Reload hit CAPTCHA — previously fell through as
+                    # Reload hit CAPTCHA - falls through as
                     # "no cards parsed" with blocked=False, reporting a
                     # scrape failure as a clean empty search.
                     blocked = True
                     debug_path = DEBUG_DIR / f"flipkart_block_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
                     try:
                         debug_path.write_text(driver.page_source, encoding="utf-8")
-                        logger.warning("Flipkart blocked/CAPTCHA on %r page %d reload — stopping, no bypass. Saved %s", query, page, debug_path)
+                        logger.warning("Flipkart blocked/CAPTCHA on %r page %d reload - stopping, no bypass. Saved %s", query, page, debug_path)
                     except Exception:
-                        logger.warning("Flipkart blocked/CAPTCHA on %r page %d reload — stopping, no bypass.", query, page)
+                        logger.warning("Flipkart blocked/CAPTCHA on %r page %d reload - stopping, no bypass.", query, page)
                     break
                 cards = parse_cards_from_html(html)
 
@@ -439,7 +438,7 @@ def _search_with_driver(driver, query: str, *, max_results: int = 15, max_pages:
                 candidates.append(_candidate_from_card(c))
                 if product is not None and prefilter.relevant_title(c["name"], product):
                     relevant += 1
-            # The pause between pages only exists to be polite to Flipkart —
+            # The pause between pages only exists to be polite to Flipkart -
             # no point taking it after the last page (or once we have enough).
             if page < max_pages and not _enough():
                 time.sleep(random.uniform(1.0, 2.0))
@@ -507,12 +506,12 @@ def _driver_died(exc: BaseException | None = None, text: str | None = None) -> b
 
 
 class FlipkartBrowser:
-    """ONE Chrome for a whole run (Flipkart Tier 2, items 1 and 2).
+    """ONE Chrome for a whole run.
 
     start() begins building the driver in a background thread right away, so
     the 3-8 s startup hides behind the GeM page fetch and the LLM normalize
     instead of delaying the first search. Every search() after that reuses
-    the same driver — all normalized queries and the retry included —
+    the same driver - all normalized queries and the retry included -
     instead of starting (and quitting) a new Chrome per query. close() quits
     it exactly once, even when the run ends early while the build is still
     running (a failed extract must not leak a Chrome process)."""
@@ -574,7 +573,7 @@ class FlipkartBrowser:
         if old is not None:
             with suppress(Exception):
                 old.quit()
-        logger.warning("Flipkart Chrome died — rebuilding it once for this run.")
+        logger.warning("Flipkart Chrome died - rebuilding it once for this run.")
         self._driver = self._build_driver()
 
     def close(self) -> None:

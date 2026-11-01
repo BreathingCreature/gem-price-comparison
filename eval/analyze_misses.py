@@ -192,7 +192,7 @@ def classify_slot(slot: dict, record: dict | None, trace: dict | None) -> tuple[
             return "fetch_failed", f"page fetch failed: {_fetch_error(entry)[:160]}"
     for key in sorted(wanted):
         if key in skipped:
-            return "verify_incomplete", "the verdict never came back (LLM failure) — the listing was skipped"
+            return "verify_incomplete", "the verdict never came back (LLM failure) - the listing was skipped"
     for key in sorted(wanted):
         if key in candidate_by_key:
             return "unexplained", "the listing reached the matcher but no verdict was recorded"

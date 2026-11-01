@@ -1,14 +1,14 @@
 """
 Tests for llm_client.py.
 
-No real NVIDIA API calls happen here — this sandbox has no key configured
+No real NVIDIA API calls happen here - this sandbox has no key configured
 and can't reach integrate.api.nvidia.com anyway (network's locked to a
 fixed domain allowlist). Every function that calls the LLM takes an
 optional `client=` param specifically so tests can inject a fake one
 shaped like the real OpenAI client instead. This proves the prompt-
 building, response-parsing, retry, and fallback-merging logic is correct.
 It does NOT prove the real model actually returns useful answers to these
-prompts — that needs a real key and a real run.
+prompts - that needs a real key and a real run.
 """
 import json
 import sys
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from llm import client as llm_client  # noqa: E402
 
-# Kill the rate-limit sleep for tests — otherwise every multi-call test adds
+# Kill the rate-limit sleep for tests - otherwise every multi-call test adds
 # real wall-clock delay for no benefit.
 llm_client.NVIDIA_MIN_SECONDS_BETWEEN_CALLS = 0.0
 
@@ -92,7 +92,7 @@ def test_extract_json_handles_braces_inside_strings():
 def test_normalize_product_uses_llm_output():
     fake = _FakeClient(
         '{"brand": "Logitech", "model": "M650", "key_identifiers": ["M650", "Bluetooth"], '
-        '"canonical_name": "Logitech M650 — Wireless Mouse", "search_queries": ["Logitech M650 wireless mouse"]}'
+        '"canonical_name": "Logitech M650 - Wireless Mouse", "search_queries": ["Logitech M650 wireless mouse"]}'
     )
     gem_product = {
         "title": "Logitech M650 Wireless Mouse",
@@ -126,15 +126,15 @@ def test_normalize_product_falls_back_to_gem_fields_when_llm_returns_null():
     assert result["search_queries"] == ["Unbranded Office Chair"]  # falls back to title as a last resort
 
 
-# --- normalize_product prompt-size cap (E1) -------------------------------------------
+# --- normalize_product prompt-size cap -------------------------------------------
 
 def _last_normalize_prompt(fake):
     return fake.chat.completions.calls[0]["messages"][1]["content"]
 
 
 def test_normalize_product_small_specs_prompt_is_unchanged():
-    # E1 regression guard: with few short specs the prompt must be exactly
-    # the same text the old join-everything formatting produced.
+    # With few short specs the prompt must be exactly the text the plain
+    # join-everything formatting produces.
     fake = _FakeClient('{"search_queries": ["q"]}')
     gem_product = {
         "title": "Logitech M650 Wireless Mouse",
@@ -161,8 +161,8 @@ def test_normalize_product_caps_specs_at_40_and_flags_omitted():
     spec_lines = [ln for ln in prompt.splitlines() if ln.startswith("- ")]
     assert len(spec_lines) == 41  # 40 kept rows + the omitted flag
     assert spec_lines[-1] == "- (60 more specs omitted)"
-    assert "- Spec 0: value 0" in spec_lines
-    assert "- Spec 39: value 39" in spec_lines
+    assert f"- Spec {0}: value 0" in spec_lines
+    assert f"- Spec {39}: value 39" in spec_lines
 
 
 def test_normalize_product_cuts_long_spec_values():
@@ -235,7 +235,7 @@ def test_verify_or_extract_falls_back_to_raw_read_when_structured_fields_missing
         "url": "https://brandstore.example.com/m650",
         "source_domain": "brandstore.example.com",
         "structured_fields": None,  # scraper found nothing structured
-        "raw_page_text": "Buy the Logitech M650 wireless mouse today for just Rs. 1,349 — free shipping.",
+        "raw_page_text": "Buy the Logitech M650 wireless mouse today for just Rs. 1,349 - free shipping.",
     }
     decision = llm_client.verify_or_extract(normalized, candidate, client=fake)
     assert decision["extraction_source"] == "llm_raw_read"
@@ -341,9 +341,9 @@ def test_call_llm_raises_after_failed_retry():
 # --- transient endpoint-error retry (NVIDIA 503 storms) ------------------------------
 
 def test_complete_retries_same_model_on_transient_endpoint_error():
-    # One blip on the (pinned, single) model must not kill the call —
-    # the old code fell straight through to "next model" (of which there
-    # is none) and raised.
+    # One blip on the (pinned, single) model must not kill the call: without
+    # this retry the call would fall through to "next model" (of which there
+    # is none) and raise.
     class _Transient(Exception):
         pass
 
@@ -422,7 +422,7 @@ def test_complete_raises_after_all_transient_attempts_exhausted():
         llm_client.NVIDIA_MODELS = orig_models
 
 
-# --- B1: confidence parsing ------------------------------------------------
+# confidence parsing ------------------------------------------------
 
 def test_confidence_0_9_stays_0_9():
     assert llm_client._parse_confidence(0.9) == 0.9
@@ -484,7 +484,7 @@ def test_confidence_above_100_is_zero():
     assert llm_client._parse_confidence(150) == 0.0
 
 
-# --- B5: config settings helpers -------------------------------------------
+# config settings helpers -------------------------------------------
 
 def test_flag_empty_means_default(monkeypatch):
     import importlib
@@ -492,7 +492,7 @@ def test_flag_empty_means_default(monkeypatch):
 
     monkeypatch.setenv("GEM_PARALLEL", "")
     importlib.reload(config_mod)
-    assert config_mod.PARALLEL_SEARCH is True  # Stage 7 default: lanes on
+    assert config_mod.PARALLEL_SEARCH is True  # default: lanes on
 
     monkeypatch.setenv("GEM_PARALLEL", "0")
     importlib.reload(config_mod)
@@ -539,10 +539,7 @@ def test_int_setting_invalid_uses_default(monkeypatch):
     importlib.reload(config_mod)
 
 
-# --- end B5 ---
-
-
-# --- checkpoint 22: slim reference (A5) and short answers (A6) ----------------
+# --- slim reference and short answers ----------------
 
 def _verify_payload_from_last_call(fake):
     user = fake.chat.completions.calls[0]["messages"][1]["content"]
@@ -551,7 +548,7 @@ def _verify_payload_from_last_call(fake):
 
 
 _FULL_REFERENCE = {
-    "canonical_name": "Logitech M650 — Wireless Mouse",
+    "canonical_name": "Logitech M650 - Wireless Mouse",
     "brand": "Logitech",
     "model": "M650",
     "key_identifiers": ["M650", "Bluetooth"],
@@ -582,7 +579,7 @@ def test_slim_reference_sends_only_the_identity_fields(monkeypatch):
 
     assert decision["is_match"] is True
     assert _verify_payload_from_last_call(fake)["reference_product"] == {
-        "canonical_name": "Logitech M650 — Wireless Mouse",
+        "canonical_name": "Logitech M650 - Wireless Mouse",
         "brand": "Logitech",
         "model": "M650",
         "key_identifiers": ["M650", "Bluetooth"],
@@ -604,7 +601,7 @@ def test_the_verify_prompt_wants_a_short_reason_and_no_title():
     assert "extracted_title" not in llm_client._VERIFY_SYSTEM
 
 
-# --- stage 5: prompt v2 ----------------------------------------------------------
+# --- prompt content ----------------------------------------------------
 
 def test_the_normalize_prompt_asks_for_aliases_and_key_attributes():
     assert "aliases" in llm_client._NORMALIZE_SYSTEM

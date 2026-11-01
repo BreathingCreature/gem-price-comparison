@@ -1,5 +1,5 @@
 """Trace files on disk: compact JSON, and a rotation scan that runs every
-N-th write instead of on every single run (E7)."""
+N-th write instead of on every single run."""
 import json
 import os
 import sys

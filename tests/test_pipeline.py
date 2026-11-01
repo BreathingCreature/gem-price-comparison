@@ -3,8 +3,8 @@ Tests for pipeline.py.
 
 Every stage (extract, normalize, flipkart/amazon search, discover, generic
 scrape, match, expand_search) is injected as a fake via run_pipeline's
-keyword overrides. This tests ONLY the orchestration logic — sequencing,
-the retry trigger, cache behavior, and not_found_on computation — not
+keyword overrides. This tests ONLY the orchestration logic - sequencing,
+the retry trigger, cache behavior, and not_found_on computation - not
 whether the real scrapers/LLM calls work (those are already covered by
 each part's own test file). Each test uses a distinct fake gem_url so
 tests don't collide through the real on-disk cache.
@@ -218,9 +218,9 @@ def test_retry_skipped_when_expand_search_has_no_new_queries():
 
 
 def test_a_blocked_shop_is_retried_once_with_the_new_words():
-    # Stage 7.2/7.4: a blocked shop is `not_searched` with retryable=True, so
-    # it gets exactly one retry with the expanded query. (Stage 6's A11 skipped
-    # it outright; the per-shop card now decides, and the cap is one retry.)
+    # A blocked shop is `not_searched` with retryable=True, so it gets
+    # exactly one retry with the expanded query. The per-shop card decides,
+    # and the cap is one retry.
     url = "https://mkp.gem.gov.in/test/blocked-not-retried/p-13-13-cat.html"
     fk_calls, az_calls = [], []
     seen_events = []
@@ -252,7 +252,7 @@ def test_a_blocked_shop_is_retried_once_with_the_new_words():
 
 
 def test_a_shop_that_only_found_nothing_is_still_retried():
-    # "Blocked" is the only reason to skip — a clean empty result may just be
+    # "Blocked" is the only reason to skip - a clean empty result may just be
     # a bad query, and the retry's new phrasing may fix exactly that.
     url = "https://mkp.gem.gov.in/test/empty-still-retried/p-14-14-cat.html"
     fk_calls = []
@@ -279,8 +279,8 @@ def test_a_shop_that_only_found_nothing_is_still_retried():
 
 def test_skipped_domain_not_reported_as_not_found():
     # Amazon search succeeded but EVERY candidate's verify was skipped
-    # (LLM outage). Previously the domain was listed under "Not found"
-    # — a verify failure dressed up as a shopping verdict.
+    # (LLM outage). The domain is not listed under "Not found"
+    # - a verify failure dressed up as a shopping verdict.
     url = "https://mkp.gem.gov.in/test/skipped-not-notfound/p-7-7-cat.html"
 
     def amazon_search_fn(q):
@@ -343,7 +343,7 @@ def test_gem_price_missing_emits_warning():
 # --- secondary normalized queries reach direct scrapers -----------------------------------
 
 def test_all_normalized_queries_reach_direct_scrapers():
-    # Previously only search_queries[0] hit Amazon/Flipkart — a bad primary
+    # Only search_queries[0] hit Amazon/Flipkart - a bad primary
     # phrasing meant the two working marketplaces were searched once, wrong.
     url = "https://mkp.gem.gov.in/test/all-queries-direct/p-10-10-cat.html"
     seen = {"flipkart": [], "amazon": []}
@@ -377,7 +377,7 @@ def test_all_normalized_queries_reach_direct_scrapers():
 
 def test_direct_search_stops_once_enough_candidates():
     # Early-exit: a query that already returned >= DIRECT_SEARCH_MIN_CANDIDATES
-    # RELEVANT candidates must not trigger more (expensive) Selenium runs (C7).
+    # RELEVANT candidates must not trigger more (expensive) Selenium runs.
     url = "https://mkp.gem.gov.in/test/stop-early/p-11-11-cat.html"
     fk_calls = []
 
@@ -413,13 +413,13 @@ def test_direct_search_stops_once_enough_candidates():
 
     # The early exit still holds: q2/q3 were not searched in the first pass.
     # The one bounded retry (no confirmed match) then uses the next unused
-    # query — and only that one.
+    # query - and only that one.
     assert fk_calls[:1] == ["q1"]
     assert fk_calls[1:] == ["q2"]
 
 
 def test_direct_search_junk_results_do_not_end_the_queries():
-    # C7: five junk cards must not end the query loop — the right product is
+    # five junk cards must not end the query loop - the right product is
     # often only found by query 2's phrasing, and the junk gets rejected by
     # the LLM anyway (at the cost of one call).
     url = "https://mkp.gem.gov.in/test/junk-does-not-stop/p-12-12-cat.html"
@@ -473,7 +473,7 @@ def test_direct_search_junk_results_do_not_end_the_queries():
 
 def test_direct_search_without_the_product_counts_every_candidate():
     # Direct callers that pass no normalized product (older tools, small
-    # tests) keep the plain candidate count — their behaviour is unchanged.
+    # tests) keep the plain candidate count - their behaviour is unchanged.
     calls = []
 
     def search(q):
@@ -521,27 +521,27 @@ def test_dedup_other_shop_diff_id_stays_separate():
     assert len(pipeline._dedup([c1, c2])) == 2  # different query ids -> two
 
 
-# --- A2: per-site key handles tracking params ----------------------------
+# per-site key handles tracking params ----------------------------
 
-def test_a2_other_shop_diff_utm_is_one():
+def test_other_shop_diff_utm_is_one():
     c1 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/p/123?utm_source=a", scraper_used="generic", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
     c2 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/p/123?utm_source=b", scraper_used="generic", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
     assert len(pipeline._dedup([c1, c2])) == 1  # same page, different utm -> one
 
 
-def test_a2_other_shop_sorted_params_equal():
+def test_other_shop_sorted_params_equal():
     c1 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/A?x=1&y=2", scraper_used="generic", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
     c2 = CandidateResult(source_domain="brandstore.example.com", url="https://brandstore.example.com/A?y=2&x=1", scraper_used="generic", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
     assert len(pipeline._dedup([c1, c2])) == 1  # same params, different order -> one
 
 
-def test_a2_flipkart_same_itm_diff_pid_stays_two():
+def test_flipkart_same_itm_diff_pid_stays_two():
     c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
     c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
     assert len(pipeline._dedup([c1, c2])) == 2  # different pids -> two
 
 
-def test_a2_flipkart_same_pid_diff_lid_is_two():
+def test_flipkart_same_pid_diff_lid_is_two():
     c1 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST1&q=mouse", scraper_used="flipkart", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
     c2 = CandidateResult(source_domain="flipkart.com", url="https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=LST2&q=mouse+2", scraper_used="flipkart", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
     assert len(pipeline._dedup([c1, c2])) == 2  # lid is a real variant, not tracking
@@ -550,15 +550,15 @@ def test_a2_flipkart_same_pid_diff_lid_is_two():
     assert len(pipeline._dedup([c1, c3])) == 1  # q is not part of the identity
 
 
-def test_a2_amazon_dp_asin_equals_title_path_with_ref():
+def test_amazon_dp_asin_equals_title_path_with_ref():
     c1 = CandidateResult(source_domain="amazon.in", url="https://www.amazon.in/dp/B0ABCDEFGH", scraper_used="amazon", structured_fields={"title": "A", "price": 100.0}, raw_page_text="")
     c2 = CandidateResult(source_domain="amazon.in", url="https://www.amazon.in/Title/dp/B0ABCDEFGH/ref=x?a=1", scraper_used="amazon", structured_fields={"title": "B", "price": 200.0}, raw_page_text="")
     assert len(pipeline._dedup([c1, c2])) == 1  # same ASIN -> one
 
 
-# --- A3: _search_direct and _dedup share the same key function -----------
+# _search_direct and _dedup share the same key function -----------
 
-def test_a3_search_direct_and_dedup_use_same_key():
+def test_search_direct_and_dedup_use_same_key():
     """Both functions must produce identical keys for the same URL list."""
     urls = [
         "https://www.flipkart.com/mouse/p/itm1?pid=PID1&lid=X",
@@ -584,7 +584,7 @@ def test_a3_search_direct_and_dedup_use_same_key():
 
 
 def test_retry_suggested_domains_keep_indian_shops_only():
-    """LLM prompt asks for Indian domains but doesn't enforce it —
+    """LLM prompt asks for Indian domains but doesn't enforce it -
     bestbuy.com must not reopen open-mode .com discovery."""
     url = "https://mkp.gem.gov.in/test/retry-indian-filter/p-12-12-cat.html"
     discover_calls = []
@@ -773,7 +773,7 @@ def test_one_browser_runs_the_search_the_retry_and_is_closed():
     assert len(browsers) == 1
     assert events.index("started") < events.index("extract")
     assert browsers[0].queries == ["Logitech M650 wireless mouse", "better query"]
-    # C6: the pipeline hands the run's browser the product's words so its page
+    # the pipeline hands the run's browser the product's words so its page
     # loop can stop paging once page 1 already holds enough relevant cards.
     assert browsers[0].products == [{"logitech", "m650"}, {"logitech", "m650"}]
     assert events.count("closed") == 1

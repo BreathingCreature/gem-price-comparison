@@ -28,9 +28,9 @@ it: `core/candidates.py` (candidate rows and de-duplication),
    brand, model, search words. If the LLM is unavailable, a plain-text
    fallback is used and the run is marked (`_identity_without_llm`).
 3. **Three lanes start together** when `GEM_PARALLEL=1` (the default):
-   - Flipkart search,
-   - Amazon search,
-   - discovery (search engines) + one page per other shop.
+ - Flipkart search,
+ - Amazon search,
+ - discovery (search engines) + one page per other shop.
 
    Each lane is wrapped: a crash becomes a `lane_failed` event and an empty
    lane, not a dead run. Only if all three crash does the error reach the user.

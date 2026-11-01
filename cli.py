@@ -157,7 +157,7 @@ def print_result(gem_url: str, result: dict) -> None:
         print("Possible matches (not confirmed):")
         for row in result["possible_matches"]:
             why = row.get("why") or row.get("reason") or "possible"
-            print(f"  - {row.get('shop') or '?'}: {format_price(row.get('price'))} ({why})")
+            print(f" - {row.get('shop') or '?'}: {format_price(row.get('price'))} ({why})")
 
     if result.get("similar"):
         _print_similar(result["similar"])
@@ -172,7 +172,7 @@ def print_result(gem_url: str, result: dict) -> None:
         print()
         print("Search issues (scrape failed - NOT a 'not sold there' verdict):")
         for issue in search_issues:
-            print(f"  - {issue}")
+            print(f" - {issue}")
 
     skipped = result.get("skipped") or []
     if skipped:
@@ -226,7 +226,7 @@ def _print_similar(rows) -> None:
         shop = row.get("source_domain") or row.get("shop") or "?"
         title = row.get("title") or "(no title)"
         url = row.get("candidate_url") or row.get("url") or ""
-        print(f"  - {title} ({shop}) {format_price(row.get('price'))} {url}".rstrip())
+        print(f" - {title} ({shop}) {format_price(row.get('price'))} {url}".rstrip())
 
 
 class Printer:
@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     # ₹ crashes on cp1252 Windows consoles (observed live:
-    # UnicodeEncodeError) — force UTF-8 with replacement so the table mode
+    # UnicodeEncodeError) - force UTF-8 with replacement so the table mode
     # never dies on a currency symbol. StringIO in tests has no reconfigure.
     try:
         if hasattr(sys.stdout, "reconfigure"):

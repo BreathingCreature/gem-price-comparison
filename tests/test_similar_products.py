@@ -1,4 +1,4 @@
-"""Stage 6.5: similar products — one LLM call, only when nothing matched.
+"""similar products - one LLM call, only when nothing matched.
 
 The call is a nicety on top of a failed run: it must never replace a match,
 never feed the cheapest price, and never be able to crash the run.

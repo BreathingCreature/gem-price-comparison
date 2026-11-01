@@ -117,7 +117,7 @@ def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=N
         for line in out_path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 rec = json.loads(line)
-                # A row that errored must be retried on resume — only clean
+                # A row that errored must be retried on resume - only clean
                 # rows are "done".
                 if not rec.get("error"):
                     done.add(str(rec["id"]))
@@ -129,7 +129,7 @@ def run_all(rows: list[dict], out_path: Path, *, run_fn=None, limit=None, only=N
         for n, row in enumerate(todo, start=1):
             _append_record(out_path, record_for(row, run_fn), n, len(todo), log)
         return len(todo)
-    # B9: each product is mostly waiting on Chrome and the shops, so a couple
+    # each product is mostly waiting on Chrome and the shops, so a couple
     # at a time cuts a whole key's wall time roughly in half.
     log(f"running {workers} products at a time")
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="eval-product") as pool:

@@ -1,6 +1,6 @@
 """Small candidate helpers shared by the search, lane and result code.
 
-These are the functions every stage used to borrow from core/pipeline.py;
+Candidate helpers shared by the search, lane and result code;
 they are pure (no config, no events) so moving them cannot change a run.
 """
 from __future__ import annotations

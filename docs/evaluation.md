@@ -59,9 +59,9 @@ Or run a couple of products at the same time:
 python -m eval.run_eval --key eval/answer_key.csv --label before --workers 2
 ```
 
-Two or three at a time is the sweet spot — most of a run is waiting on Chrome and the shops, and ten at once just gets you blocked. The records still land one per line, in completion order, and stopping/resuming works the same as above.
+Two or three at a time is the sweet spot - most of a run is waiting on Chrome and the shops, and ten at once just gets you blocked. The records still land one per line, in completion order, and stopping/resuming works the same as above.
 
-**Restart behavior:** On a resume, any row whose result line has no `error` is treated as done and skipped. A row where the LLM never answered (all LLM calls failed, no cache hits) counts as an error and is run again. A row with matches but some failed LLM calls is also treated as done — those failures were retried internally by the router.
+**Restart behavior:** On a resume, any row whose result line has no `error` is treated as done and skipped. A row where the LLM never answered (all LLM calls failed, no cache hits) counts as an error and is run again. A row with matches but some failed LLM calls is also treated as done - those failures were retried internally by the router.
 
 If you reuse a `--label` with different settings (for example `GEM_PARALLEL=1` vs `0`), the old `.meta.json` is kept and a warning lists the settings that changed. Use a new `--label` for a new setting.
 
@@ -108,11 +108,11 @@ Add `--price-band` to also drop listings priced outside 0.3 to 3 times the GeM p
 | `LLM_CACHE` | `0` | `1` remembers LLM answers on disk, see below |
 | `LLM_CACHE_DIR` | `cache/llm` | Where the remembered answers live |
 | `LLM_PROVIDERS_FILE` | `llm_providers.json` | Which LLM endpoints are used |
-| `GEM_LLM_WORKERS` | `4` | How many listings are checked at once (`1` = one at a time). Above 1 it uses the providers in parallel — keep each provider polite with `max_concurrent` and `daily_limit` in `llm_providers.json` (see docs/llm-providers.md) |
+| `GEM_LLM_WORKERS` | `4` | How many listings are checked at once (`1` = one at a time). Above 1 it uses the providers in parallel - keep each provider polite with `max_concurrent` and `daily_limit` in `llm_providers.json` (see docs/llm-providers.md) |
 | `GEM_PREFILTER_TOP` | `10` | Keep only the best N titled listings per shop before the LLM, plus hard caps (10 non-model-code listings, 20 model-code hits) and a 3-listing safety net when the caps empty a shop. `0` is off; the safe N comes from section 9 |
 | `GEM_STRICT` | `0` | `1` is the old behaviour: no pre-filter at all, every listing sent to the LLM, and one listing checked at a time |
 | `GEM_PRICE_PREGATE` | `1` | `1` drops listings whose card price is already outside the band before the LLM call |
-| `GEM_REUSE_VERDICTS` | `1` | `1` keeps an answer for the same (product, listing title, price) instead of asking the LLM twice — within a shop and across shops in the same run |
+| `GEM_REUSE_VERDICTS` | `1` | `1` keeps an answer for the same (product, listing title, price) instead of asking the LLM twice - within a shop and across shops in the same run |
 | `GEM_SLIM_REFERENCE` | `0` | `1` sends only the reference's identity fields (brand, model, canonical name, key identifiers, price) in verify calls instead of the full spec table and search queries |
 | `GEM_DISCOVERY` | `1` | `0` skips the other-shops discovery and the brand-site fetches |
 | `GEM_FLIPKART_LIGHT` | `1` | `1` makes Flipkart's browser skip images and stop loading early. For timing, not for accuracy runs |
@@ -210,6 +210,20 @@ Record once, replay both, score with `eval.score`, and read the LLM call counts 
 - That GeM and Amazon discourage automated fetching, the sample is small and the use is research only.
 - The recall and precision from `eval.score`, the baseline result, and the time with and without parallel search.
 
+## What can change a score without a code change
+
+- Amazon's ranked page is not stable. The same query can return a different
+  ranked list on a later fetch, and the card title for the same ASIN can lose
+  its brand. A key that names exact ASINs then loses a slot at retrieval or at
+  verification with no code change. Compare traces before blaming a change.
+- A "possible" row is a listing the model judged to be the same family but the
+  gate would not confirm: the price was missing, the pack or quantity differed,
+  or confidence was below 0.75. Pack size is the usual reason because the
+  wanted unit is ambiguous (ream versus box, single versus set). Do not lower
+  `MATCH_CONFIDENCE`; score with `--with-possible` or adjudicate the rows.
+- Shop HTML and the free-model chain change between runs. A single run is a
+  sample, not a fixed measurement.
+
 ## Pooling: counting right listings the key missed
 
 The strict score asks the run to find the exact URLs in the key. A run can find
@@ -218,10 +232,10 @@ shop) and the strict score calls it wrong. To measure that fairly, a person
 checks the extra listings and says yes or no. Report **both** numbers.
 
 ```
-python -m eval.adjudicate review --key eval/answer_key.csv --results eval/results/fixed2.jsonl --out eval/results/fixed2.review.csv
+python -m eval.adjudicate review --key eval/answer_key.csv --results eval/results/LABEL.jsonl --out eval/results/LABEL.review.csv
 # open the csv, open each link, write yes or no in the verdict column
-python -m eval.adjudicate pool --key eval/answer_key.csv --review eval/results/fixed2.review.csv --out eval/answer_key_pooled.csv
-python -m eval.score --key eval/answer_key_pooled.csv --results eval/results/fixed2.jsonl --json eval/results/fixed2.pooled.score.json
+python -m eval.adjudicate pool --key eval/answer_key.csv --review eval/results/LABEL.review.csv --out eval/answer_key_pooled.csv
+python -m eval.score --key eval/answer_key_pooled.csv --results eval/results/LABEL.jsonl --json eval/results/LABEL.pooled.score.json
 ```
 
 Only a person's "yes" is added. The original key is never edited. The scorer also
@@ -231,9 +245,7 @@ and a run is not expected to return all of them.
 
 ## How to repeat the final run
 
-The numbers quoted in the report (27 products, 54 wanted slots, 4 found, recall
-7.4%, precision 31.3%, 63 s median, 159 s p90) are from
-`eval/results/fixed2.score.json`. To reproduce that kind of run:
+The report quotes the latest full answer-key run. To reproduce one:
 
 1. Put the GeM/LLM keys in `.env` and the provider list in
    `llm_providers.json` (both gitignored; `git status` must stay clean of them).
@@ -264,7 +276,7 @@ The numbers quoted in the report (27 products, 54 wanted slots, 4 found, recall
 5. Pool, if the possible rows should be counted for real (a person fills the
    verdict column, see above).
 
-Time: one product took 49-263 s in fixed2 (median 63 s), so the 27 products
-take roughly 30-50 minutes sequential. Quota problems stretch that and are
-visible as `HTTP 429` / timeout lines in the run log; a run full of those is not
-a fair score.
+Time: one product takes from about a minute to several minutes depending on the
+shops, so the 27 products take roughly 30-50 minutes sequential. Quota problems
+stretch that and are visible as `HTTP 429` / timeout lines in the run log; a run
+full of those is not a fair score.

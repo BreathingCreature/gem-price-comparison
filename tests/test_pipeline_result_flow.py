@@ -1,4 +1,4 @@
-"""Stage 7: shop cards, the shown-then-updated result, retry gating, result v2."""
+"""shop cards, the shown-then-updated result, retry gating, result v2."""
 import time
 
 import pytest
@@ -285,7 +285,7 @@ def test_a_discovery_crash_is_reported_on_the_other_card():
 
 def test_a_failed_web_search_is_not_searched_not_not_found():
     # Live P28: DDG on cooldown, Brave 429, every query ended with "no result
-    # links could be parsed" — the card used to say "searched, nothing
+    # links could be parsed" - the card says "searched, nothing
     # confirmed" although no shop was ever looked at.
     shops = pipeline._shop_entries(
         flipkart_results=[], amazon_results=[],

@@ -1,5 +1,4 @@
 .env
-AGENTS.md
 __pycache__/
 *.pyc
 traces/*.json
@@ -8,14 +7,7 @@ debug_html/
 .venv/
 venv/
 .vscode/
-RAW/
-TASKS.md
-agent_payload.zip
-agent_payload/
-.agent/
 .pytest_cache/
+.coverage
 llm_providers.json
 eval/results/
-TASKS2.md
-agent_payload2.zip
-agent_payload2/

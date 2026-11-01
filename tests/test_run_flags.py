@@ -94,22 +94,22 @@ def test_flag_default_when_unset(monkeypatch):
 def test_normal_behaviour_is_the_default():
     # these tests assume the developer has not exported the switches
     assert config.RETRY_ENABLED is True and config.GATES_ENABLED is True
-    # Stage 7: lanes are the default; GEM_PARALLEL=0 restores the old path.
+    # lanes are the default; GEM_PARALLEL=0 restores the old path.
     assert config.PARALLEL_SEARCH is True and config.LLM_CACHE_ENABLED is False
     assert config.RESULT_VERSION == 2 and config.LANE_TIME_LIMIT_SECONDS == 150.0
-    # Stage 6 defaults: the filter and the pre-gate are ON, verdicts are
+    # defaults: the filter and the pre-gate are ON, verdicts are
     # reused, and the verifier runs four listings at a time.
     assert config.LLM_WORKERS == 4 and config.PREFILTER_TOP == 10
     assert config.PRICE_PREGATE is True and config.REUSE_VERDICTS is True
     assert config.STRICT_MODE is False
     assert config.DISCOVERY_ENABLED is True
-    # checkpoint 18: light Flipkart browser + bounded discovery stage
+    # light Flipkart browser + bounded discovery stage
     assert config.FLIPKART_LIGHT is True and config.DISCOVERY_TIME_LIMIT_SECONDS == 25.0
 
 
 # --- parallel search ------------------------------------------------------------
 
-def test_sequential_search_keeps_the_old_stage_names(monkeypatch):
+def test_sequential_search_keeps_the_stage_events(monkeypatch):
     monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", False)
     monkeypatch.setattr(pipeline, "STRICT_MODE", False)
     _, seen = _run()
@@ -143,7 +143,7 @@ def test_parallel_search_gives_the_same_answer_as_sequential(monkeypatch):
 # --- lanes: three searches at once, each checked the moment it lands -----------
 
 def test_three_lanes_run_at_the_same_time(monkeypatch):
-    # Discovery used to wait for the Flipkart/Amazon pair to finish first.
+    # Discovery does not wait for the Flipkart/Amazon pair to finish first.
     # With GEM_PARALLEL=1 all three are lanes and must overlap.
     monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", True)
     gate = threading.Barrier(3, timeout=5)
@@ -278,7 +278,7 @@ def test_price_pre_gate_is_on_by_default(monkeypatch):
     monkeypatch.setattr(matcher, "verify_or_extract", fake)
     # the fixture's price is 39 against a 1000 GeM price -> outside the band
     out = matcher.match_candidates({"gem_price": 1000.0}, [_candidate_dict()])
-    assert calls == []  # Stage 6.4: never spends an LLM call on it
+    assert calls == []  # never spends an LLM call on it
     assert out.confirmed_matches == []
 
 

@@ -177,7 +177,7 @@ def check_live_engines():
 
 
 def _canary_page_html(shop, query):
-    """The raw page a canary saw, best effort --- only used to save evidence."""
+    """The raw page a canary saw, best effort - only used to save evidence."""
     from scrapers import amazon, flipkart
 
     try:

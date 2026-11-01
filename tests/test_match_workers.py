@@ -73,7 +73,7 @@ def test_answers_keep_the_candidate_order(monkeypatch):
 
     def fake(normalized, candidate, client=None):
         if candidate["url"].endswith("/a"):
-            time.sleep(0.05)  # the slow one — the others finish first
+            time.sleep(0.05)  # the slow one - the others finish first
         return _decision(candidate)
 
     monkeypatch.setattr(matcher, "verify_or_extract", fake)

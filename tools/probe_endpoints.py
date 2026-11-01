@@ -6,7 +6,7 @@
 Sends "Reply with the single word: OK" to every endpoint in
 llm_providers.json and prints OK with the round-trip time, or the real
 error (bad key, wrong model name, rate limit, empty answer). Disabled
-endpoints are listed with their reason. Nothing is changed or fixed here —
+endpoints are listed with their reason. Nothing is changed or fixed here -
 this only reports, so a broken provider is found in 30 seconds instead of
 half-way through an evaluation.
 
@@ -55,7 +55,7 @@ def _make_client(endpoint):
 
 
 def probe_endpoint(endpoint, *, client_factory=None) -> dict:
-    """One tiny call to one endpoint. Never raises — returns a row dict."""
+    """One tiny call to one endpoint. Never raises - returns a row dict."""
     if not endpoint.enabled:
         return {"endpoint": endpoint.name, "ok": False, "disabled": True, "error": endpoint.disabled_reason}
     factory = client_factory or _make_client

@@ -1,9 +1,9 @@
 # Troubleshooting
 
 Start with `python tools/doctor.py`. Every line says PASS, WARN or FAIL; the
-exit code is 1 when something FAILED. `--live` adds the real calls (LLM
-endpoints, search engines, one canary per shop) and says exactly which part is
-broken.
+exit code is 1 when something FAILED. `--live` adds every real call (LLM
+endpoints, search engines, one canary per shop, one real Flipkart and Amazon
+search, and a deliberate failover) and says exactly which part is broken.
 
 ## A shop card says "blocked" or "not_searched"
 

@@ -5,13 +5,13 @@ A search page often returns 20-40 listings and most of them obviously are
 not the product (accessories, other models, pads for a mouse). Each one
 would cost one LLM call and be rejected anyway. This module ranks each
 shop's titled listings by how much their words overlap the product's words
-(canonical name, brand, model, key identifiers — Jaccard similarity) and
+(canonical name, brand, model, key identifiers - Jaccard similarity) and
 keeps only the best N per shop.
 
 Two deliberate choices:
-  - Listings with no title are ALWAYS kept — there is nothing to compare,
+ - Listings with no title are ALWAYS kept - there is nothing to compare,
     and an untitled page could still be the right one.
-  - Whatever gets dropped is returned so the pipeline can save it in the
+ - Whatever gets dropped is returned so the pipeline can save it in the
     trace: the filter must be auditable, not a black box (the
     eval/analyze_misses.py reads the trace to check whether a real match
     was cut, and the safe N is chosen from that, not by guessing).
@@ -67,7 +67,7 @@ class ProductWords(set):
 
 def product_tokens(normalized: dict) -> ProductWords:
     """The product's own words. key_identifiers sometimes arrives as a bare
-    string from the LLM — iterating that string would add one LETTER per
+    string from the LLM - iterating that string would add one LETTER per
     token, so it is normalized to a list first."""
     data = normalized if isinstance(normalized, dict) else {}
     weights: dict = {}
@@ -147,21 +147,21 @@ def tier(title: str, product) -> int:
     return 3
 
 
-# C6/C7 early-exit gates share one idea: a listing is "relevant" when the
+# The early-exit gates share one idea: a listing is "relevant" when the
 # share of the product's words in its title is at least this much. A mouse pad
 # next to a mouse scores near 0.15; the same mouse scores near 1.0.
 RELEVANT_MIN_SCORE = 0.5
 
 # A product with no brand and no model code has fewer words to match, so the
 # same real listing scores lower. The bar drops for it instead of punishing
-# the listing for data the GeM page never had (Stage 6).
+# the listing for data the GeM page never had.
 NO_CLUE_RELEVANT_MIN_SCORE = 0.4
 
-# C6: enough relevant cards on a page mean the next Flipkart page cannot add
-# much — stop paging there (10-30 s saved on easy products).
+# enough relevant cards on a page mean the next Flipkart page cannot add
+# much - stop paging there (10-30 s saved on easy products).
 ENOUGH_RELEVANT = 5
 
-# Hard cap per shop before the LLM (Stage 6). Tier-1 listings (the model code
+# Hard cap per shop before the LLM. Tier-1 listings (the model code
 # is in the title) are kept beyond the normal cap, up to their own cap; when
 # there are more than that, the 20 nearest the GeM price are kept. More than
 # 10 ordinary listings per shop was only ever worth LLM calls by accident.
@@ -181,7 +181,7 @@ def has_identity_clues(product) -> bool:
 
 def min_relevant_score(product) -> float:
     """The relevance bar for this product. Lower when there is no brand and no
-    model to match on (Stage 6.1e): the product has fewer words to share with a
+    model to match on: the product has fewer words to share with a
     real title, so the same real listing scores lower."""
     if has_identity_clues(product):
         return RELEVANT_MIN_SCORE
@@ -190,7 +190,7 @@ def min_relevant_score(product) -> float:
 
 def relevant_title(title: str, product) -> bool:
     """True when a listing title is close enough to the product to count
-    toward an early-exit (C6/C7). An empty title counts — there is nothing
+    toward an early-exit. An empty title counts - there is nothing
     to compare, the same rule filter_candidates uses. A title with the
     model code always counts."""
     if not (title or "").strip():
@@ -206,9 +206,9 @@ def identity_evidence(title: str, page_text: str, product) -> bool:
     no price to a confirmed match (llm/match.py); it is a gate, so it is
     deliberately stricter than similarity():
 
-    - the model code (letters+digits, spaces/dashes ignored: "NDO-24" ->
+ - the model code (letters+digits, spaces/dashes ignored: "NDO-24" ->
       "ndo24") appears in the listing title or on the page itself, or
-    - the brand appears AND at least two of the product's own words appear in
+ - the brand appears AND at least two of the product's own words appear in
       the title ("Godrej Maestro Executive Suite" for a Godrej Maestro set).
 
     A title with neither is not evidence: the listing stays "possible".
@@ -276,7 +276,7 @@ def _price_distance(price, gem_price: Optional[float]) -> float:
 
 
 def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[list, list]:
-    """Keep the listings worth an LLM call, per source_domain (Stage 6).
+    """Keep the listings worth an LLM call, per source_domain.
 
     The normal cap is `top` per shop (default 10), never more than
     MAX_NON_MODEL_PER_SHOP. Listings whose title carries the model code
@@ -285,7 +285,7 @@ def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[lis
     GeM price win. If a shop would keep nothing after the caps, its best
     SAFETY_NET_KEEP listings go through anyway.
 
-    Untitled listings are always kept — there is nothing to compare.
+    Untitled listings are always kept - there is nothing to compare.
     Returns (kept, dropped): kept keeps the original order; dropped entries
     carry {title, url, price, score, tier, rule} for the trace. top <= 0
     means off: everything is kept."""
@@ -327,7 +327,7 @@ def filter_candidates(candidates: list, normalized: dict, top: int) -> tuple[lis
             model_hits = sorted(model_hits, key=lambda i: (_price_distance(prices[i], gem_price), -scores[i], i))
         keep.update(model_hits[:MAX_MODEL_HITS_PER_SHOP])
         if not any(i in keep for i in titled):
-            # SAFETY NET (Stage 6.1c): the caps just emptied this shop.
+            # SAFETY NET: the caps just emptied this shop.
             keep.update(sorted(titled, key=lambda i: (-scores[i], tiers[i], len(_tokens(titles[i])), i))[:SAFETY_NET_KEEP])
         for i in ranked:
             if i in keep:

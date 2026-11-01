@@ -1,4 +1,4 @@
-"""Fix batch 3: the Flipkart EMI price order, and settings that are NaN or out of range."""
+"""Flipkart EMI price order, and settings that are NaN or out of range."""
 import importlib
 import sys
 from pathlib import Path

@@ -7,16 +7,16 @@ amazon.in/flipkart.com. Unlike amazon.py/flipkart.py this takes a single
 URL, not a search query.
 
 Structured data is read in the order pages actually use it:
-  1. JSON-LD (schema.org/Product, offers, @graph and lists) — the most
+  1. JSON-LD (schema.org/Product, offers, @graph and lists) - the most
      reliable, because shops publish it for Google.
-  2. meta tags (og:*, product:price:*) — the older fallback.
-  3. h1 / <title> — title only; a price still needs one of the above.
+  2. meta tags (og:*, product:price:*) - the older fallback.
+  3. h1 / <title> - title only; a price still needs one of the above.
 A listing without a price is still returned (price=None, price_unknown)
 instead of being dropped: the matcher can decide, and a missing price is
 honest information.
 
 Plain requests, no browser. Before and after redirects the final address
-must be a public http(s) one — a link from a search engine must never be
+must be a public http(s) one - a link from a search engine must never be
 able to make the server fetch 127.0.0.1 or the LAN.
 """
 from __future__ import annotations
@@ -226,7 +226,7 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
         price = price_value
     image_url = linked.get("image_url") or _meta_content(soup, "og:image") or None
 
-    # Currency from the page's own data — do NOT blindly claim INR. A
+    # Currency from the page's own data - do NOT blindly claim INR. A
     # logitech.com/en-us page listing "39.99" (USD) once reached the matcher
     # tagged as INR and beat every real ₹ listing as "cheapest match".
     currency_raw = (
@@ -272,7 +272,7 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
             structured["page_not_found"] = True
 
     if not structured:
-        logger.info("generic scrape got no structured signal from %s — relying on raw_page_text only.", url)
+        logger.info("generic scrape got no structured signal from %s - relying on raw_page_text only.", url)
 
     return CandidateResult(
         source_domain=domain,

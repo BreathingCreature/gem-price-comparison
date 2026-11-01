@@ -16,21 +16,21 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         python: ["3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+ - uses: actions/checkout@v4
+ - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - name: Install dependencies
+ - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-      - name: Lint
+ - name: Lint
         run: python -m ruff check .
-      - name: Run the test suite
+ - name: Run the test suite
         run: python -m pytest -q
         env:
           PYTHONIOENCODING: utf-8
-      - name: Byte-compile every module
+ - name: Byte-compile every module
         run: python -m compileall -q api core discovery eval llm scrapers tools frontend cli.py

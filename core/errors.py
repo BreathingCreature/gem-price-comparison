@@ -1,9 +1,9 @@
 """Hide key-shaped text before it reaches a trace, an event, the API or a log.
 
 Providers sometimes put the key they rejected into their error message
-("Incorrect API key provided: nvapi-..."). That text used to flow straight
-into the trace JSON and the SSE event stream, which are both readable from
-the browser. redact() is the single place that knows what a secret looks
+("Incorrect API key provided: nvapi-..."). That text must never reach the
+trace JSON or the SSE event stream, because both are readable from the
+browser. redact() is the single place that knows what a secret looks
 like; redact_obj() walks a whole record so callers do not have to know
 which field holds the error.
 """

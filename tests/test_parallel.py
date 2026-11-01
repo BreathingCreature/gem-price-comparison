@@ -68,7 +68,7 @@ def test_run_many_sequential_mode_runs_in_order():
 
 
 def test_run_many_by_default_runs_one_at_a_time_in_this_thread():
-    # workers=1 (the default) must behave like today's plain loop — the jobs
+    # workers=1 (the default) must behave like today's plain loop - the jobs
     # run in the caller's thread, not in pool threads.
     names = []
     run_many([lambda: names.append(threading.current_thread().name), lambda: names.append(threading.current_thread().name)])

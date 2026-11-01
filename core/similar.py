@@ -1,4 +1,4 @@
-"""Stage 6.5 in its own file: the one 'similar products' question.
+"""The one 'similar products' question.
 
 Only asked when a run found neither a match nor a possible one. The answer is
 a list of different products of the same kind, so it can never be used for

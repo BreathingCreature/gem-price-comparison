@@ -1,6 +1,6 @@
 """The cheap pre-LLM filter (core/prefilter.py): rank each shop's listings by
 how much their title overlaps the product's words, keep the best N per shop.
-Listings with no title are always kept — there is nothing to compare."""
+Listings with no title are always kept - there is nothing to compare."""
 import sys
 from pathlib import Path
 
@@ -62,7 +62,7 @@ def test_filter_off_keeps_everything():
     assert dropped == []
 
 
-# --- C6/C7: the relevance gate the page/query early-exits use ---------------------------
+# --- the relevance gate the page/query early-exits use -------------------------------
 
 def test_relevant_title_separates_a_match_from_a_pad():
     product = prefilter.product_tokens(PRODUCT)

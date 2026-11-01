@@ -138,7 +138,7 @@ LLM_CACHE_TAG = os.getenv("LLM_CACHE_TAG", "")
 
 
 def require_nvidia_key() -> str:
-    """Call this from anything that's about to make an LLM call — NOT at
+    """Call this from anything that's about to make an LLM call - NOT at
     import time. That way parts that don't need the LLM (like the GeM
     extractor) still work fine without a key configured yet.
     Obvious template placeholders count as unset so you get this clear
@@ -158,7 +158,7 @@ def log_startup_check() -> None:
     if NVIDIA_API_KEY:
         logger.info("NVIDIA_API_KEY loaded")
     else:
-        logger.warning("NVIDIA_API_KEY not set — LLM-dependent parts will fail until it is.")
+        logger.warning("NVIDIA_API_KEY not set - LLM-dependent parts will fail until it is.")
 
 
 # --- pipeline behaviour ----------------------------------------------------
@@ -166,9 +166,9 @@ CACHE_TTL_SECONDS = _float_setting("CACHE_TTL_SECONDS", 3600.0, minimum=0.0)
 MATCH_CONFIDENCE_THRESHOLD = _float_setting("MATCH_CONFIDENCE_THRESHOLD", 0.75, minimum=0.0, maximum=1.0)
 # Hard price-sanity gate applied AFTER the LLM verdict: a "match" priced
 # outside [GeM * LOW, GeM * HIGH] is rejected regardless of confidence.
-# Rationale (live bug 2026-09): a logitech.com/en-us page listing $39.99
+# Rationale: a logitech.com/en-us page listing $39.99
 # scraped as "39.99 INR" passed LLM verify at 95% and was crowned cheapest
-# vs a ₹2,725 GeM listing — prompt-level price-sanity instructions alone
+# vs a ₹2,725 GeM listing - prompt-level price-sanity instructions alone
 # are not enough.
 PRICE_SANITY_LOW_RATIO = _float_setting("PRICE_SANITY_LOW_RATIO", 0.15, minimum=0.0, maximum=1.0)   # below 15% of GeM price -> implausible
 PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0, minimum=1.0)   # above 5x GeM price -> implausible
@@ -177,7 +177,7 @@ PRICE_SANITY_HIGH_RATIO = _float_setting("PRICE_SANITY_HIGH_RATIO", 5.0, minimum
 # On/off switches. The defaults are the normal behaviour. They exist so the
 # evaluation can switch one feature off at a time (see docs/evaluation.md).
 PARALLEL_SEARCH = _flag("GEM_PARALLEL", True)  # search the shops at the same time (the default)
-# GEM_STRICT=1 is the owner's switch back to the old slow, high-recall
+# GEM_STRICT=1 switches back to the slow, high-recall
 # behaviour: no pre-filter, every listing goes to the LLM, and the lanes
 # still search at the same time (but the verifier runs one listing at a
 # time). It changes nothing else.
@@ -187,7 +187,7 @@ GATES_ENABLED = _flag("GEM_GATES", True)  # the currency check and the price-ban
 LLM_CACHE_ENABLED = _flag("LLM_CACHE", False)  # remember LLM answers on disk (llm/cache.py)
 LLM_CACHE_DIR = Path(os.getenv("LLM_CACHE_DIR", str(CACHE_DIR / "llm")))
 # Companion gate (matcher): a candidate whose scraper reports an explicit
-# non-INR currency is rejected even if the number falls inside that band —
+# non-INR currency is rejected even if the number falls inside that band -
 # numeric-band checks alone cannot catch USD/EUR values that happen to
 # overlap the rupee range (e.g. $300 vs GeM ₹10,000).
 KNOWN_MARKETPLACE_DOMAINS = ["amazon.in", "flipkart.com"]

@@ -106,7 +106,7 @@ def test_all_llm_failures_with_no_verdicts_marked_error(tmp_path):
     assert "LLM call" in rec["error"]
 
 
-# --- A1: error condition is "LLM never answered" -------------------------
+# error condition is "LLM never answered" -------------------------
 
 def _fake_run_pattern(failures, ok_calls, cache_hits, matches, gem_url, refresh=False, on_event=None):
     for _ in range(failures):
@@ -128,7 +128,7 @@ def _fake_run_pattern(failures, ok_calls, cache_hits, matches, gem_url, refresh=
     return {"trace_id": "t", "matches": matches, "not_found_on": [], "search_issues": []}
 
 
-def test_a1_failures_plus_ok_calls_is_not_error(tmp_path):
+def test_failures_plus_ok_calls_is_not_error(tmp_path):
     out = tmp_path / "r.jsonl"
     run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out,
                      run_fn=lambda u, refresh=False, on_event=None: _fake_run_pattern(3, 5, 0,
@@ -139,7 +139,7 @@ def test_a1_failures_plus_ok_calls_is_not_error(tmp_path):
     assert rec["error"] is None
 
 
-def test_a1_all_failures_no_calls_is_error(tmp_path):
+def test_all_failures_no_calls_is_error(tmp_path):
     out = tmp_path / "r.jsonl"
     run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out,
                      run_fn=lambda u, refresh=False, on_event=None: _fake_run_pattern(3, 0, 0, [], u, refresh, on_event),
@@ -149,7 +149,7 @@ def test_a1_all_failures_no_calls_is_error(tmp_path):
     assert "LLM call" in rec["error"]
 
 
-def test_a1_cache_hits_only_is_not_error(tmp_path):
+def test_cache_hits_only_is_not_error(tmp_path):
     out = tmp_path / "r.jsonl"
     run_eval.run_all([{"id": "P1", "gem_url": "https://mkp.gem.gov.in/a"}], out,
                      run_fn=lambda u, refresh=False, on_event=None: _fake_run_pattern(0, 0, 3, [], u, refresh, on_event),
@@ -158,7 +158,7 @@ def test_a1_cache_hits_only_is_not_error(tmp_path):
     assert rec["error"] is None
 
 
-# --- C1: the meta writer shared with eval/replay.py -----------------------
+# the meta writer shared with eval/replay.py -----------------------
 
 def test_write_meta_helper_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
     meta = tmp_path / "x.meta.json"
@@ -184,58 +184,58 @@ def test_write_meta_helper_records_extra_sections(tmp_path):
     assert "settings" in saved and "git_commit" in saved
 
 
-# --- A4: meta settings comparison on label reuse -------------------------
+# meta settings comparison on label reuse -------------------------
 
-def test_a4_meta_settings_changed_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
+def test_meta_settings_changed_warns_and_keeps_old(tmp_path, monkeypatch, capsys):
     import csv
     key_file = tmp_path / "key.csv"
     key_file.write_text("id,gem_url\nP1,https://mkp.gem.gov.in/a\n")
-    
+
     meta = tmp_path / "before.meta.json"
-    
-    # First run with GEM_PARALLEL=0 — write meta as if a previous run happened
+
+    # First run with GEM_PARALLEL=0 - write meta as if a previous run happened
     monkeypatch.setenv("GEM_PARALLEL", "0")
     monkeypatch.setenv("GEM_RETRY", "1")
     snap = run_eval.settings_snapshot()
     meta.write_text(json.dumps(snap, indent=2), encoding="utf-8")
-    
+
     # Change settings and mock run_all to do nothing; main() will compare settings
     monkeypatch.setenv("GEM_PARALLEL", "1")
     monkeypatch.setattr(run_eval, "run_all", lambda rows, out_path, **k: None)
-    
+
     run_eval.main(["--key", str(key_file), "--label", "before", "--dir", str(tmp_path)])
     captured = capsys.readouterr()
     assert "settings changed" in captured.out
     assert "GEM_PARALLEL" in captured.out
     assert "Use a new --label" in captured.out
-    
+
     # Meta not overwritten
     old = json.loads(meta.read_text(encoding="utf-8"))
     assert old["settings"]["GEM_PARALLEL"] == "0"
 
 
-def test_a4_meta_settings_same_no_warning(tmp_path, monkeypatch, capsys):
+def test_meta_settings_same_no_warning(tmp_path, monkeypatch, capsys):
     import csv
     key_file = tmp_path / "key.csv"
     key_file.write_text("id,gem_url\nP1,https://mkp.gem.gov.in/a\n")
-    
+
     meta = tmp_path / "before.meta.json"
-    
+
     monkeypatch.setenv("GEM_PARALLEL", "0")
     monkeypatch.setenv("GEM_RETRY", "1")
     snap = run_eval.settings_snapshot()
     meta.write_text(json.dumps(snap, indent=2), encoding="utf-8")
-    
+
     monkeypatch.setenv("GEM_PARALLEL", "0")
     monkeypatch.setenv("GEM_RETRY", "1")
     monkeypatch.setattr(run_eval, "run_all", lambda rows, out_path, **k: None)
-    
+
     run_eval.main(["--key", str(key_file), "--label", "before", "--dir", str(tmp_path)])
     captured = capsys.readouterr()
     assert "settings changed" not in captured.out
 
 
-# --- B9: several products at once (--workers) -----------------------------
+# several products at once (--workers) -----------------------------
 
 def test_workers_two_products_really_run_at_the_same_time(tmp_path):
     barrier = threading.Barrier(2, timeout=5)
@@ -266,7 +266,7 @@ def test_workers_keep_every_record_and_a_resume_still_retries_errors(tmp_path):
     assert sorted(r["id"] for r in lines) == ["P1", "P2", "P3"]
     assert [r for r in lines if r["id"] == "P2"][0]["error"] is not None
 
-    # P2 errored, so a resume runs only it — again with workers.
+    # P2 errored, so a resume runs only it - again with workers.
     assert run_eval.run_all(ROWS, out, run_fn=run, workers=2, log=lambda *_: None) == 1
     assert len(out.read_text(encoding="utf-8").splitlines()) == 4
 

@@ -1,8 +1,8 @@
-"""Stage 6.3/6.4: one outcome per judged listing, verdict reuse, and the
+"""/6.4: one outcome per judged listing, verdict reuse, and the
 scraper's price as the price.
 
 The verifier itself is monkeypatched, so these tests say nothing about the
-prompt — only about what match_candidates does with the answers.
+prompt - only about what match_candidates does with the answers.
 """
 import sys
 from pathlib import Path

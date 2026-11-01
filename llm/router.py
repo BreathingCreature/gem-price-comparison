@@ -19,11 +19,11 @@ For every call the router:
 "Used up for the day" is different from a cooldown: when an endpoint
 answers "daily limit" or "quota exceeded" there is nothing to wait for
 until tomorrow, so the router writes that endpoint's name to
-cache/llm_state.json and skips it on every later call — including after a
+cache/llm_state.json and skips it on every later call - including after a
 restart. Only names and reset times are stored, never keys.
 
 If nothing can answer, the router raises GatewayBusy (cooling down or at a
-concurrency cap — worth retrying shortly) or GatewayExhausted (every
+concurrency cap - worth retrying shortly) or GatewayExhausted (every
 allowance for the day is gone). Both subclass RuntimeError.
 
 Adding a provider means adding one entry to llm_providers.json. No code.
@@ -62,22 +62,22 @@ from llm import client as _client
 RATE_LIMIT_COOLDOWN = 30.0
 OTHER_ERROR_COOLDOWN = 10.0
 # A 5xx is the provider saying "not now" (Gemini's "high demand" 503), not a
-# bad request — rest it longer so a busy model does not eat a call every 10s.
+# bad request - rest it longer so a busy model does not eat a call every 10s.
 SERVER_ERROR_COOLDOWN = 60.0
 MAX_COOLDOWN = 300.0
 
 # How long "its last attempt failed" keeps a status row out of "ready". The
-# router will retry at any moment, but the Advanced tab used to show "ready"
+# router will retry at any moment, but the Advanced tab must not show "ready"
 # for a model whose last answer was HTTP 503 "currently experiencing high
-# demand" — that is the opposite of useful.
+# demand" - that is the opposite of useful.
 FAILING_WINDOW = 900.0
 
-# How far back the per-provider tokens_per_minute count looks (D2).
+# How far back the per-provider tokens_per_minute count looks.
 TOKEN_WINDOW_SECONDS = 60.0
 
 # The kinds of LLM calls in this project (llm/client.py). A provider can
 # declare in llm_providers.json which of them it wants ("purposes":
-# ["verify"]) — normalize and expand are rare and need a good model, verify
+# ["verify"]) - normalize and expand are rare and need a good model, verify
 # is ~90% of calls and an easy yes/no question that fast, high-rate-limit
 # providers handle well.
 KNOWN_PURPOSES = ("normalize", "verify", "expand", "similar")
@@ -85,13 +85,13 @@ KNOWN_PURPOSES = ("normalize", "verify", "expand", "similar")
 # --- errors that tell the pipeline what to do next --------------------------------
 
 class GatewayError(RuntimeError):
-    """No endpoint could answer. Subclasses RuntimeError on purpose: every
-    caller written before this distinction existed keeps working."""
+    """No endpoint could answer. Subclasses RuntimeError on purpose, so a
+    caller that passes no purpose still catches it."""
 
 
 class GatewayBusy(GatewayError):
     """Endpoints are cooling down or at their concurrency cap. The listing
-    was not checked — retry it later, it did not fail."""
+    was not checked - retry it later, it did not fail."""
 
 
 class GatewayExhausted(GatewayError):
@@ -264,7 +264,7 @@ class Endpoint:
     # would go over.
     tokens_per_minute: int = 0
     # Which call kinds this endpoint takes. None (not set in the file)
-    # means every purpose — that is today's behaviour.
+    # means every purpose - that is today's behaviour.
     purposes: Optional[tuple[str, ...]] = None
     # live state, changes while the program runs
     cooldown_until: float = 0.0
@@ -379,7 +379,7 @@ def load_endpoints(path: Optional[Path] = None) -> tuple[list[Endpoint], str]:
 
 def _estimate_call_tokens(messages: list[dict]) -> int:
     """Roughly how many tokens a call will cost: about 4 characters per
-    token. Answers are short JSON, so the prompt is most of it — and once
+    token. Answers are short JSON, so the prompt is most of it - and once
     a call finishes, the provider's real usage replaces this estimate."""
     chars = 0
     for m in messages or []:
@@ -455,7 +455,7 @@ class Router:
             if raw is not None:
                 return raw
             # An empty answer is a failed call, but the same endpoint will
-            # probably answer empty again — try ONE other endpoint, then stop.
+            # probably answer empty again - try ONE other endpoint, then stop.
             if "empty answer" in endpoint.last_error:
                 empty_answers += 1
                 if empty_answers >= 2:
@@ -487,7 +487,7 @@ class Router:
                     reason = f"resting {e.cooldown_until - now:.0f}s after: {e.last_error[:120]}"
                 elif e.fail_streak > 0 and now - e.last_failure_at <= FAILING_WINDOW:
                     # Eligible for another try, but its last answer was a
-                    # failure — "ready" would claim a health we have not seen.
+                    # failure - "ready" would claim a health we have not seen.
                     state = "failing"
                     reason = f"last attempt failed {_ago_text(now - e.last_failure_at)}: {e.last_error[:120]}"
                 else:
@@ -541,7 +541,7 @@ class Router:
     def _mark_used_up(self, endpoint: Endpoint, until: float) -> None:
         """Remember the endpoint's day is gone, on disk too (call with the
         lock held). A state file that cannot be written must not break a
-        run — it only costs the restart memory."""
+        run - it only costs the restart memory."""
         self._used_up[endpoint.name] = until
         self._used_up = {name: end for name, end in self._used_up.items() if end > self.wall_clock()}
         try:
@@ -608,14 +608,14 @@ class Router:
         chosen, wait = self._choose(purpose, now, estimated)
         if chosen is not None or wait is not None:
             return chosen, wait
-        # No endpoint advertises this purpose — anyone may answer, so a
+        # No endpoint advertises this purpose - anyone may answer, so a
         # restrictive purposes setting can never break a run. (When nobody
         # sets purposes at all, the first _choose already saw everything.)
         return self._choose(None, now, estimated)
 
     def _choose(self, purpose: Optional[str], now: float, estimated: int = 0) -> tuple[Optional[Endpoint], Optional[float]]:
         """Same pick as before, narrowed to endpoints that take this purpose.
-        purpose=None means no filter — every endpoint is a candidate.
+        purpose=None means no filter - every endpoint is a candidate.
         estimated is the about-to-run call's token size: a provider whose
         tokens_per_minute would be blown by it is skipped."""
         with self._lock:
@@ -656,7 +656,7 @@ class Router:
                         wait = max(wait, self._token_wait(e, estimated, now))
                     waits.append(wait)
                 return None, max(min(waits), 0.05)
-            # every available endpoint is at its provider's concurrency cap —
+            # every available endpoint is at its provider's concurrency cap -
             # an in-flight call frees one up shortly.
             return None, 0.05
 
@@ -676,7 +676,7 @@ class Router:
     def _token_ready(self, endpoint: Endpoint, estimated: int, now: float) -> bool:
         """False when this call would push the provider over its
         tokens_per_minute. A provider that has sent nothing in the window
-        is always allowed one call, however big it looks — a tiny budget
+        is always allowed one call, however big it looks - a tiny budget
         must throttle the provider, never brick it."""
         if endpoint.tokens_per_minute <= 0:
             return True
@@ -799,7 +799,7 @@ class Router:
                     self._retire(endpoint)
                 cooldown = 0.0
             elif _is_quota_error(status, str(exc)):
-                # Not "slow down" — the allowance is gone. Nothing to wait
+                # Not "slow down" - the allowance is gone. Nothing to wait
                 # for until the reset, so remember it (today and tomorrow).
                 used_up_until = _reset_hint(str(exc), self.wall_clock()) or _next_local_midnight(self.wall_clock())
                 self._mark_used_up(endpoint, used_up_until)
@@ -815,7 +815,7 @@ class Router:
                 cooldown = retry_after if retry_after is not None else base * min(2 ** (endpoint.fail_streak - 1), 8)
                 cooldown = min(cooldown, MAX_COOLDOWN)
                 endpoint.cooldown_until = self.clock() + cooldown
-        # This call is over (failed or empty) — its reservation stops being
+        # This call is over (failed or empty) - its reservation stops being
         # "about to run"; with no real usage it just keeps the estimate.
         self._finalize_tokens(endpoint)
         if used_up_until is not None:

@@ -99,7 +99,7 @@ def test_parse_result_urls_handles_h3_style():
 
 def test_parse_result_urls_handles_searxng_h3_wraps_a():
     # SearXNG shape: <h3><a href=...>title</a></h3> (opposite of Google's
-    # <a><h3>). Live bug 2026-09-24: parser used find_parent("a") only and
+    # <a><h3>). The parser used find_parent("a") only and
     # extracted ZERO links from working SearXNG instances.
     html = """
     <html><body>
@@ -137,7 +137,7 @@ def test_discover_candidates_open_mode_excludes_non_retail_blocklist():
 
 
 def test_discover_candidates_open_mode_is_indian_sites_only():
-    # User directive 2026-09-24: open discovery = Indian retail only.
+    # Open discovery = Indian retail only.
     # Foreign stores must be dropped even though they aren't blocklisted.
     html = """
     <html><body>
@@ -153,8 +153,8 @@ def test_discover_candidates_open_mode_is_indian_sites_only():
     assert "croma.com" in kept          # Indian .com marketplace (allowlisted)
     assert "indiamart.com" in kept      # Indian .com marketplace (allowlisted)
     assert "somebrandstore.in" in kept  # .in TLD
-    assert "bestbuy.com" not in kept    # US store — dropped
-    assert "newegg.com" not in kept     # US store — dropped
+    assert "bestbuy.com" not in kept    # US store - dropped
+    assert "newegg.com" not in kept     # US store - dropped
 
 
 def test_discover_candidates_always_excludes_google_domains():
@@ -167,7 +167,7 @@ def test_discover_candidates_always_excludes_google_domains():
 
 
 def test_open_discovery_skips_non_shop_domains_from_the_blocklist():
-    # E4: .in news, classifieds and blog pages pass the Indian-retail rule
+    # .in news, classifieds and blog pages pass the Indian-retail rule
     # but are never the actual seller.
     html = """
     <html><body>
@@ -186,7 +186,7 @@ def test_open_discovery_skips_non_shop_domains_from_the_blocklist():
 
 
 def test_open_discovery_skips_search_and_tag_listing_pages():
-    # E4: a /search or /tag page is a wall of links, never the product.
+    # a /search or /tag page is a wall of links, never the product.
     html = """
     <html><body>
     <a href="https://www.croma.com/product/logitech-m650/p/12345"><h3>M650 - Croma</h3></a>
@@ -211,9 +211,9 @@ def test_strict_mode_also_skips_search_and_tag_listing_pages():
 
 
 def test_discover_candidates_strict_mode_skips_direct_scraper_domains():
-    # E2: if the LLM suggests amazon.in / flipkart.com in strict mode, the
+    # if the LLM suggests amazon.in / flipkart.com in strict mode, the
     # generic scraper would fetch them by hand (and get blocked). They have
-    # their own direct scrapers — they must not surface as discovery URLs.
+    # their own direct scrapers - they must not surface as discovery URLs.
     html = """
     <html><body>
     <a href="/url?q=https://www.amazon.in/logitech-m650/p/AMZ1&amp;sa=U">
@@ -266,7 +266,7 @@ def test_discover_for_queries_returns_one_result_per_query():
 
 @contextmanager
 def _patched(obj, **attrs):
-    """Temporary attribute swaps — works with and without pytest's fixture."""
+    """Temporary attribute swaps - works with and without pytest's fixture."""
     old = {name: getattr(obj, name) for name in attrs}
     for name, value in attrs.items():
         setattr(obj, name, value)
@@ -307,7 +307,7 @@ class _DdgDownCountingSession:
 
 
 def test_searxng_instances_are_asked_at_the_same_time():
-    # Live pain: up to 11 instances tried one by one, each allowed 15s —
+    # Live pain: up to 11 instances tried one by one, each allowed 15s -
     # one dead instance must not cost the others' wait.
     def slow_response(url):
         time.sleep(0.2)
@@ -320,14 +320,14 @@ def test_searxng_instances_are_asked_at_the_same_time():
 
 
 def test_searxng_search_has_a_total_time_limit():
-    # Even in parallel, the stage needs a deadline — otherwise the slowest
+    # Even in parallel, the stage needs a deadline - otherwise the slowest
     # allowed attempt (15s) sets the floor for a run.
     def dead_slow_response(url):
         time.sleep(1.0)
         return _FakeResponse(SEARXNG_MOCK_HTML)
 
     session = _DdgDownCountingSession(dead_slow_response)
-    # patch the real module — the package re-exports only a few names
+    # patch the real module - the package re-exports only a few names
     with _patched(discovery.discover, _SEARXNG_INSTANCES=("https://a.example", "https://b.example"),
                   DISCOVERY_TIME_LIMIT_SECONDS=0.3):
         started = time.monotonic()
@@ -339,7 +339,7 @@ def test_searxng_search_has_a_total_time_limit():
 
 def test_google_is_not_a_discovery_backend_anymore():
     # F: Google's page is JS-only from this machine (live-verified: HTTP
-    # 200, zero links) — the fallback only wasted one request per query.
+    # 200, zero links) - the fallback only wasted one request per query.
     assert not hasattr(discovery.discover, "_fetch_google_html")
     assert discovery.discover._FETCHERS == (
         discovery.discover._fetch_ddg_html,
@@ -394,7 +394,7 @@ def test_brave_is_registered_as_an_engine():
 
 def test_only_four_searxng_instances_are_used():
     # F: up to 11 public instances was too many random third parties per
-    # query — and every one of them gets rate-limited anyway.
+    # query - and every one of them gets rate-limited anyway.
     assert len(discovery.discover._SEARXNG_INSTANCES) == 4
 
 

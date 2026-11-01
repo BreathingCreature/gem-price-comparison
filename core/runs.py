@@ -30,7 +30,7 @@ SUMMARY_FIELDS = (
 
 
 def runs_dir() -> Path:
-    """cache/runs — resolved per call so tests can point CACHE_DIR elsewhere."""
+    """cache/runs - resolved per call so tests can point CACHE_DIR elsewhere."""
     return config.CACHE_DIR / RUNS_DIR_NAME
 
 

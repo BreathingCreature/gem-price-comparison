@@ -1,5 +1,5 @@
 """
-Tests for matcher.py. Same fake-client approach as test_llm_client.py —
+Tests for matcher.py. Same fake-client approach as test_llm_client.py -
 no real API calls. This tests the filter/sort/skip logic in match_candidates
 itself; verify_or_extract's own prompt/parsing correctness is already
 covered by test_llm_client.py.
@@ -52,7 +52,7 @@ class _FakeClient:
 
 
 def _candidate(url, domain="flipkart.com"):
-    # Distinct titles on purpose: Stage 6 reuses a verdict for an identical
+    # Distinct titles on purpose: reuses a verdict for an identical
     # (title, price) pair for the same product, so identical fixtures would
     # collapse into one LLM call.
     return {"url": url, "source_domain": domain, "structured_fields": {"title": f"listing {url}"}, "raw_page_text": ""}
@@ -72,8 +72,8 @@ def test_match_candidates_keeps_only_confirmed_above_threshold():
     fake = _FakeClient(
         _decision_json(True, 0.9, 1500),   # confirmed
         _decision_json(True, 0.95, 999),   # confirmed
-        _decision_json(False, 0.99, 500),  # rejected — not a match regardless of confidence
-        _decision_json(True, 0.5, 300),    # rejected — matched but below threshold
+        _decision_json(False, 0.99, 500),  # rejected - not a match regardless of confidence
+        _decision_json(True, 0.5, 300),    # rejected - matched but below threshold
     )
     candidates = [_candidate(f"https://x.com/{i}") for i in range(4)]
     result = matcher.match_candidates({"canonical_name": "Demo"}, candidates, client=fake)
@@ -97,10 +97,10 @@ def test_match_candidates_sorts_confirmed_by_price_ascending():
 
 
 def test_match_candidates_marks_confirmed_without_price_as_possible():
-    # Stage 6.3: a null-price "match" cannot enter cheapest/savings
-    # arithmetic, but it is NOT a "no" — it becomes `possible` with the reason
+    # a null-price "match" cannot enter cheapest/savings
+    # arithmetic, but it is NOT a "no" - it becomes `possible` with the reason
     # "price unknown". The decision keeps the LLM verdict for the trace and
-    # the listing is no longer dumped into skipped.
+    # the listing is not dumped into skipped.
     fake = _FakeClient(
         _decision_json(True, 0.9, None),  # matched but no price extracted
         _decision_json(True, 0.9, 800),
@@ -119,7 +119,7 @@ def test_match_candidates_marks_confirmed_without_price_as_possible():
 
 def test_match_candidates_hard_rejects_non_inr_currency_without_llm_call():
     # Numeric sanity band alone can't catch USD/EUR that overlap the
-    # rupee range ($300 vs GeM ₹10,000 sits inside [1500, 50000]) —
+    # rupee range ($300 vs GeM ₹10,000 sits inside [1500, 50000]) -
     # explicit non-INR currency from the scraper must hard-reject before
     # any LLM call (fake has only ONE response queued: if the USD
     # candidate reached verify, the fake would raise on a second call).
@@ -153,7 +153,7 @@ def test_match_candidates_price_sanity_gate_rejects_implausible_prices():
     # Live regression: logitech.com en-us $39.99 scraped as "39.99 INR"
     # passed LLM verify at 95% and won 'cheapest' against a ₹2,725 GeM
     # listing. With gem_price present, the hard band must reject it even at
-    # high confidence — while a plausible price still confirms.
+    # high confidence - while a plausible price still confirms.
     fake = _FakeClient(
         _decision_json(True, 0.95, 39.99),   # implausible (< 0.15x 2725) → hard reject
         _decision_json(True, 0.95, 2550.0),   # plausible → confirmed
@@ -171,7 +171,7 @@ def test_match_candidates_price_sanity_gate_rejects_implausible_prices():
 
 
 def test_match_candidates_no_gem_price_disables_sanity_gate():
-    # Without a reference price there's nothing to sanity-check against —
+    # Without a reference price there's nothing to sanity-check against -
     # existing behavior (tests above) must be unchanged.
     fake = _FakeClient(_decision_json(True, 0.9, 39.99))
     result = matcher.match_candidates({"canonical_name": "Demo"}, [_candidate("https://x.com/a")], client=fake)

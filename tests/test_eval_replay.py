@@ -301,7 +301,7 @@ def test_record_run_gives_flipkart_one_browser_for_all_queries(tmp_path, monkeyp
 
     def fake_pipeline(gem_url, refresh=False, on_event=None, **kwargs):
         events.append("pipeline")
-        # The record run must bring its own browser before the pipeline runs —
+        # The record run must bring its own browser before the pipeline runs -
         # fail here (before any shop call) when that is not the case.
         assert browsers, "the record run must start its browser first"
         kwargs["flipkart_search_fn"]("query one")

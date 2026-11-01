@@ -4,14 +4,13 @@ Shared scraper contracts and helpers.
 Two different shapes here, because Amazon/Flipkart and "everything else"
 actually work differently in practice, not just in theory:
 
-- Flipkart's scraper (ported from the old repo, tested there) never visits
-  individual product pages — it drives headless Chrome to Flipkart's own
-  search results page for a query and parses (name, price, link) straight
-  off the result cards. Amazon follows the same pattern below, since
-  there's no tested reason to do it differently and Amazon's search cards
-  give the same kind of structured data.
+- Flipkart's scraper never visits individual product pages - it drives
+  headless Chrome to Flipkart's own search results page for a query and
+  parses (name, price, link) straight off the result cards. Amazon follows
+  the same pattern below, since Amazon's search cards give the same kind of
+  structured data.
 - Everything else (brand sites, anything the retry step turns up)
-  goes through generic.py's per-URL scrape(url) instead — there's no
+  goes through generic.py's per-URL scrape(url) instead - there's no
   "search this site directly" shortcut for an arbitrary domain.
 
 This means discovery and the pipeline need to treat
@@ -34,14 +33,14 @@ def parse_indian_price(text: Optional[str]) -> Optional[str]:
 
     Handles the forms Indian marketplace cards actually use:
       ₹1,299        -> "1299"
-      ₹1,299.00     -> "1299.00"   (digits-only would give 129900 — the bug)
+      ₹1,299.00     -> "1299.00"   (digits-only would give 129900 - the bug)
       ₹1,499-₹1,999 -> "1499"      (range: first amount)
       1,499.00      -> "1499.00"   (no rupee sign, but comma-grouped)
 
     The no-rupee fallback only accepts comma-grouped amounts, never a bare
-    digit run: "Intel Core i3 1215U" used to parse as price "3" (spec digits
+    digit run: "Intel Core i3 1215U" parses as price "3" without this guard (spec digits
     read as money when the price selector drifted). A bare unformatted
-    number with no ₹ anywhere in the card is not recognized — returning
+    number with no ₹ anywhere in the card is not recognized - returning
     None (candidate dropped / falls back to full card text) beats returning
     a wrong price.
     """
@@ -73,10 +72,10 @@ class CandidateResult:
 
 @dataclass
 class SearchScrapeResult:
-    """Returned by amazon.search() / flipkart.search() — one call per query,
+    """Returned by amazon.search() / flipkart.search() - one call per query,
     covers however many result cards were found. Block/error status lives
     at this batch level because that's how these sites actually fail (the
-    whole search gets blocked, not one card at a time) — this is what Part
+    whole search gets blocked, not one card at a time) - this is what Part
     8's trace viewer will show per marketplace per run."""
 
     source_domain: str
@@ -85,7 +84,7 @@ class SearchScrapeResult:
     blocked: bool = False
     pages_scraped: int = 0
     error: Optional[str] = None
-    # "ok" | "blocked" | "parser_empty" — blocked means the shop said no to
+    # "ok" | "blocked" | "parser_empty" - blocked means the shop said no to
     # the robot, parser_empty means the page loaded but no card matched the
     # selectors. They are different failures and the run reports them
     # differently ("not searched" vs "not found").
@@ -106,9 +105,8 @@ class SearchScrapeResult:
 
 
 # --- shared stealth-browser setup ---------------------------------------------
-# Ported near-verbatim from the old repo's build_driver() — proven against
-# Flipkart's bot detection. Amazon uses the exact same setup; nothing here
-# is site-specific, so it isn't duplicated per scraper.
+# The same setup works against Flipkart's bot detection. Amazon uses it too;
+# nothing here is site-specific, so it is not duplicated per scraper.
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -119,7 +117,7 @@ UA = (
 def _plain_chrome_options(light: bool = False):
     """Plain-Selenium Chrome options. light=True (GEM_FLIPKART_LIGHT) skips
     images and returns as soon as the DOM is ready instead of waiting for
-    every subresource — the result cards are in the HTML by then."""
+    every subresource - the result cards are in the HTML by then."""
     from selenium.webdriver.chrome.options import Options
 
     opts = Options()
@@ -137,8 +135,8 @@ def _plain_chrome_options(light: bool = False):
 
 
 def resolve_chromedriver() -> str:
-    """Where Selenium Manager keeps chromedriver — downloading it if this
-    machine has never run Chrome. E8: the API server calls this once at
+    """Where Selenium Manager keeps chromedriver - downloading it if this
+    machine has never run Chrome. the API server calls this once at
     startup, so the download check is not paid inside the first run."""
     from selenium.webdriver.common.selenium_manager import SeleniumManager
 
@@ -147,12 +145,12 @@ def resolve_chromedriver() -> str:
 
 def build_stealth_driver(light: bool = False):
     """Headless Chrome with the automation tells masked. Not a CAPTCHA
-    bypass — just stops the driver announcing itself as a bot before a
+    bypass - just stops the driver announcing itself as a bot before a
     CAPTCHA is even triggered. If a site still blocks it, detect_block()
     below is what notices, and the caller stops rather than fighting it.
 
     Plain Selenium with the CDP webdriver-mask. undetected-chromedriver was
-    removed in stage 3: it dies with Chrome 151 headless on this machine, so
+    removed: it dies with Chrome 151 headless on this machine, so
     it was dead weight that only made startup slower.
 
     light=True (GEM_FLIPKART_LIGHT) skips images and stops at the DOM.
@@ -187,8 +185,8 @@ def detect_block(driver, extra_phrases: Optional[list[str]] = None) -> bool:
 
 
 def scroll_to_load_more(driver, *, rounds: int = 8, stop_when_over: int = 50, item_xpath: str = "//a[contains(@href, '/p/')]"):
-    """Shared lazy-load scroller — same bounce-up-then-down pattern the old
-    Flipkart code used to coax more result cards in. item_xpath is what it
+    """Shared lazy-load scroller - same bounce-up-then-down pattern the old
+    Flipkart code uses to coax more result cards in. item_xpath is what it
     counts to decide "enough cards loaded, stop scrolling"."""
     from selenium.webdriver.common.by import By
 

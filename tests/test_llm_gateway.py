@@ -1,18 +1,17 @@
-"""Stage 5 — the LLM gateway: endpoint health that survives a restart.
+"""The LLM gateway: endpoint health that survives a restart.
 
-Three new behaviours, all about being honest when the free LLM plans run
-out:
+Three promises, all about being honest when the free LLM plans run out:
 
 - An endpoint that answers "daily limit" / "quota exceeded" is remembered
   as used up until the reset (or the next local midnight) in
   cache/llm_state.json, so a restart does not walk straight back into it.
-- "Nobody can answer" now has two flavours: GatewayBusy (cooling down, try
+- "Nobody can answer" has two flavours: GatewayBusy (cooling down, try
   again shortly) and GatewayExhausted (every allowance is gone for today).
-  Both still subclass RuntimeError, so every older caller keeps working.
+  Both subclass RuntimeError, so every caller keeps working.
 - An empty answer counts as a failed call: retried once on ANOTHER
   endpoint, and never written to the answer cache.
 
-No real network or API key is involved — every client below is a fake.
+No real network or API key is involved - every client below is a fake.
 """
 import json
 import sys

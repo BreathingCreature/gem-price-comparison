@@ -1,4 +1,4 @@
-"""Stage 6.1d: the recall safety net.
+"""the recall safety net.
 
 The pre-filter exists to save LLM calls, and its one unforgivable failure is
 cutting the true match. These tests pin the two guarantees that prevent it:

@@ -1,4 +1,4 @@
-"""Stage 7.4 helpers: which shops to retry, and what to search for.
+"""Helpers: which shops to retry, and what to search for.
 
 The retry itself (a search plus verify per shop) belongs to the pipeline; the
 decisions live here so they can be tested without one.

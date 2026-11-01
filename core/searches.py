@@ -1,6 +1,6 @@
 """The search half of the run: direct shop searches, search health, discovery.
 
-Extracted from core/pipeline.py (Stage 7). Everything here is called by the
+Extracted from core/pipeline.py. Everything here is called by the
 pipeline's lanes; tests call some of these helpers directly, so the names are
 re-exported from core.pipeline.
 """
@@ -47,7 +47,7 @@ def search_direct(
     """Run a direct marketplace search over normalized queries until one
     returns >= min_candidates RELEVANT candidates (or queries run out).
 
-    C7: the count is of RELEVANT candidates (titles that overlap the
+    the count is of RELEVANT candidates (titles that overlap the
     product's words, core/prefilter.py) when a normalized product is given.
     Without a normalized product every candidate counts.
 
@@ -148,7 +148,7 @@ def only_blocks(results) -> bool:
 
 def record_search_health(result, tried_domains: set, search_issues: list) -> None:
     """A blocked/errored search is a SCRAPE FAILURE, not 'product not sold
-    here' - previously both looked identical in not_found_on."""
+    here', because both looked identical in not_found_on."""
     d = _cand_dict(result)
     domain = d.get("source_domain", "?")
     if d.get("blocked"):

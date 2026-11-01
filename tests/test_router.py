@@ -176,7 +176,7 @@ def test_a_successful_call_clears_the_failing_state():
 
 
 def test_a_daily_token_limit_message_is_used_up_not_a_short_rest():
-    # Live aion answer: 429 "Daily token limit exceeded." — waiting 30s is a lie.
+    # Live aion answer: 429 "Daily token limit exceeded." - waiting 30s is a lie.
     a = FakeClient([FakeHTTPError(429, "Daily token limit exceeded.")], label="a")
     b = FakeClient(label="b")
     router, _ = make_router({"a": a, "b": b})
@@ -372,7 +372,7 @@ def test_without_a_config_file_it_falls_back_to_nvidia_only(tmp_path, monkeypatc
     assert endpoints[0].style == "nvidia" and endpoints[0].enabled
 
 
-# --- B2: request_options -----------------------------------------------------
+# request_options -----------------------------------------------------
 
 def test_request_options_must_be_a_dict(tmp_path, monkeypatch):
     monkeypatch.setenv("KEY_X", "real-key")
@@ -505,7 +505,7 @@ def test_a_nonsense_limit_is_a_loud_error(tmp_path, monkeypatch):
     assert "daily_limit" in str(err.value) and "l" in str(err.value)
 
 
-# --- B3: empty answer includes finish_reason ---------------------------------
+# empty answer includes finish_reason ---------------------------------
 
 def test_empty_answer_includes_finish_reason():
     class _ClientWithFinishReason:
@@ -527,7 +527,7 @@ def test_empty_answer_includes_finish_reason():
     assert "finish_reason=length" in str(err.value)
 
 
-# --- checkpoint 19: per-provider purposes ----------------------------------------
+# --- per-provider purposes ----------------------------------------
 
 def test_router_picks_only_endpoints_that_advertise_the_purpose():
     # slow verifies only, fast normalizes only, any matches everything.
@@ -545,7 +545,7 @@ def test_router_picks_only_endpoints_that_advertise_the_purpose():
 
 
 def test_restricted_routers_still_answer_unknown_purposes():
-    # No endpoint advertises "normalize" — the call must not fail; anyone
+    # No endpoint advertises "normalize" - the call must not fail; anyone
     # may answer it so a restrictive purposes setting cannot break a run.
     a = FakeClient(label="a")
     b = FakeClient(label="b")
@@ -601,7 +601,7 @@ def test_purposes_must_be_a_list_of_known_purposes(tmp_path):
         assert "x" in str(err.value)
 
 
-# --- checkpoint 22 / D2: per-provider tokens_per_minute ----------------------
+# --- per-provider tokens_per_minute ----------------------
 
 # 4000 chars ≈ 1000 tokens at the router's own 4-chars-per-token estimate.
 BIG_MESSAGES = [{"role": "user", "content": "x" * 4000}]
@@ -666,7 +666,7 @@ def test_a_provider_with_no_room_left_lets_another_provider_take_the_call():
 
     assert router.complete(BIG_MESSAGES, 100) == "answer from a"
     # a has used 1500 of its 2000-token minute; the next call estimates ~1000
-    # more, so it would go over — b takes it.
+    # more, so it would go over - b takes it.
     assert router.complete(BIG_MESSAGES, 100) == "answer from b"
     assert (a.calls, b.calls) == (1, 1)
 

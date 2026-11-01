@@ -150,7 +150,7 @@ With no `llm_providers.json` at all, NVIDIA is used alone, built from the
 `GET /api/llm/status`, the Advanced tab of the web page, and the
 `llm_call` / `llm_cooldown` events all show which endpoint served each call,
 how long it took and why an endpoint was skipped. States are `ready`, `failing`
-(its last call failed within 15 minutes — it will be retried, but it is not
+(its last call failed within 15 minutes - it will be retried, but it is not
 "ready"), `cooling` (resting; `reason` names the remaining seconds and the
 error), `limit` (allowance gone until the reset) and `disabled`. The status rows
 also show each provider's `calls_today`, `in_flight`, `max_concurrent`,
@@ -159,6 +159,6 @@ last minute's count (`tokens_per_minute`, `tokens_last_minute`).
 
 `python -m tools.probe_endpoints` sends one tiny message to every endpoint
 and prints OK with the round-trip time, or the real error (bad key, wrong
-model name, limit, empty answer) — the quickest way to find a broken
+model name, limit, empty answer) - the quickest way to find a broken
 provider before a run. Add `--json` for the rows as JSON; the exit code is 1
 when any enabled endpoint failed.

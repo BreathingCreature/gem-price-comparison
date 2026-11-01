@@ -2,13 +2,13 @@
 Tests for scrapers/flipkart.py, scrapers/amazon.py, scrapers/generic.py.
 
 flipkart.parse_cards_from_html and amazon.parse_cards_from_html are pure
-functions (html string in, list[dict] out) — deliberately separated from
+functions (html string in, list[dict] out) - deliberately separated from
 the Selenium driving code so they're testable without Chrome installed,
 which this sandbox doesn't have anyway. generic.scrape() is tested with a
 fake requests session, same pattern as the GeM extractor tests.
 
 None of this proves the selectors match today's real Flipkart/Amazon
-markup — only that the parsing logic does the right thing with HTML shaped
+markup - only that the parsing logic does the right thing with HTML shaped
 like it. Flipkart's shape came from tested code; Amazon's is unverified
 (see the warning at the top of scrapers/amazon.py).
 """
@@ -38,7 +38,7 @@ def test_parse_indian_price_comma_grouped_without_rupee():
 
 
 def test_parse_indian_price_does_not_read_spec_digits_as_price():
-    # Live bug: bare \d+ fallback read "3" from "i3" when the price
+    # A bare \d+ fallback reads "3" from "i3" when the price
     # selector drifted and code fell back to full card text.
     assert parse_indian_price("Intel Core i3 1215U 16GB RAM") is None
     assert parse_indian_price("16GB 512GB SSD") is None
@@ -80,7 +80,7 @@ def test_flipkart_parse_cards_basic():
 def test_flipkart_parse_cards_dedupes():
     dup_html = FLIPKART_MOCK_HTML + FLIPKART_MOCK_HTML
     cards = flipkart.parse_cards_from_html(dup_html)
-    assert len(cards) == 2  # not 4 — duplicates collapsed
+    assert len(cards) == 2  # not 4 - duplicates collapsed
 
 
 def test_flipkart_parse_cards_empty_on_no_match():
@@ -99,7 +99,7 @@ AMAZON_MOCK_HTML = """
   <span class="a-price"><span class="a-offscreen">₹1,199.00</span></span>
 </div>
 <div data-component-type="s-search-result">
-  <!-- sponsored placeholder, no data-asin — should be skipped -->
+  <!-- sponsored placeholder, no data-asin - should be skipped -->
   <h2><span class="a-text-normal">Sponsored junk</span></h2>
 </div>
 </body></html>
@@ -229,7 +229,7 @@ def test_generic_scrape_domain_strips_single_www_prefix_only():
 
 @contextmanager
 def _patched(obj, **attrs):
-    """Temporary attribute swaps — works with and without pytest's fixture."""
+    """Temporary attribute swaps - works with and without pytest's fixture."""
     old = {name: getattr(obj, name) for name in attrs}
     for name, value in attrs.items():
         setattr(obj, name, value)
@@ -277,7 +277,7 @@ def _call_recording_sleeps(module, fn, *args, **kwargs):
 
 def test_scroll_stops_after_two_rounds_without_new_cards():
     # The old loop scrolled all 8 rounds whenever the card count stayed
-    # under 50 (almost always true) — two stale rounds mean the page is done.
+    # under 50 (almost always true) - two stale rounds mean the page is done.
     driver = _FakeScrollDriver([10, 10, 10, 10, 10, 10, 10, 10])
     _call_silenced(flipkart, flipkart._scroll_to_load_cards, driver)
     assert driver.scrolls == 3
@@ -326,7 +326,7 @@ def test_flipkart_skips_the_sleep_once_it_has_enough():
     assert sleeps == []
 
 
-# --- C6: page 2/3 only when page 1 had too few relevant cards --------------------------
+# page 2/3 only when page 1 had too few relevant cards --------------------------
 
 
 def _flipkart_html(titles):
@@ -363,8 +363,8 @@ def _m650_product():
 
 
 def test_flipkart_stops_paging_once_page_1_has_enough_relevant_cards():
-    # C6: five cards that pass the relevance bar on page 1 mean pages 2/3
-    # cannot add much — skipping them saves 10-30 s on easy products.
+    # five cards that pass the relevance bar on page 1 mean pages 2/3
+    # cannot add much - skipping them saves 10-30 s on easy products.
     pages = {
         1: _flipkart_html([f"Logitech M650 Mouse variant {i}" for i in range(5)]),
         2: _flipkart_html(["Logitech M650 Mouse extra"]),
@@ -453,10 +453,10 @@ def test_default_browser_options_are_unchanged():
     assert opts.page_load_strategy == "normal"
 
 
-# --- one Chrome for a whole run (Flipkart Tier 2 items 1 and 2) ------------------------
+# --- one Chrome for a whole run ----------------------------------------
 
 class _CountingDriver:
-    """A driver that only counts its quits — enough for lifecycle tests."""
+    """A driver that only counts its quits - enough for lifecycle tests."""
 
     def __init__(self):
         self.quit_calls = 0
@@ -582,7 +582,7 @@ def test_amazon_fast_path_skips_the_sleep_once_it_has_enough():
     assert sleeps == []
 
 
-# --- B4 + E2: page fetches in parallel, one curl session per run -----------------------
+# page fetches in parallel, one curl session per run -----------------------
 
 def test_amazon_fetches_page_1_and_page_2_at_the_same_time():
     barrier = threading.Barrier(2, timeout=5.0)

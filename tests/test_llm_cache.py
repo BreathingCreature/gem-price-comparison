@@ -86,7 +86,7 @@ def test_a_client_passed_in_never_uses_the_cache(monkeypatch):
     assert calls == ["verify"]
 
 
-# --- B4: LLM_CACHE_TAG -------------------------------------------------------
+# LLM_CACHE_TAG -------------------------------------------------------
 
 def test_cache_key_changes_with_llm_cache_tag(monkeypatch):
     import importlib

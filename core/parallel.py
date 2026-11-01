@@ -1,7 +1,7 @@
 """Run jobs at the same time and wait for all of them.
 
 run_pair runs two jobs (the Flipkart and Amazon searches); run_many runs a
-whole list with a worker limit (used to verify listings and to retry).
+whole list with a worker limit, for verification and retries.
 Each job opens its own browser or HTTP session, so they do not share
 anything.
 
@@ -38,7 +38,7 @@ def run_many(jobs, workers: int = 1):
     """Call every job (no arguments each) with at most `workers` at a time.
     Returns the results in the same order as the jobs.
 
-    workers=1 (the default) runs them one after the other in this thread —
+    workers=1 (the default) runs them one after the other in this thread -
     exactly today's behaviour. If any job raises, the rest are still
     allowed to finish, then the first error (in job order) is raised."""
     if workers <= 1 or len(jobs) <= 1:

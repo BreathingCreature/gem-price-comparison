@@ -52,7 +52,7 @@ AMAZON_SELLING_AND_MRP = """
 def test_amazon_uses_the_selling_price_not_the_struck_out_mrp():
     cards = amazon.parse_cards_from_html(AMAZON_SELLING_AND_MRP)
     assert len(cards) == 1
-    assert cards[0]["price"] == "1199.00"  # not 1999 — .a-text-price is the MRP
+    assert cards[0]["price"] == "1199.00"  # not 1999 - .a-text-price is the MRP
 
 
 def test_amazon_card_out_of_stock():

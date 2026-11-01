@@ -1,8 +1,8 @@
 """
 Amazon.in scraper.
 
-Primary path (2026-09 research-backed): curl_cffi TLS/JA3 browser
-impersonation — no browser at all. This is the approach used by amzpy
+Primary path: curl_cffi TLS/JA3 browser
+impersonation - no browser at all. This is the approach used by amzpy
 (GitHub, MIT) and recommended across r/webscraping: Amazon's WAF fingerprints
 the TLS handshake (JA3), so plain requests/urllib look like bots instantly,
 while curl_cffi impersonating a real Chrome handshake gets full server-rendered
@@ -15,7 +15,7 @@ unavailable, errors, or Amazon serves it a wall/empty page.
 Amazon serves soft bot-walls that look like ordinary pages, so this module
 treats "page loaded but zero result containers and no explicit no-results
 message" as a BLOCKED/suspect page (with a debug dump), not as "product
-genuinely not sold here" — reporting a scrape failure as "not found" was a
+genuinely not sold here" - reporting a scrape failure as "not found" was a
 real bug in the first version.
 
 Selectors (data-component-type="s-search-result", h2 title, a-price
@@ -23,9 +23,9 @@ a-offscreen) are the long-stable documented Amazon search-card selectors.
 Price parsing goes through base.parse_indian_price so "₹1,199.00" stays
 "1199.00".
 
-2026-10 (B4 + E2): the page fetches of one query are fired together on a
+The page fetches of one query are fired together on a
 small shared pool instead of one per politeness pause, and every fetch
-goes through one reused curl_cffi Session per fingerprint — the TLS
+goes through one reused curl_cffi Session per fingerprint - the TLS
 handshake is paid once per run, not once per fetch.
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ _BLOCK_PHRASES = [
     "tap the poles to continue",  # Amazon's image-select challenge wording
 ]
 
-# Phrases that mean "genuinely zero results" — absence of cards is real here,
+# Phrases that mean "genuinely zero results" - absence of cards is real here,
 # not a bot wall.
 _NO_RESULTS_PHRASES = [
     "no results for",
@@ -87,17 +87,17 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
         driver.get(url)
     except Exception as e:
         # Amazon is SLOW from here (renderer regularly exceeds the page-load
-        # timeout) but keeps loading in the background — live-verified: the
+        # timeout) but keeps loading in the background - live-verified: the
         # "timed out" page_source eventually contained 16 real result cards.
-        # Previously this returned None and threw the loaded page away.
+        # This returns the page so the caller can fall back to a browser.
         logger.warning(
-            "amazon navigation slow on %r p%d (%s: %s) — waiting for the page to finish, keeping page_source.",
+            "amazon navigation slow on %r p%d (%s: %s) - waiting for the page to finish, keeping page_source.",
             query, page, type(e).__name__, str(e)[:120],
         )
         time.sleep(random.uniform(4.0, 6.0))
 
     # Amazon renders the search shell first and fills result cards via JS a
-    # few seconds later — reading page_source too early gave a real page with
+    # few seconds later - reading page_source too early gave a real page with
     # zero containers (mistaken for a bot wall). Wait for cards OR an
     # explicit no-results message before parsing.
     try:
@@ -106,7 +106,7 @@ def _load_search_page(driver, query: str, page: int = 1) -> str | None:
             or _genuine_no_results(d.page_source)
         )
     except TimeoutException:
-        logger.info("amazon results for %r p%d not rendered after wait — parsing whatever is present.", query, page)
+        logger.info("amazon results for %r p%d not rendered after wait - parsing whatever is present.", query, page)
 
     time.sleep(random.uniform(1.5, 2.5))  # let prices/titles settle
     if detect_block(driver, _BLOCK_PHRASES):
@@ -118,13 +118,13 @@ def parse_cards_from_html(html: str) -> list[dict]:
     """Pure function, testable without a browser. Amazon search cards:
     container div[data-component-type='s-search-result'], title in an h2,
     price in span.a-price > span.a-offscreen (the visually-hidden exact
-    price text — more reliable than the split whole/fraction spans)."""
+    price text - more reliable than the split whole/fraction spans)."""
     soup = BeautifulSoup(html, "lxml")
     cards = soup.select("div[data-component-type='s-search-result']")
 
     out = []
     for card in cards:
-        # sponsored/placeholder cards sometimes have no asin — skip those
+        # sponsored/placeholder cards sometimes have no asin - skip those
         if not card.get("data-asin"):
             continue
 
@@ -154,7 +154,7 @@ def parse_cards_from_html(html: str) -> list[dict]:
         price = parse_indian_price(price_el.get_text(" ", strip=True)) if price_el else None
 
         link_el = card.select_one("h2 a") or card.select_one("a.a-link-normal.s-no-outline")
-        # Sponsored cards link to /sspa/click?... — build a stable product
+        # Sponsored cards link to /sspa/click?... - build a stable product
         # URL from the card's data-asin instead so the scorer can match it.
         asin = card.get("data-asin")
         link = f"https://www.amazon.in/dp/{asin}" if asin else None
@@ -223,7 +223,7 @@ def _collect_cards(cards: list[dict], candidates: list[CandidateResult], seen: s
 # chrome150 → HTTP 200 + 16 real cards on amazon.in from this machine.
 _CURL_IMPERSONATE = ("chrome150", "chrome146", "chrome142", "safari180")
 
-# One curl_cffi Session per fingerprint, reused for the whole run (E2): the
+# One curl_cffi Session per fingerprint, reused for the whole run: the
 # TLS handshake happens when a session is created, not on every fetch.
 # curl_cffi's Session keeps a separate curl handle per thread internally, so
 # the page-fetch pool workers can share one session safely.
@@ -245,7 +245,7 @@ _fetch_pool_lock = threading.Lock()
 
 
 def _page_fetch_pool() -> ThreadPoolExecutor:
-    """One long-lived pool for the page fetches (B4): the pages of a query
+    """One long-lived pool for the page fetches: the pages of a query
     leave together, and the worker threads keep their TLS connections from
     one query to the next."""
     global _fetch_pool
@@ -261,7 +261,7 @@ def _fetch_curl_cffi_page(query: str, page: int = 1) -> str | None:
     try:
         from curl_cffi import requests as curl_requests
     except ImportError:
-        logger.info("curl_cffi not installed — skipping Amazon fast path.")
+        logger.info("curl_cffi not installed - skipping Amazon fast path.")
         return None
 
     url = f"https://www.amazon.in/s?k={quote_plus(query)}&page={page}"
@@ -282,7 +282,7 @@ def _fetch_curl_cffi_page(query: str, page: int = 1) -> str | None:
         blocked_hits = [p for p in _BLOCK_PHRASES if p in low]
         if r.status_code != 200 or blocked_hits:
             logger.warning(
-                "curl_cffi %s: status=%s blocked=%s for %r — trying next fingerprint.",
+                "curl_cffi %s: status=%s blocked=%s for %r - trying next fingerprint.",
                 fp, r.status_code, blocked_hits or None, query,
             )
             _save_debug(html, "amazon_curl_blocked")
@@ -305,8 +305,8 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
     seen: set = set()
     pages_scraped = 0
 
-    # B4: the page fetches of this query leave together instead of one per
-    # politeness pause — plain HTTP is cheap, and the pause was the serial cost.
+    # the page fetches of this query leave together instead of one per
+    # politeness pause - plain HTTP is cheap, and the pause was the serial cost.
     pages = list(range(1, max_pages + 1))
     fetched = {page: _page_fetch_pool().submit(_fetch_curl_cffi_page, query, page) for page in pages}
 
@@ -325,7 +325,7 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
         # Zero-card pages are sometimes probe fatigue, not a bot wall
         # (seen live: same query succeeds on a second fetch ~50% of the
         # time). One delayed retry before declaring the fast path
-        # inconclusive — cheaper than spinning up Selenium.
+        # inconclusive - cheaper than spinning up Selenium.
         if cards == [] and not _genuine_no_results(html):
             time.sleep(random.uniform(2.0, 3.5))
             retry_html = _fetch_curl_cffi_page(query, page)
@@ -342,7 +342,7 @@ def _search_curl_cffi(query: str, max_results: int, max_pages: int) -> SearchScr
             elif pages_scraped == 1:
                 _save_debug(html, "amazon_curl_suspect")
                 logger.warning(
-                    "Amazon (curl_cffi) page 1 for %r: zero cards and no no-results marker — "
+                    "Amazon (curl_cffi) page 1 for %r: zero cards and no no-results marker - "
                     "inconclusive, falling back to browser.",
                     query,
                 )
@@ -371,7 +371,7 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
     fast = _search_curl_cffi(query, max_results, max_pages)
     if fast is not None:
         return fast
-    logger.info("Amazon fast path inconclusive for %r — falling back to browser stack.", query)
+    logger.info("Amazon fast path inconclusive for %r - falling back to browser stack.", query)
 
     driver = build_stealth_driver()
     candidates: list[CandidateResult] = []
@@ -389,7 +389,7 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
             if html is None:
                 blocked = True
                 _save_debug(driver.page_source, "amazon_block")
-                logger.warning("Amazon blocked/CAPTCHA on %r page %d — stopping, no bypass.", query, page)
+                logger.warning("Amazon blocked/CAPTCHA on %r page %d - stopping, no bypass.", query, page)
                 break
 
             cards = parse_cards_from_html(html)
@@ -405,7 +405,7 @@ def search(query: str, max_results: int = 15, max_pages: int = 2) -> SearchScrap
                     _save_debug(html, "amazon_suspect")
                     logger.warning(
                         "Amazon page %d for %r: zero result cards and no no-results marker "
-                        "(soft bot-wall or layout change) — marking parser_empty, not 'not found'.",
+                        "(soft bot-wall or layout change) - marking parser_empty, not 'not found'.",
                         page,
                         query,
                     )

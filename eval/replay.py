@@ -4,8 +4,8 @@
     python -m eval.replay --key eval/answer_key.csv --replay baseline --label parallel-on
 
 A --record run is a normal live run (same as eval/run_eval.py) that also
-saves every shop answer — Flipkart search, Amazon search, discovery and the
-generic page fetches — under eval/recordings/<name>/, one small file per
+saves every shop answer - Flipkart search, Amazon search, discovery and the
+generic page fetches - under eval/recordings/<name>/, one small file per
 product. A --replay run never touches a shop: the same questions are answered
 from the recording, so two experiments are compared on exactly the same
 listings and only the setting under test differs.

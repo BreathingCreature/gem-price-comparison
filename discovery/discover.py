@@ -1,20 +1,19 @@
 """
 Discovery layer: search engines in, shop URLs out.
 
-Only used for domains WITHOUT a dedicated scraper — brand/manufacturer
+Only used for domains WITHOUT a dedicated scraper - brand/manufacturer
 sites, and anything the expand_search retry step turns up. Amazon and
 Flipkart bypass this entirely via their own direct search (see
 scrapers/amazon.py, scrapers/flipkart.py).
 
-Engines (all free, asked IN PARALLEL — a dead one must not cost the others'
+Engines (all free, asked IN PARALLEL - a dead one must not cost the others'
 wait):
-1. DuckDuckGo lite/html via curl_cffi TLS impersonation — plain requests
+1. DuckDuckGo lite/html via curl_cffi TLS impersonation - plain requests
    get CAPTCHA'd after a few queries. Falls back to plain requests when a
    test session is injected or curl_cffi is missing.
 2. ddgs (the maintained duckduckgo_search successor) when installed.
 3. SearXNG public instances (aggregator; server-rendered HTML results).
-   The old Google plain-HTML fallback was removed (F): its page went JS-only
-   from this machine.
+   Google's plain-HTML page is JS-only from this machine, so it is not used.
 
 The whole stage has one deadline (GEM_DISCOVERY_TIME_LIMIT, default 25 s):
 whatever has not answered by then is dropped, and its engine is recorded in
@@ -27,7 +26,7 @@ that fails 3 times in this process is skipped for 5 minutes (memory only).
 
 Honesty: a backend that responds but yields zero parseable links now
 returns DiscoveryResult.error set ("backends responded but no result
-links...") instead of a silent empty success — silent empties made
+links...") instead of a silent empty success - silent empties made
 scrape failures indistinguishable from genuinely absent results.
 """
 from __future__ import annotations
@@ -51,7 +50,7 @@ from core.keys import listing_key
 QUERY_DELAY_RANGE = (1.5, 2.5)  # polite delay between queries in one discover_candidates call
 
 # Search engines' own domains and common non-retail sites that show up in
-# general product searches but are never the actual seller — filtered out
+# general product searches but are never the actual seller - filtered out
 # whether or not an explicit allowed_domains list is given.
 _ALWAYS_EXCLUDE = {
     "google.com", "webcache.googleusercontent.com", "translate.google.com",
@@ -60,7 +59,7 @@ _ALWAYS_EXCLUDE = {
     "duckduckgo.com", "html.duckduckgo.com", "lite.duckduckgo.com",
 }
 # Soft blocklist applied only when NO allowed_domains is given (first-pass,
-# open brand-site discovery) — these are common non-shopping results that
+# open brand-site discovery) - these are common non-shopping results that
 # show up for almost any product query.
 _NON_RETAIL_BLOCKLIST = _ALWAYS_EXCLUDE | {
     "wikipedia.org", "reddit.com", "quora.com", "facebook.com", "instagram.com",
@@ -69,7 +68,7 @@ _NON_RETAIL_BLOCKLIST = _ALWAYS_EXCLUDE | {
     # pipeline's 8-URL generic-scrape cap (seen live in DDG results).
     "amazon.com", "walmart.com", "bhphotovideo.com", "tomsguide.com",
     "manuals.plus", "ebay.com",
-    # E4: news, classifieds, blog, wiki-style, social and review-only pages.
+    # news, classifieds, blog, wiki-style, social and review-only pages.
     # Most .com ones are already dropped by the Indian-retail rule; these are
     # the ones (or .in equivalents) that otherwise slip through and burn a
     # generic-scrape slot on a link wall instead of a product.
@@ -80,13 +79,13 @@ _NON_RETAIL_BLOCKLIST = _ALWAYS_EXCLUDE | {
     "trustpilot.com", "mouthshut.com", "gsmarena.com", "91mobiles.com",
     "mysmartprice.com", "smartprix.com", "pricebaba.com",
 }
-# Domains with their own direct scrapers — discovery must not surface them
+# Domains with their own direct scrapers - discovery must not surface them
 # for generic re-scraping (that caused duplicate candidates + wasted 403
 # fetches against Flipkart/Amazon when discovery worked again).
 _DIRECT_SCRAPER_DOMAINS = {"amazon.in", "flipkart.com"}
 
-# Open discovery returns INDIAN retail sites only (user directive
-# 2026-09-24: "visit amazon.in not us, indian sites not the other ones").
+# Open discovery returns Indian retail sites only. Any .in / .co.in domain
+# passes, plus the known Indian marketplaces below that use .com.
 # Rule: any .in / .co.in domain, or one of these known Indian marketplaces
 # that use .com. `discovery/indian_shops.txt` adds one domain per line
 # (comments allowed) without a code change.
@@ -113,7 +112,7 @@ def _allowlist_extra_domains() -> set[str]:
                 if line and not line.startswith("#"):
                     domains.add(line.removeprefix("www."))
         except OSError:
-            logger.warning("Could not read %s — using the built-in Indian shop list only.", _INDIAN_SHOP_ALLOWLIST_FILE)
+            logger.warning("Could not read %s - using the built-in Indian shop list only.", _INDIAN_SHOP_ALLOWLIST_FILE)
         _allowlist_extra = domains
     return _allowlist_extra
 
@@ -161,8 +160,8 @@ def _domain_matches_set(domain: str, domain_set) -> bool:
     return any(domain == d or domain.endswith("." + d) for d in domain_set)
 
 
-# E4: paths like /search, /tag/... or query strings that are searches
-# (?q=..., ?keyword=...) are listings, never the product itself — opening
+# paths like /search, /tag/... or query strings that are searches
+# (?q=..., ?keyword=...) are listings, never the product itself - opening
 # one wastes a generic-scrape slot on a wall of links.
 _LISTING_PATH_RE = re.compile(r"(?:^|/)(?:search|tags?|topics?)(?:/|$)", re.IGNORECASE)
 _SEARCH_QUERY_KEYS = {"q", "s", "search", "query", "keyword", "keywords"}
@@ -203,7 +202,7 @@ def _start_ddg_cooldown() -> None:
     global _ddg_cooldown_until
     _ddg_cooldown_until = time.time() + DDG_COOLDOWN_SECONDS
     logger.warning(
-        "DDG CAPTCHA'd — cooling down discovery from DuckDuckGo for %.0f min (SearXNG takes over).",
+        "DDG CAPTCHA'd - cooling down discovery from DuckDuckGo for %.0f min (SearXNG takes over).",
         DDG_COOLDOWN_SECONDS / 60.0,
     )
 
@@ -242,13 +241,13 @@ def _fetch_ddg_curl(query: str) -> str | None:
             if _looks_blocked(html):
                 _start_ddg_cooldown()
                 raise _DdgCoolingDown("ddg returned CAPTCHA page")
-            # 200 but unparseable / error status — try next fingerprint
+            # 200 but unparseable / error status - try next fingerprint
             time.sleep(random.uniform(0.5, 1.2))  # research: ~3s throttle avoids burst CAPTCHAs; keep run fast
     return None
 
 
 def _fetch_ddg_html(query: str, *, session: Optional[requests.Session] = None) -> str:
-    """Primary backend — DuckDuckGo. Live calls go through curl_cffi first
+    """Primary backend - DuckDuckGo. Live calls go through curl_cffi first
     (lite endpoint + fingerprint rotation); injected sessions (tests) and
     curl_cffi-missing environments fall back to plain requests on the same
     endpoints, preserving original testable behavior."""
@@ -278,12 +277,11 @@ def _fetch_ddg_html(query: str, *, session: Optional[requests.Session] = None) -
 
 # --- SearXNG fallback ---------------------------------------------------------------
 
-# Public instances (HTML mode — parses via the same h3 > a shape as Google).
+# Public instances (HTML mode - parses via the same h3 > a shape as Google).
 # SearXNG instances rate-limit aggressively (200 + tiny empty shell after a
-# few queries); four live-verified ones are enough (F): a query used to fan
-# out to up to 11 random third parties at once. Empty / unparseable
-# responses just advance past them. Live-verified 2026-09-24 via curl_cffi:
-# s.trung.fun returned 43 h3 results; searxng.site and opnxng.com worked
+# few queries); four instances are enough. A query fans out to four
+# third parties at once. Empty or unparseable responses just advance past
+# them. s.trung.fun returns h3 results; searxng.site and opnxng.com work
 # until rate-limited.
 _SEARXNG_INSTANCES = (
     "https://s.trung.fun",
@@ -297,10 +295,10 @@ SEARXNG_MAX_WORKERS = 4  # instances are asked at the same time, up to this many
 
 def _searxng_attempt(base: str, query: str, *, session, curl, headers):
     """One instance fetch, off the main thread. Returns:
-      ("html", page)    — responded with parseable result links
-      ("blocked", None) — responded, but a CAPTCHA or an empty/rate-limits
+      ("html", page) - responded with parseable result links
+      ("blocked", None) - responded, but a CAPTCHA or an empty/rate-limits
                           shell (it answered; just not usefully)
-      ("error", exc)    — the request itself failed (or HTTP 4xx/5xx)"""
+      ("error", exc) - the request itself failed (or HTTP 4xx/5xx)"""
     url = f"{base}/search?q={quote_plus(query)}"
     try:
         if curl is not None:
@@ -322,13 +320,13 @@ def _searxng_attempt(base: str, query: str, *, session, curl, headers):
 
 
 def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = None) -> str:
-    """Second and last backend after DDG — SearXNG public instances. Free
+    """Second and last backend after DDG - SearXNG public instances. Free
     aggregator, no CAPTCHA, server-rendered HTML. Live calls go through
     curl_cffi (plain requests gets empty shells from several instances);
     injected sessions (tests) keep plain requests.
 
-    All instances are asked AT THE SAME TIME — a dead instance must not
-    cost the others' wait — and the whole discovery call has one deadline
+    All instances are asked AT THE SAME TIME - a dead instance must not
+    cost the others' wait - and the whole discovery call has one deadline
     (GEM_DISCOVERY_TIME_LIMIT, default 25s): sequentially, four instances x
     up to 15s could stall a run for minutes. First instance with parseable
     links wins; on deadline the best answer so far is used."""
@@ -359,21 +357,21 @@ def _fetch_searxng_html(query: str, *, session: Optional[requests.Session] = Non
                     last_exc = payload
                     logger.debug("searxng instance failed for %r: %s: %s",
                                  query, type(payload).__name__, str(payload)[:120])
-                else:  # blocked / empty shell — it answered, just not usefully
+                else:  # blocked / empty shell - it answered, just not usefully
                     got_any_response = True
         except FuturesTimeout:
             logger.info(
-                "SearXNG search for %r hit the %.0fs time limit — using what came back so far.",
+                "SearXNG search for %r hit the %.0fs time limit - using what came back so far.",
                 query, DISCOVERY_TIME_LIMIT_SECONDS,
             )
     finally:
-        # Do NOT wait for stragglers — the deadline is the point. Pending
+        # Do NOT wait for stragglers - the deadline is the point. Pending
         # attempts are cancelled; running ones end at their current socket.
         pool.shutdown(wait=False, cancel_futures=True)
 
     if not got_any_response and last_exc is not None:
         raise last_exc  # every instance failed at transport level (tests assert this)
-    # Instances responded but yielded nothing parseable — honest error
+    # Instances responded but yielded nothing parseable - honest error
     # path: discover_candidates turns this into DiscoveryResult.error when
     # no backend produced links.
     return "<html><body><!-- searxng: no parseable results --></body></html>"
@@ -386,7 +384,7 @@ def _fetch_brave_html(query: str, *, session: Optional[requests.Session] = None)
     """Third backend: Brave Search's server-rendered HTML. Added after the
     SearXNG instances began returning empty shells and a DDG CAPTCHA left
     discovery with no working backend for an hour. Live calls rotate
-    curl_cffi fingerprints — chrome150 got HTTP 429 where safari180
+    curl_cffi fingerprints - chrome150 got HTTP 429 where safari180
     answered; injected sessions (tests) keep plain requests."""
     url = f"https://search.brave.com/search?q={quote_plus(query)}"
     headers = {"Accept-Language": "en-IN,en;q=0.9", "User-Agent": USER_AGENT}
@@ -440,10 +438,10 @@ def _looks_blocked(html: str) -> bool:
 
 def _parse_result_urls(html: str) -> list[str]:
     """Handles the link shapes search engines actually use:
-    - DuckDuckGo HTML: //duckduckgo.com/l/?uddg=<urlencoded real url>&...
-    - Google old-style: /url?q=<real_url>&...
-    - Google modern: direct <a href> wrapping an <h3> title.
-    - DDG direct result anchors (a.result__a) when not redirect-wrapped.
+ - DuckDuckGo HTML: //duckduckgo.com/l/?uddg=<urlencoded real url>&...
+ - Google old-style: /url?q=<real_url>&...
+ - Google modern: direct <a href> wrapping an <h3> title.
+ - DDG direct result anchors (a.result__a) when not redirect-wrapped.
     """
     soup = BeautifulSoup(html, "lxml")
     urls: list[str] = []
@@ -466,7 +464,7 @@ def _parse_result_urls(html: str) -> list[str]:
             urls.append(target)
 
     # Modern direct links wrapping <h3> (Google shape: a > h3) OR <h3>
-    # wrapping the link (SearXNG shape: h3 > a) — both are "the h3 title
+    # wrapping the link (SearXNG shape: h3 > a) - both are "the h3 title
     # is inside/outside an anchor to the real URL".
     for h3 in soup.select("h3"):
         a = h3.find("a") or h3.find_parent("a")
@@ -540,7 +538,7 @@ def _note_engine_outcome(name: str, *, ok: bool) -> None:
         _engine_failures[name] = 0
         _engine_skip_until[name] = time.time() + ENGINE_SKIP_SECONDS
         logger.warning(
-            "Search engine %s failed %d times in a row — skipping it for %.0f minutes.",
+            "Search engine %s failed %d times in a row - skipping it for %.0f minutes.",
             name, ENGINE_FAILURE_LIMIT, ENGINE_SKIP_SECONDS / 60.0,
         )
     else:
@@ -558,7 +556,7 @@ def _engine_duckduckgo(query: str, session) -> tuple[list[str], bool]:
 
 def _engine_ddgs(query: str, session) -> tuple[list[str], bool]:
     """The `ddgs` package (maintained duckduckgo_search successor). Raises
-    ImportError when not installed — the engine list skips it then."""
+    ImportError when not installed - the engine list skips it then."""
     from ddgs import DDGS
 
     with DDGS() as ddgs:
@@ -610,7 +608,7 @@ def _run_engines(query: str, session) -> tuple[list[str], bool, list[str], bool]
     """Ask every engine at once. Returns (urls, blocked_any, issues, responded).
 
     An engine that raises is noted and dropped; one that is still running at
-    the deadline is cancelled and noted. Nothing here raises to the caller —
+    the deadline is cancelled and noted. Nothing here raises to the caller -
     discovery must never fail a run.
     """
     engines = _active_engines()
@@ -650,9 +648,9 @@ def _run_engines(query: str, session) -> tuple[list[str], bool, list[str], bool]
                 _note_engine_outcome(name, ok=True)
                 by_engine[name] = urls
         except FuturesTimeout:
-            issues.append(f"time limit {DISCOVERY_TIME_LIMIT_SECONDS:.0f}s reached — slow engines dropped")
+            issues.append(f"time limit {DISCOVERY_TIME_LIMIT_SECONDS:.0f}s reached - slow engines dropped")
             logger.info(
-                "Discovery for %r hit the %.0fs time limit — using the engines that answered.",
+                "Discovery for %r hit the %.0fs time limit - using the engines that answered.",
                 query, DISCOVERY_TIME_LIMIT_SECONDS,
             )
             for name, future in futures.items():
@@ -661,7 +659,7 @@ def _run_engines(query: str, session) -> tuple[list[str], bool, list[str], bool]
                 future.cancel()
                 _note_engine_outcome(name, ok=False)
     finally:
-        # Never wait for stragglers — the deadline is the point.
+        # Never wait for stragglers - the deadline is the point.
         pool.shutdown(wait=False, cancel_futures=True)
 
     urls: list[str] = []
@@ -682,10 +680,10 @@ def discover_candidates(
     *,
     session: Optional[requests.Session] = None,
 ) -> DiscoveryResult:
-    """allowed_domains=None means open discovery (first pass, brand sites) —
+    """allowed_domains=None means open discovery (first pass, brand sites) -
     soft-blocklist common non-retail domains, keep Indian retail only.
     allowed_domains=[...] means strict mode (retry pass, using
-    expand_search's suggested_domains) — keep only exact/subdomain matches.
+    expand_search's suggested_domains) - keep only exact/subdomain matches.
 
     All engines are asked at the same time; their results are unioned and
     deduped by the shared listing key. A failed, skipped or slow engine is
@@ -702,7 +700,7 @@ def discover_candidates(
             )
         if blocked_any:
             return DiscoveryResult(query=query, blocked=True, search_issues=issues)
-        # Responded fine but yielded nothing parseable — NOT a silent empty
+        # Responded fine but yielded nothing parseable - NOT a silent empty
         # success; downstream must be able to tell "engine broken" from
         # "nothing on the internet matches".
         return DiscoveryResult(
@@ -717,7 +715,7 @@ def discover_candidates(
         if not domain or _is_excluded(domain):
             continue
         if _looks_like_listing_url(u):
-            continue  # E4: a search/tag page is a wall of links, not a product
+            continue  # a search/tag page is a wall of links, not a product
         if allowed_domains:
             # Strict mode targets suggested domains, but Amazon/Flipkart
             # must not leak in even when the LLM suggests them: they have
@@ -732,9 +730,9 @@ def discover_candidates(
             if _domain_matches_set(domain, _NON_RETAIL_BLOCKLIST):
                 continue
             if _domain_matches_set(domain, _DIRECT_SCRAPER_DOMAINS):
-                continue  # Amazon/Flipkart have their own scrapers — don't duplicate
+                continue  # Amazon/Flipkart have their own scrapers - don't duplicate
             if not _is_indian_retail(domain):
-                continue  # Indian sites only — no .com foreign stores in open discovery
+                continue  # Indian sites only - no .com foreign stores in open discovery
             filtered.append(u)
 
     return DiscoveryResult(query=query, raw_urls=raw_urls, filtered_urls=filtered, search_issues=issues)
@@ -747,7 +745,7 @@ def discover_for_queries(
     session: Optional[requests.Session] = None,
 ) -> list[DiscoveryResult]:
     """Runs discover_candidates for each query with a polite delay between
-    them. This is what the pipeline actually calls — one DiscoveryResult per
+    them. This is what the pipeline actually calls - one DiscoveryResult per
     query, so the trace shows exactly what was searched and what survived
     filtering for each one, not just a flattened final list."""
     results = []

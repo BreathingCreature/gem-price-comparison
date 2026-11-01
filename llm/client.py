@@ -6,25 +6,20 @@ three functions: normalize_product, verify_or_extract, expand_search. All
 three force JSON-only responses and go through the same retry/rate-limit
 plumbing.
 
-Ported near-verbatim from the old repo's matching/llm_attributes.py: the
-_extract_json() brace-counting parser (handles markdown fences and stray
-prose around the JSON) and the rate-limiter pattern (module-level last-call
-timestamp, sleep to stay under the free-tier request cap). Both were
-already solid — no reason to rewrite them.
+The JSON parser counts braces, so it handles markdown fences and stray
+prose around the answer. A module-level last-call timestamp keeps calls
+under the free-tier request cap.
 
-What's different from the old code: no SQLite caching here (this project
-is meant to be fresh-lookup, not permanently cached — see config.py's
-CACHE_TTL_SECONDS, which the pipeline handles at its level instead), no
-regex fallback (that's explicitly deferred — see the build spec's
-"Deferred" section), and three prompts instead of one, since this pipeline
-asks the LLM to do more: identity normalization, match verification with a
-raw-page-reading fallback, and query expansion for the retry loop.
+There is no SQLite cache here: this project is a fresh lookup, not a
+permanent store. config.py's CACHE_TTL_SECONDS is handled by the pipeline
+at its level instead. There is no regex fallback for unparseable answers;
+the call is retried once and then reported. Three prompts cover identity
+normalization, match verification with a raw-page-reading fallback, and
+query expansion for the retry loop.
 
-Reminder for anyone reading this cold: the NVIDIA endpoint is a plain text
-completion API. expand_search() below is NOT the LLM browsing the internet
-— it only reasons over the query/domain lists it's handed and its own
-training knowledge. See the build spec doc, section 0, for why this
-distinction matters.
+The NVIDIA endpoint is a plain text completion API. expand_search() below
+is NOT the LLM browsing the internet: it reasons over the query and domain
+lists it is handed plus its own training knowledge.
 """
 from __future__ import annotations
 
@@ -51,7 +46,7 @@ _working_model = [None]  # first model that actually answers, reused afterwards
 
 # NVIDIA's free tier answers 503 "Service temporarily overloaded" in bursts.
 # With the model list pinned to a single model, "fall through to next model"
-# meant zero resilience — one blip killed the whole pipeline. Retry the SAME
+# meant zero resilience - one blip killed the whole pipeline. Retry the SAME
 # model a few times with growing backoff before giving up on it.
 ENDPOINT_RETRY_ATTEMPTS = 3
 ENDPOINT_RETRY_BACKOFF = (2.0, 5.0)  # seconds, multiplied by attempt number
@@ -62,7 +57,7 @@ ENDPOINT_RETRY_BACKOFF = (2.0, 5.0)  # seconds, multiplied by attempt number
 def _as_str_list(value) -> list[str]:
     """Coerce an LLM field that should be a list of strings. Models sometimes
     return a bare string ("Logitech M650 mouse") instead of ["Logitech M650
-    mouse"] — downstream, queries[0] on a string would silently become the
+    mouse"] - downstream, queries[0] on a string would silently become the
     first CHARACTER and discovery would iterate per character. Never trust
     the model's types, only its content."""
     if isinstance(value, str):
@@ -73,7 +68,7 @@ def _as_str_list(value) -> list[str]:
 
 
 def _as_bool(value) -> bool:
-    """Strict-ish bool coercion. bool("false") is True in Python — a quoted
+    """Strict-ish bool coercion. bool("false") is True in Python - a quoted
     "false" from the model must NOT confirm a match."""
     if isinstance(value, bool):
         return value
@@ -85,12 +80,12 @@ def _as_bool(value) -> bool:
 def _parse_confidence(value) -> float:
     """Parse a confidence value from an LLM answer into a 0-1 float.
 
-    - Bool True/False -> 0.0 (a boolean is not a confidence)
-    - String like "95%" or "95" -> strip %, parse as number
-    - Number in (1, 100] -> divide by 100
-    - Number in [0, 1] -> keep as-is
-    - NaN, inf, negative, > 100 -> 0.0
-    - Anything unparseable -> 0.0
+ - Bool True/False -> 0.0 (a boolean is not a confidence)
+ - String like "95%" or "95" -> strip %, parse as number
+ - Number in (1, 100] -> divide by 100
+ - Number in [0, 1] -> keep as-is
+ - NaN, inf, negative, > 100 -> 0.0
+ - Anything unparseable -> 0.0
     """
     if isinstance(value, bool):
         return 0.0
@@ -111,9 +106,7 @@ def _parse_confidence(value) -> float:
 
 def _extract_json(raw: str) -> Optional[dict]:
     """Parse the first JSON object out of an LLM response. Handles stray
-    prose before/after the object, markdown fences, and trailing text.
-    Ported from the old repo's llm_attributes.py — unchanged, it was
-    already correct."""
+    prose before/after the object, markdown fences, and trailing text."""
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
     try:
         return json.loads(cleaned)
@@ -159,12 +152,12 @@ def _respect_rate_limit() -> None:
 def _model_kwargs(model: str, style: str = "nvidia", request_options: Optional[dict] = None) -> dict:
     """Per-model request params required by the NVIDIA NIM API (see
     docs.api.nvidia.com/nim/reference/*-infer):
-    - Nemotron models default stream=true (SSE) and thinking=ON — thinking
+ - Nemotron models default stream=true (SSE) and thinking=ON - thinking
       leaks a reasoning trace into content and blows past our token budget.
       The official off-switch is chat_template_kwargs.enable_thinking=false.
-    - gpt-oss supports reasoning_effort; 'low' keeps it fast — its reasoning
+ - gpt-oss supports reasoning_effort; 'low' keeps it fast - its reasoning
       goes to a separate reasoning_content field, so content stays clean.
-    - Providers can add their own request_options in llm_providers.json; those
+ - Providers can add their own request_options in llm_providers.json; those
       are merged on top. If request_options has an "extra_body" key it is
       merged into extra_body; every other key is passed through as-is.
     """
@@ -188,7 +181,7 @@ def _model_kwargs(model: str, style: str = "nvidia", request_options: Optional[d
 
 def _endpoint_errors() -> tuple:
     """Exception types meaning 'this model/endpoint is unavailable right now'
-    — safe to fall back to the next model. Everything else (application
+ - safe to fall back to the next model. Everything else (application
     errors, fakes raising RuntimeError in tests, bugs in our own code) must
     propagate immediately instead of being retried against every model."""
     from openai import APIError
@@ -229,7 +222,7 @@ def _complete(client, messages: list[dict], max_tokens: int) -> str:
                 if attempt < ENDPOINT_RETRY_ATTEMPTS:
                     delay = random.uniform(*ENDPOINT_RETRY_BACKOFF) * attempt
                     logger.warning(
-                        "LLM call failed on %s (%s: %s) — attempt %d/%d, retrying same model in %.1fs.",
+                        "LLM call failed on %s (%s: %s) - attempt %d/%d, retrying same model in %.1fs.",
                         model,
                         type(e).__name__,
                         str(e)[:200],
@@ -240,7 +233,7 @@ def _complete(client, messages: list[dict], max_tokens: int) -> str:
                     time.sleep(delay)
                     continue
                 logger.warning(
-                    "LLM call failed on %s after %d attempts (%s: %s) — trying next model.",
+                    "LLM call failed on %s after %d attempts (%s: %s) - trying next model.",
                     model,
                     ENDPOINT_RETRY_ATTEMPTS,
                     type(e).__name__,
@@ -275,7 +268,7 @@ def _call_llm(
     system_prompt: str, user_content: str, *, max_tokens: int = NVIDIA_MAX_TOKENS, client=None, purpose: str = ""
 ) -> dict:
     """Forces JSON-only output. Retries once with a correction message on
-    unparseable output, then raises — no silent fallback, that's
+    unparseable output, then raises - no silent fallback, that's
     deliberately deferred scope (see module docstring)."""
     messages = [
         {"role": "system", "content": system_prompt},
@@ -298,7 +291,7 @@ def _call_llm(
             llm_cache.put(cache_key, data)
         return data
 
-    logger.warning("LLM returned non-JSON on first try (%r) — retrying once with a correction nudge.", raw[:120])
+    logger.warning("LLM returned non-JSON on first try (%r) - retrying once with a correction nudge.", raw[:120])
     messages.append({"role": "assistant", "content": raw})
     messages.append(
         {
@@ -384,7 +377,7 @@ def normalize_product(gem_product: dict, *, client=None) -> dict:
         "search_queries": _as_str_list(data.get("search_queries"))
         or ([gem_product.get("title")] if gem_product.get("title") else []),
         # Category/specs/price kept on the normalized identity so verify can
-        # price-sanity-gate and expand knows the category — identity-only was
+        # price-sanity-gate and expand knows the category - identity-only was
         # letting a ₹15k listing "match" a ₹2.7k reference at high confidence.
         "category_slug": gem_product.get("category_slug", ""),
         "specs": gem_product.get("specs") or {},
@@ -528,7 +521,7 @@ Rules:
 
 
 def find_similar(normalized: dict, listings: list[dict], *, client=None) -> list[dict]:
-    """One LLM call (Stage 6.5): pick, out of the listings a run already
+    """One LLM call: pick, out of the listings a run already
     fetched, the ones that are a similar product rather than the same one.
     Returns [{shop, title, price, url, why}] cheapest first. The caller only
     runs this when nothing matched at all, and the result is never used for

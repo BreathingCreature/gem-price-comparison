@@ -2,7 +2,7 @@
 
 search_direct stops as soon as a query returns ENOUGH relevant cards, so the
 query that would have held the exact listing can stay unrun. The lane now
-retries once with the next unused query when it confirmed nothing — never
+retries once with the next unused query when it confirmed nothing - never
 after a confirmed match, never more than one extra search, and never twice
 for the same URL.
 """

@@ -1,4 +1,4 @@
-"""Stage 6.1: the pre-filter's hard caps, safety net and drop log.
+"""the pre-filter's hard caps, safety net and drop log.
 
 The filter decisions here are pure functions of the product and the listing
 titles, so nothing is faked beyond the CandidateResult objects themselves.

@@ -26,7 +26,7 @@ An empty value means "use the default".
 | Setting | Default | What it does | Risk |
 |---|---|---|---|
 | `LLM_CACHE` | `0` | Remember LLM answers on disk | Replayed answers may be stale after a prompt change |
-| `LLM_CACHE_DIR` | `cache/llm` | Where those answers live | — |
+| `LLM_CACHE_DIR` | `cache/llm` | Where those answers live | - |
 | `LLM_CACHE_TAG` | (empty) | Extra tag in the cache key | Use one per model when comparing models |
 
 ## Result and cache
@@ -83,5 +83,5 @@ An empty value means "use the default".
 | `tokens_per_minute` | none | 60 s moving token budget; a call is held until it fits |
 | `tokens_used` / `used_up` | (state) | Learned state saved under `cache/`, survives a restart |
 
-The "fast profile" page that used to live here has been merged into this table:
+The fast-profile settings are part of this table:
 everything it recommended is now the default.

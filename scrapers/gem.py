@@ -3,13 +3,12 @@ GeM product extractor: one product page in, GemProduct out.
 
 Input: a single GeM product URL
        (mkp.gem.gov.in/<category>/<product>/p-<id>-<id>-cat.html)
-Output: a GemProduct — see the dataclass below.
+Output: a GemProduct - see the dataclass below.
 
-No browser needed. GeM's product pages are server-rendered HTML; a real
-(even headless, even anti-detection-masked) browser actually gets blocked
-here. Plain requests + BeautifulSoup works. See the build spec doc, section
-0, for how that was confirmed. This is the opposite situation from
-Amazon/Flipkart, which DO need a real browser — don't copy this
+No browser is needed. GeM's product pages are server-rendered HTML; a real
+(even headless, even anti-detection-masked) browser gets blocked here.
+Plain requests + BeautifulSoup work. This is the opposite situation from
+Amazon/Flipkart, which do need a real browser, so do not copy this
 module's approach over there.
 """
 from __future__ import annotations
@@ -43,7 +42,7 @@ class GemProduct:
     # {"low", "high", "kind"} where kind is fixed | l1 | range | unknown.
     # gem_price stays the low end so old callers keep one number.
     price: Optional[dict] = None
-    # Which CSS selector produced the price — a trace field, so a layout
+    # Which CSS selector produced the price - a trace field, so a layout
     # change can be seen without guessing.
     price_selector: str = ""
 
@@ -76,7 +75,7 @@ _URL_RE = re.compile(r"^/([^/]+)/([^/]+)/p-[\d-]+-cat\.html")
 def parse_gem_url(url: str) -> tuple[str, str]:
     """Pull (category_slug, product_slug) straight out of the URL path.
     Returns ("", "") if the URL doesn't match GeM's known product-page
-    pattern — caller decides whether that's fatal."""
+    pattern - caller decides whether that's fatal."""
     path = urlparse(url).path
     m = _URL_RE.match(path)
     if not m:
@@ -85,9 +84,9 @@ def parse_gem_url(url: str) -> tuple[str, str]:
 
 
 # --- price classification -----------------------------------------------------
-# Ported from the old repo's classify_price() — same logic, same price types,
-# because GeM pricing isn't always a single clean number (reverse-auction
-# pricing means "range" and "L1_rate" show up regularly).
+# Same price types as the rest of the project, because GeM pricing isn't
+# always a single clean number (reverse-auction pricing means "range" and
+# "L1_rate" show up regularly).
 
 _NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 # A real range needs an actual range shape: two amounts joined by a dash
@@ -102,7 +101,7 @@ _RANGE_RE = re.compile(
 
 def _match_to_float(match: Optional[re.Match]) -> Optional[float]:
     """float() a number match, stripping a trailing comma from it first.
-    Extracted here so a malformed match can never crash the run — an
+    Extracted here so a malformed match can never crash the run - an
     unusable number is honestly None, not an exception."""
     if not match:
         return None
@@ -120,12 +119,12 @@ def classify_price(text: str) -> tuple[Optional[float], str]:
     if not t:
         return None, "unknown"
     if "l1" in low or "lowest quoted" in low:
-        # Strip the "L1" token itself first — otherwise the '1' in 'L1' gets
+        # Strip the "L1" token itself first - otherwise the '1' in 'L1' gets
         # picked up as the price by the regex below instead of the real value.
         stripped = re.sub(r"\bl-?1\b", "", t, flags=re.IGNORECASE)
         return _match_to_float(_NUM_RE.search(stripped)), "L1_rate"
     # "Our Price: ₹2,725.00 17% You Save: ₹570.00" contains several numbers
-    # but is a single fixed price — keyword forms must not be read as a range.
+    # but is a single fixed price - keyword forms must not be read as a range.
     if any(k in low for k in ("our price", "final price", "offer price", "our_price")):
         value = _match_to_float(_NUM_RE.search(t))
         if value is not None:
@@ -162,11 +161,11 @@ def classify_price_range(text: str) -> dict:
 
 # --- HTML extraction -----------------------------------------------------------
 # Price selectors in priority order, proven against the live detail template
-# (2026-09): the page exposes .final-price / .our_price / .offer_price /
-# .add-to-cart-price — the OLD selectors below (.variant-final-price, bare
-# .price) match nothing on detail pages, which is why gem_price used to come
+# The page exposes .final-price / .our_price / .offer_price /
+# .add-to-cart-price - the OLD selectors below (.variant-final-price, bare
+# .price) match nothing on detail pages, so gem_price comes
 # back null. Legacy selectors kept last for listing-style pages/tests.
-# Never prefer .list_price / .strike — that's MRP, not the selling price.
+# Never prefer .list_price / .strike - that's MRP, not the selling price.
 
 _PRICE_SELECTORS_PRIORITY = (
     ".final-price",
@@ -201,7 +200,7 @@ def _extract_specs(soup: BeautifulSoup) -> dict:
     """Generic key:value spec-table scraper. GeM's spec block structure
     varies by category, so this looks for common table/dl row patterns
     instead of one hardcoded selector. This is a best-effort starting
-    point — tighten it once you've seen a real page's actual markup."""
+    point - tighten it once you've seen a real page's actual markup."""
     specs: dict[str, str] = {}
 
     for row in soup.select("table tr"):
@@ -233,8 +232,8 @@ def _spec_value(specs: dict, names: set) -> Optional[str]:
 
 def _guess_brand_model(title: str) -> tuple[Optional[str], Optional[str]]:
     """Very light heuristic: first word of the title as brand (case-
-    insensitive — real GeM titles often start lowercase, e.g. "logitech
-    Wireless Computer Mouse"). Intentionally weak — the LLM normalizer
+    insensitive - real GeM titles often start lowercase, e.g. "logitech
+    Wireless Computer Mouse"). Intentionally weak - the LLM normalizer
     does the real identity extraction. This just gives it a head start, and
     is a fallback if that LLM call fails."""
     if not title:
@@ -247,7 +246,7 @@ def _guess_brand_model(title: str) -> tuple[Optional[str], Optional[str]]:
     return brand, None
 
 
-# --- fetch with one small retry (D4) -------------------------------------------
+# --- fetch with one small retry -------------------------------------------
 # One timeout, reset connection or 5xx during a burst shouldn't kill a whole
 # run over a failure the next attempt would have survived.
 
@@ -258,7 +257,7 @@ _RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
 
 def _is_retryable_fetch_error(exc: BaseException) -> bool:
     """Transient-only retry policy: ConnectionError, Timeout and HTTP
-    500/502/503/504. A 404 or 403 means the page itself said no — retrying
+    500/502/503/504. A 404 or 403 means the page itself said no - retrying
     those just burns seconds."""
     if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
         return True
@@ -282,7 +281,7 @@ def _fetch_gem_page(url: str, sess, headers: dict):
             if attempt >= _MAX_FETCH_ATTEMPTS or not _is_retryable_fetch_error(exc):
                 raise
             logger.warning(
-                "GeM fetch failed (%s: %s), attempt %d/%d for %s — retrying in %.0fs.",
+                "GeM fetch failed (%s: %s), attempt %d/%d for %s - retrying in %.0fs.",
                 type(exc).__name__,
                 str(exc)[:120],
                 attempt,
@@ -317,7 +316,7 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
     model = model or _spec_value(specs, {"model", "model number", "model no", "model name"})
 
     # A page with neither a title nor a price is a block page, a captcha or
-    # a changed layout — an empty product here would just burn LLM calls on
+    # a changed layout - an empty product here would just burn LLM calls on
     # nothing downstream. Say so loudly instead of playing along.
     if not title and price_value is None:
         raise RuntimeError(
@@ -327,7 +326,7 @@ def extract_gem_product(url: str, *, session: Optional[requests.Session] = None)
 
     if not title:
         logger.warning(
-            "No title extracted from %s — selectors may not match this page's template.",
+            "No title extracted from %s - selectors may not match this page's template.",
             url,
         )
 

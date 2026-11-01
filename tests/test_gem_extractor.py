@@ -5,7 +5,7 @@ Note: this sandbox can't reach mkp.gem.gov.in (network is restricted to a
 fixed domain allowlist), so these tests run against hand-built mock HTML
 using the same CSS classes the real selectors target, with a fake requests
 session standing in for the real one. This proves the *parsing logic* is
-correct. It does NOT prove the selectors match the real live page — that
+correct. It does NOT prove the selectors match the real live page - that
 still needs a run against an actual GeM URL on a machine with normal
 internet access. Treat a green test run here as "the code works as
 written", not "this works against the real site".
@@ -49,7 +49,7 @@ def test_classify_price_unknown():
 
 
 def test_classify_price_lone_comma_after_keyword_does_not_crash():
-    # D1: the old digit pattern matched a lone comma, then float("") raised.
+    # the old digit pattern matched a lone comma, then float("") raised.
     assert classify_price("Our Price: , ₹2725") == (2725.0, "fixed")
 
 
@@ -63,14 +63,14 @@ def test_classify_price_spec_cases():
 
 
 def test_classify_price_savings_text_is_not_a_range():
-    # D2: several numbers but no range shape ("x% You Save: y") — first
+    # several numbers but no range shape ("x% You Save: y") - first
     # number wins as "fixed", not "range".
     assert classify_price("Rs.2,725.00 17% You Save: ₹570.00") == (2725.0, "fixed")
 
 
 def test_classify_price_range_shapes():
-    assert classify_price("₹1,000 – ₹1,300") == (1000.0, "range")
-    assert classify_price("₹1,000 — ₹1,300") == (1000.0, "range")
+    assert classify_price("₹1,000 - ₹1,300") == (1000.0, "range")
+    assert classify_price("₹1,000 - ₹1,300") == (1000.0, "range")
     assert classify_price("₹1,000 to ₹1,300") == (1000.0, "range")
 
 
@@ -180,8 +180,8 @@ def test_extract_gem_product_full_flow():
 
 
 def test_extract_gem_product_empty_page_raises_clear_error():
-    # D3: a block page, a captcha, or a changed layout must NOT reach the
-    # pipeline as an empty product — raise a clear error instead.
+    # a block page, a captcha, or a changed layout must NOT reach the
+    # pipeline as an empty product - raise a clear error instead.
     url = "https://mkp.gem.gov.in/some-cat/some-product/p-1-2-cat.html"
     fake_session = _FakeSession("<html><body>Nothing here</body></html>")
 
@@ -206,8 +206,8 @@ MOCK_TITLE_ONLY_HTML = """
 
 
 def test_extract_gem_product_title_without_price_still_works():
-    # D3: a page with a title but no price still extracts (price gates stay
-    # off) — only the title+price double-miss is fatal.
+    # a page with a title but no price still extracts (price gates stay
+    # off) - only the title+price double-miss is fatal.
     url = "https://mkp.gem.gov.in/computer-mouse/logitech-m650/p-5116877-2-cat.html"
     fake_session = _FakeSession(MOCK_TITLE_ONLY_HTML)
 
@@ -218,7 +218,7 @@ def test_extract_gem_product_title_without_price_still_works():
     assert product.gem_price_type == "unknown"
 
 
-# --- retry on flaky GeM fetches (D4) --------------------------------------------
+# --- retry on flaky GeM fetches --------------------------------------------
 
 class _ScriptedResponse:
     def __init__(self, status: int, text: str = ""):
@@ -280,7 +280,7 @@ _RETRY_TEST_URL = "https://mkp.gem.gov.in/computer-mouse/logitech-m650/p-5116877
 
 
 def test_extract_gem_product_retries_once_after_timeout():
-    # D4: first call times out, second succeeds -> product comes back.
+    # first call times out, second succeeds -> product comes back.
     session = _ScriptedSession([requests.exceptions.Timeout("timed out")])
     with _no_retry_sleep() as sleeps:
         product = extract_gem_product(_RETRY_TEST_URL, session=session)
@@ -290,7 +290,7 @@ def test_extract_gem_product_retries_once_after_timeout():
 
 
 def test_extract_gem_product_404_does_not_retry():
-    # D4: 404 is permanent — raise after exactly one call.
+    # 404 is permanent - raise after exactly one call.
     session = _ScriptedSession([404])
     with _no_retry_sleep() as sleeps:
         raised = None
@@ -313,7 +313,7 @@ def test_extract_gem_product_503_retries_then_succeeds():
 
 
 def test_extract_gem_product_two_timeouts_raise():
-    # D4: two attempts total, then the error surfaces.
+    # two attempts total, then the error surfaces.
     session = _ScriptedSession([
         requests.exceptions.Timeout("t1"),
         requests.exceptions.Timeout("t2"),

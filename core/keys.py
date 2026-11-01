@@ -1,19 +1,19 @@
 """One listing, one key.
 
 The pipeline dedups candidates by URL and the eval scorer matches predicted
-URLs against the answer key. Both used to keep their own rule and quietly
-disagreed about query strings: a listing could be "the same listing" during
+URLs against the answer key. Keeping one rule in one place means the run
+and the scorer cannot disagree about query strings: a listing could be "the same listing" during
 a run and two different listings during scoring. Everything now goes through
 listing_key(), so the two can never drift apart.
 
 The rules:
-  - host lowercased, a leading "www." removed, fragment ignored
-  - path kept, trailing "/" removed
-  - tracking parameters dropped (utm_*, ref, tag, gclid, fbclid, ...)
-  - real variant parameters kept (pid, lid, variant, color, size, th, ...)
-  - remaining parameters sorted by name
-  - Amazon: only the 10-character ASIN matters -> "amazon.in/dp/<asin>"
-  - Flipkart: the pid (and lid when present) identifies the listing;
+ - host lowercased, a leading "www." removed, fragment ignored
+ - path kept, trailing "/" removed
+ - tracking parameters dropped (utm_*, ref, tag, gclid, fbclid, ...)
+ - real variant parameters kept (pid, lid, variant, color, size, th, ...)
+ - remaining parameters sorted by name
+ - Amazon: only the 10-character ASIN matters -> "amazon.in/dp/<asin>"
+ - Flipkart: the pid (and lid when present) identifies the listing;
     the title slug in the path does not
 """
 from __future__ import annotations

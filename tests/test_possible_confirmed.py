@@ -1,9 +1,9 @@
 """A same-product verdict with no price is confirmed only when the listing
 itself proves the identity (model code, or brand + two product words).
 
-Before this, such a listing stayed "possible" forever even when the page was
-the manufacturer's own product page: the price gate demanded a number.
-The price still stays None — unknown is reported as unknown.
+Without that proof the listing stays "possible" even when the page is the
+manufacturer's own product page, because the price gate demands a number.
+The price still stays None - unknown is reported as unknown.
 """
 import sys
 from pathlib import Path
