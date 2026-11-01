@@ -40,6 +40,15 @@ def test_the_api_routes_are_not_hidden_by_the_static_files():
     assert _client().get("/api/health").json()["ok"] is True
 
 
+def test_the_page_explains_what_to_do_when_no_llm_is_ready():
+    html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    script = (FRONTEND_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'id="llm-banner"' in html
+    assert "NVIDIA_API_KEY" in html
+    assert "llm_providers.example.json" in html
+    assert "renderLlmBanner" in script
+
+
 def test_the_script_only_calls_routes_that_exist():
     script = (FRONTEND_DIR / "app.js").read_text(encoding="utf-8")
     called = set(re.findall(r'API\s*\+\s*"(/api/[a-z/]+)', script))

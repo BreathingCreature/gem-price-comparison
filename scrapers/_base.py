@@ -20,11 +20,19 @@ changes how those parts get wired, even though they're not built yet.
 """
 from __future__ import annotations
 
+import atexit
+import os
 import random
 import re
+import signal
+import subprocess
+import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Optional
+
+from core.config import logger
 
 
 def parse_indian_price(text: Optional[str]) -> Optional[str]:
@@ -143,6 +151,146 @@ def resolve_chromedriver() -> str:
     return SeleniumManager().binary_paths(["--browser", "chrome"])["driver_path"]
 
 
+# --- leftover driver cleanup -------------------------------------------------
+# Every driver built here is remembered until it is quit. A crash or Ctrl+C
+# therefore cannot leave Chrome and chromedriver behind. Only PIDs belonging
+# to drivers this process started are ever passed to the killer.
+
+_LIVE_DRIVERS: dict[int, object] = {}
+_LIVE_BROWSERS: dict[int, object] = {}
+_PREVIOUS_HANDLERS: dict = {}
+_HOOK_LOCK = threading.Lock()
+_HOOKS_INSTALLED = False
+_SIGNALS_INSTALLED = False
+
+
+def _driver_pid(driver) -> Optional[int]:
+    process = getattr(getattr(driver, "service", None), "process", None)
+    pid = getattr(process, "pid", None)
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
+def _process_running(driver) -> bool:
+    process = getattr(getattr(driver, "service", None), "process", None)
+    poll = getattr(process, "poll", None)
+    if not callable(poll):
+        return True
+    try:
+        return poll() is None
+    except Exception:
+        return True
+
+
+def register_driver(driver) -> None:
+    if driver is None:
+        return
+    with _HOOK_LOCK:
+        _LIVE_DRIVERS[id(driver)] = driver
+    install_cleanup_hooks()
+
+
+def forget_driver(driver) -> None:
+    with _HOOK_LOCK:
+        _LIVE_DRIVERS.pop(id(driver), None)
+
+
+def register_browser(browser) -> None:
+    if browser is None:
+        return
+    with _HOOK_LOCK:
+        _LIVE_BROWSERS[id(browser)] = browser
+    install_cleanup_hooks()
+
+
+def forget_browser(browser) -> None:
+    with _HOOK_LOCK:
+        _LIVE_BROWSERS.pop(id(browser), None)
+
+
+def _kill_pid_tree(pid: int) -> None:
+    """Stop one process tree this process started. Never called with a pid
+    from anywhere else."""
+    if os.name == "nt":
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        return
+    with suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+
+
+def cleanup_drivers() -> None:
+    """Close every browser and driver this process still owns. Safe to call
+    more than once: the registry is emptied before anything is closed."""
+    with _HOOK_LOCK:
+        browsers = list(_LIVE_BROWSERS.values())
+        _LIVE_BROWSERS.clear()
+
+    for browser in browsers:
+        try:
+            browser.close()
+        except Exception:
+            logger.warning("Could not close a leftover browser.", exc_info=True)
+
+    with _HOOK_LOCK:
+        drivers = list(_LIVE_DRIVERS.values())
+        _LIVE_DRIVERS.clear()
+
+    for driver in drivers:
+        with suppress(Exception):
+            driver.quit()
+        pid = _driver_pid(driver)
+        if pid is not None and _process_running(driver):
+            _kill_pid_tree(pid)
+
+
+def _handle_cleanup_signal(signum, frame):
+    cleanup_drivers()
+    previous = _PREVIOUS_HANDLERS.get(signum)
+    if callable(previous):
+        return previous(signum, frame)
+    if signum == getattr(signal, "SIGINT", None):
+        raise KeyboardInterrupt
+    raise SystemExit(128 + signum)
+
+
+def install_cleanup_hooks() -> None:
+    """Register atexit once, and take the signals as soon as a main thread
+    can. A driver built on a worker thread cannot install signal handlers,
+    so the next registration from the main thread retries them."""
+    global _HOOKS_INSTALLED, _SIGNALS_INSTALLED
+    with _HOOK_LOCK:
+        first = not _HOOKS_INSTALLED
+        _HOOKS_INSTALLED = True
+    if first:
+        atexit.register(cleanup_drivers)
+
+    with _HOOK_LOCK:
+        if _SIGNALS_INSTALLED:
+            return
+    complete = True
+    for name in ("SIGINT", "SIGTERM"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            previous = signal.getsignal(signum)
+            if previous is _handle_cleanup_signal:
+                continue
+            signal.signal(signum, _handle_cleanup_signal)
+        except (ValueError, OSError):
+            complete = False
+            continue
+        _PREVIOUS_HANDLERS[signum] = previous
+    if complete:
+        with _HOOK_LOCK:
+            _SIGNALS_INSTALLED = True
+
+
 def build_stealth_driver(light: bool = False):
     """Headless Chrome with the automation tells masked. Not a CAPTCHA
     bypass - just stops the driver announcing itself as a bot before a
@@ -158,12 +306,19 @@ def build_stealth_driver(light: bool = False):
     from selenium import webdriver
 
     driver = webdriver.Chrome(options=_plain_chrome_options(light=light))
-    driver.set_page_load_timeout(60)  # Amazon regularly exceeds 45s from here
-    driver.set_script_timeout(30)
-    driver.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
-    )
+    register_driver(driver)
+    try:
+        driver.set_page_load_timeout(60)  # Amazon regularly exceeds 45s from here
+        driver.set_script_timeout(30)
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
+        )
+    except Exception:
+        forget_driver(driver)
+        with suppress(Exception):
+            driver.quit()
+        raise
     return driver
 
 

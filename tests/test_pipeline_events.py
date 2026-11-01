@@ -1,5 +1,6 @@
 """run_pipeline should narrate what it is doing, in order, through on_event."""
 import json
+import logging
 
 from core import pipeline
 from llm.match import MatchBatchResult
@@ -148,3 +149,41 @@ def test_running_without_a_listener_still_works():
         match_fn=lambda n, c: MatchBatchResult(), expand_search_fn=_no_expansion,
     )
     assert result["matches"] == []
+
+
+def test_the_summary_line_counts_seconds_matches_calls_and_failures(monkeypatch):
+    ctx = pipeline.RunContext(
+        "https://mkp.gem.gov.in/x",
+        False,
+        True,
+        "trace",
+        {
+            "events": [
+                {"type": "llm_call", "ok": True},
+                {"type": "llm_call", "ok": False},
+                {"type": "stage", "name": "match"},
+            ]
+        },
+    )
+    ctx.confirmed = [{"shop": "a"}, {"shop": "b"}]
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: ctx.started_monotonic + 12.34)
+
+    assert pipeline._summary_line(ctx) == (
+        "Run summary: 12.3 s, 2 match(es), 2 LLM call(s), 1 LLM failure(s)."
+    )
+
+
+def test_a_finished_run_logs_the_summary_at_info(caplog):
+    from api import demo
+
+    caplog.set_level(logging.INFO, logger="gem_compare")
+    original_pause = demo._pause
+    demo._pause = lambda *_args, **_kwargs: None
+    try:
+        demo.demo_runner("https://mkp.gem.gov.in/demo/p-123.html", False, lambda _event: None)
+    finally:
+        demo._pause = original_pause
+
+    summary = [record.getMessage() for record in caplog.records if record.getMessage().startswith("Run summary:")]
+    assert len(summary) == 1
+    assert "match(es)" in summary[0] and "LLM call(s)" in summary[0] and "LLM failure(s)" in summary[0]

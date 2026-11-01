@@ -1010,6 +1010,7 @@ class RunContext:
     use_cache: bool
     trace_id: str
     trace: dict
+    started_monotonic: float = field(default_factory=time.monotonic)
     warnings: list = field(default_factory=list)
     lane_seconds: dict = field(default_factory=dict)
     flipkart_browser: object = None
@@ -1584,6 +1585,16 @@ def similar_pass(ctx: RunContext) -> None:
     ctx.trace["stages"]["similar"] = ctx.similar
 
 
+def _summary_line(ctx: RunContext) -> str:
+    calls = [event for event in ctx.trace.get("events") or [] if event.get("type") == "llm_call"]
+    failures = sum(1 for event in calls if not event.get("ok"))
+    seconds = time.monotonic() - ctx.started_monotonic
+    return (
+        f"Run summary: {seconds:.1f} s, {len(ctx.confirmed)} match(es), "
+        f"{len(calls)} LLM call(s), {failures} LLM failure(s)."
+    )
+
+
 def finish(ctx: RunContext) -> None:
     final_possible = list(getattr(ctx.final_match_result, "possible_matches", []) or [])
     final_shops = _shop_entries(
@@ -1644,6 +1655,7 @@ def finish(ctx: RunContext) -> None:
         logger.info("Not caching this run: %d search issue(s) reported.", len(ctx.search_issues))
     else:
         _cache_set(ctx.gem_url, result)
+    logger.info(_summary_line(ctx))
 
 
 def _run_pipeline(

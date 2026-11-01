@@ -25,6 +25,18 @@ In VS Code: open the folder, `Ctrl+Shift+P` → "Python: Select Interpreter" →
 `.venv`, then use the integrated terminal. The project needs Python 3.10 or
 newer (3.12 is what CI uses).
 
+## One command
+
+`start.cmd` runs the offline doctor checks, refuses to start when no LLM
+endpoint is ready, picks port 8000 or the next free one, and opens the page.
+It activates `.venv` when that folder exists. On Windows:
+
+```bat
+start.cmd
+```
+
+On any OS, `python serve.py` does the same.
+
 ## Keys
 
 Two example files, both copied and kept out of git:

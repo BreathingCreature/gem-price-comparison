@@ -27,7 +27,17 @@ from bs4 import BeautifulSoup
 
 from core import prefilter
 from core.config import CACHE_DIR, FLIPKART_LIGHT, logger
-from scrapers._base import CandidateResult, SearchScrapeResult, build_stealth_driver, detect_block, parse_indian_price
+from scrapers._base import (
+    CandidateResult,
+    SearchScrapeResult,
+    build_stealth_driver,
+    detect_block,
+    forget_browser,
+    forget_driver,
+    parse_indian_price,
+    register_browser,
+    register_driver,
+)
 
 DEBUG_DIR = CACHE_DIR.parent / "debug_html"
 DEBUG_DIR.mkdir(exist_ok=True)
@@ -483,6 +493,7 @@ def search(query: str, max_results: int = 15, max_pages: int = 3, product: set[s
     finally:
         with suppress(Exception):
             driver.quit()
+        forget_driver(driver)
 
 
 def _build_default_driver():
@@ -524,6 +535,7 @@ class FlipkartBrowser:
         self._thread: threading.Thread | None = None
         self._closed = False
         self._rebuilt = False
+        register_browser(self)
 
     def start(self) -> None:
         """Build the driver in the background. Calling it twice is harmless."""
@@ -535,6 +547,7 @@ class FlipkartBrowser:
     def _build(self) -> None:
         try:
             self._driver = self._build_driver()
+            register_driver(self._driver)
         except Exception as e:
             self._start_error = e
             logger.warning("Flipkart Chrome could not start: %s: %s", type(e).__name__, e)
@@ -573,22 +586,29 @@ class FlipkartBrowser:
         if old is not None:
             with suppress(Exception):
                 old.quit()
+            forget_driver(old)
         logger.warning("Flipkart Chrome died - rebuilding it once for this run.")
         self._driver = self._build_driver()
+        register_driver(self._driver)
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._thread is not None:
-            self._ready.wait()  # a half-built Chrome must not leak
-        driver = self._driver
-        if driver is None:
-            return
         try:
-            driver.quit()
-        except Exception:
-            logger.warning("Flipkart Chrome did not close cleanly.", exc_info=True)
+            if self._thread is not None:
+                self._ready.wait()  # a half-built Chrome must not leak
+            driver = self._driver
+            if driver is None:
+                return
+            try:
+                driver.quit()
+            except Exception:
+                logger.warning("Flipkart Chrome did not close cleanly.", exc_info=True)
+            finally:
+                forget_driver(driver)
+        finally:
+            forget_browser(self)
 
 
 if __name__ == "__main__":
