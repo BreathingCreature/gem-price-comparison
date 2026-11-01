@@ -13,21 +13,26 @@ The contract (routes, event types, result v2) is written down in docs/api.md.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
+import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import requests
 from pydantic import BaseModel
 
 from api.jobs import JobManager
@@ -47,8 +52,8 @@ SSE_HEARTBEAT_SECONDS = 15.0
 MAX_EVENT_STREAMS = 8
 TRACE_TEXT_LIMIT = 1000
 CSP = (
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-    "connect-src 'self'; base-uri 'none'; form-action 'self'"
+    "default-src 'self'; img-src 'self' data: https://*.gem.gov.in; style-src 'self'; "
+    "script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'"
 )
 _TRACE_TEXT_KEYS = ("raw_page_text", "page_text", "html", "raw_html")
 
@@ -197,7 +202,141 @@ def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
     return entries[:limit]
 
 
+_ICON_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{2,99}$")
+_ICON_CACHE_MAX_AGE = 86400
+
+
+def _same_registrable_domain(host: str, domain: str) -> bool:
+    host = (host or "").lower().rstrip(".")
+    domain = (domain or "").lower().rstrip(".")
+    return host == domain or host.endswith("." + domain) or domain.endswith("." + host)
+
+
+def _host_is_public(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def _url_safe_for_icon(url: str, domain: str, *, allowed_prefix: str = "image/", max_bytes: int = 100000) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host or not _same_registrable_domain(host, domain):
+        return False
+    if not _host_is_public(host):
+        return False
+    return True
+
+
+def _safe_icon_get(url: str, domain: str, *, allowed_prefix: str = "image/", max_bytes: int = 100000):
+    """Fetch one URL with the icon safety rules. Returns (bytes, content_type) or None."""
+    from urllib.parse import urljoin
+
+    current = url
+    redirects = 0
+    while True:
+        if not _url_safe_for_icon(current, domain):
+            return None
+        try:
+            response = requests.get(current, timeout=3, allow_redirects=False, stream=True)
+        except Exception:
+            return None
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location")
+            response.close()
+            if not location or redirects >= 2:
+                return None
+            nxt = urljoin(current, location)
+            if not _url_safe_for_icon(nxt, domain):
+                return None
+            redirects += 1
+            current = nxt
+            continue
+        try:
+            data = response.content
+        finally:
+            response.close()
+        if response.status_code != 200:
+            return None
+        if len(data) > max_bytes:
+            return None
+        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not content_type.startswith(allowed_prefix):
+            return None
+        return data, content_type
+
+
+def _domain_in_saved_runs(domain: str, manager) -> bool:
+    jobs = getattr(manager, "_jobs", {}) or {}
+    for job in jobs.values():
+        if domain in json.dumps(job, default=str):
+            return True
+    try:
+        for record in runs_store.list_runs():
+            if domain in json.dumps(record, default=str):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _fetch_site_icon(domain: str, cache_dir: Path):
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    data_path = cache_dir / f"{domain}.bin"
+    type_path = cache_dir / f"{domain}.ctype"
+    if data_path.exists() and type_path.exists():
+        try:
+            age = time.time() - data_path.stat().st_mtime
+            if age < _ICON_CACHE_MAX_AGE:
+                return data_path.read_bytes(), type_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+
+    result = _safe_icon_get(f"https://{domain}/favicon.ico", domain)
+    if result is None:
+        home = _safe_icon_get(f"https://{domain}/", domain, allowed_prefix="text/html", max_bytes=200000)
+        if home is not None:
+            try:
+                html = home[0].decode("utf-8", "replace")
+            except Exception:
+                html = ""
+            match = re.search(r'<link[^>]+rel=["\']?[^"\']*icon[^"\']*["\']?[^>]*href=["\']([^"\']+)["\']', html, re.I)
+            if match:
+                from urllib.parse import urljoin
+
+                icon_url = urljoin(f"https://{domain}/", match.group(1))
+                result = _safe_icon_get(icon_url, domain)
+
+    if result is None:
+        return None
+    data, content_type = result
+    if not content_type.startswith("image/") or len(data) > 100000:
+        return None
+    try:
+        data_path.write_bytes(data)
+        type_path.write_text(content_type, encoding="utf-8")
+    except OSError:
+        pass
+    return data, content_type
+
+
 def create_app(
+
+
     runner: Optional[Callable] = None,
     *,
     demo: Optional[bool] = None,
@@ -365,6 +504,22 @@ def create_app(
         except Exception as exc:  # a broken llm_providers.json should be visible, not a crash
             return {"error": redact(f"{type(exc).__name__}: {exc}"), "endpoints": []}
         return {"strategy": router.strategy, "endpoints": router.status()}
+
+    @app.get("/api/icon/{domain}")
+    def site_icon(domain: str):
+        if not _ICON_DOMAIN_RE.match(domain):
+            raise HTTPException(status_code=404, detail="Unknown domain.")
+        if not _domain_in_saved_runs(domain, manager):
+            raise HTTPException(status_code=404, detail="Unknown domain.")
+        result = _fetch_site_icon(domain, pipeline.CACHE_DIR / "icons")
+        if result is None:
+            return Response(status_code=204)
+        data, content_type = result
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={"Cache-Control": f"max-age={_ICON_CACHE_MAX_AGE}"},
+        )
 
     @app.get("/api/traces/{trace_id}")
     def get_trace(trace_id: str):

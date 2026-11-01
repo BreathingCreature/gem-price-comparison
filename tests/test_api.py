@@ -72,7 +72,7 @@ def test_health_says_whether_it_is_demo_mode(client):
 
 def test_every_response_carries_the_security_headers(client):
     expected = (
-        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+        "default-src 'self'; img-src 'self' data: https://*.gem.gov.in; style-src 'self'; script-src 'self'; "
         "connect-src 'self'; base-uri 'none'; form-action 'self'"
     )
     for path in ("/", "/api/health"):
