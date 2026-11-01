@@ -277,7 +277,7 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     assert [e["type"] for e in seen][-1] == "done"
 
 
-# --- B9: GEM_JOBS lets several runs share the server ----------------------
+# GEM_JOBS lets several runs share the server.
 
 def test_gem_jobs_two_runs_really_run_at_the_same_time(monkeypatch):
     monkeypatch.setenv("GEM_JOBS", "2")
@@ -327,7 +327,7 @@ def test_a_bad_gem_jobs_value_is_a_warning_not_a_crash(monkeypatch):
     run_id = client.post("/api/runs", json={"gem_url": GEM_URL}).json()["run_id"]
     assert wait_until_finished(client, run_id)["status"] == "done"
 
-# --- Stage 8: the API survives a restart and trims big traces --------------
+# The API survives a restart and trims big traces.
 
 def _saved_record(run_id="savedrun1"):
     return {

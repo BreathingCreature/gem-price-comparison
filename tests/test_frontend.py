@@ -1,5 +1,5 @@
 """
-Tests for frontend/app.js and frontend/render.js (Stage 8).
+Tests for frontend/app.js and frontend/render.js.
 
 There is no browser here. These are source checks plus one real Node run of
 render.js with a sample v2 result (the file is DOM-free on purpose).
