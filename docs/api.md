@@ -9,19 +9,25 @@ http://localhost:8000. The server is meant for your own machine, so it binds
 network. Set `GEM_DEMO=1` first to run a fake pipeline (no scraping, no LLM
 calls), which is the easy way to work on the frontend.
 
+Every response carries `Content-Security-Policy: default-src 'self'; img-src
+'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri
+'none'; form-action 'self'`, `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: no-referrer`. CORS is closed by default; set `CORS_ORIGINS` to
+a comma-separated allowlist only if another origin must call the API.
+
 ## Routes
 
 | Method and path | What it does |
 |---|---|
-| `GET /api/health` | `{"ok": true, "demo": false}` |
-| `POST /api/runs` | Body `{"gem_url": "...", "refresh": false}`. Starts a run, answers `202 {"run_id", "status"}`. Answers 422 if the link is not a gem.gov.in link (demo mode accepts any link). |
-| `GET /api/runs` | The 20 most recent runs, newest first. Live jobs come first, then the runs saved on disk, so the list survives a restart. Each item has `id`, `gem_url`, `title`, `state`, `status`, `cheapest_price`, `match_count`, `checked_at`, `from_cache`, `live`. |
-| `GET /api/runs/{id}` | A live job answers with `status`, `state` (`shown`, `done`, `failed`), timestamps, `result`, `error`, `live: true`. A finished run whose job is gone is read from disk (`live: false`), so a result can still be opened after a restart. 404 when neither knows the id. |
+| `GET /api/health` | `{"ok": true, "demo": false, "llm_ready": 4, "gates": {"low_ratio": 0.15, "high_ratio": 5.0, "min_confidence": 0.75}, "version": "abc1234"}`. `llm_ready` is the number of ready endpoints, or `null` when the router cannot be read or the server is in demo mode. `version` is the short git commit, or `null` when git is unavailable. |
+| `POST /api/runs` | Body `{"gem_url": "...", "refresh": false}`. Starts a run, answers `202 {"run_id", "status", "queue_position"}`. The same URL with the same `refresh` value returns the queued or running job instead of starting another. Answers 422 if the link is not a gem.gov.in link (demo mode accepts any link). |
+| `GET /api/runs` | The 20 most recent runs, newest first. Live jobs come first, then the runs saved on disk, so the list survives a restart. Each item has `id`, `gem_url`, `title`, `state`, `status`, `cheapest_price`, `saving_vs_gem`, `match_count`, `queue_position`, `checked_at`, `from_cache`, `live`. `queue_position` is 0 once the run starts or finishes. |
+| `GET /api/runs/{id}` | A live job answers with `status`, `state` (`shown`, `done`, `failed`), timestamps, `queue_position`, `result`, `error`, `live: true`. A finished run whose job is gone is read from disk (`live: false`), so a result can still be opened after a restart. 404 when neither knows the id. |
 | `GET /api/runs/{id}/events` | Server-sent events. Replays every event from the start, then follows the live run. `?after=N` (or the `Last-Event-ID` header) continues after event number N. Ends with `event: done` and `{"status": "done"}` or `"failed"`. |
-| `GET /api/llm/status` | The LLM router's view: strategy and, per endpoint, state (`ready`, `failing`, `cooling`, `disabled`, `limit`), calls, errors, average seconds, last error, `last_status` (HTTP code of the last failure, if any) and `last_failure_ago` (seconds). `failing` means its last call failed within the last 15 minutes and the router has not seen a success since — it will be retried, but it is not "ready". `cooling` carries the remaining seconds and the error that caused the rest. `limit` means the endpoint used up its allowance for today; the state survives a restart. `disabled` with `"retired": true` means the provider answered 404 for that model, and the next model in the list is used. |
-| `GET /api/traces/{trace_id}` | The saved trace JSON of a finished run (it includes every event). Long page text is cut to 1000 characters with a `… (trimmed)` suffix; set `GEM_DEBUG=1` on the server to get the raw text. |
+| `GET /api/llm/status` | The LLM router's view: strategy and, per endpoint, state (`ready`, `failing`, `cooling`, `disabled`, `limit`), calls, errors, average seconds, last error, `last_status` (HTTP code of the last failure, if any) and `last_failure_ago` (seconds). `failing` means its last call failed within the last 15 minutes and the router has not seen a success since: it will be retried, but it is not "ready". `cooling` carries the remaining seconds and the error that caused the rest. `limit` means the endpoint used up its allowance for today; the state survives a restart. `disabled` with `"retired": true` means the provider answered 404 for that model, and the next model in the list is used. |
+| `GET /api/traces/{trace_id}` | The saved trace JSON of a finished run (it includes every event). Long page text is cut to 1000 characters with a `... (trimmed)` suffix; set `GEM_DEBUG=1` on the server to get the raw text. |
 
-Only one run executes at a time by default (set `GEM_JOBS=2` to let two run together — Chrome and the shops tolerate that, not five). Others wait in `queued`.
+Only one run executes at a time by default (set `GEM_JOBS=2` to let two run together: Chrome and the shops tolerate that, not five). Others wait in `queued`.
 
 ## Events
 

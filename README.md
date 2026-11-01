@@ -81,6 +81,18 @@ can be opened again.
 Demo mode (`GEM_DEMO=1`) runs the real pipeline with fake pages, so you can work
 on the page with no keys and no network.
 
+![Start screen with the GeM link field and the five pipeline steps](docs/img/frontend-start.png)
+
+The start screen asks for one link and explains the five steps the run will take.
+
+![Run screen with the cheapest price and the live pipeline map](docs/img/frontend-done.png)
+
+The run screen puts the first honest price next to the live shop counters.
+
+![Mobile run screen at 390 pixels wide](docs/img/frontend-mobile.png)
+
+The answer, pipeline map and tabs fit a 390 pixel phone without sideways scrolling.
+
 ## Known limits
 
 - Amazon and Flipkart fight bots. A shop can answer with a CAPTCHA; the tool
@@ -102,12 +114,12 @@ on the page with no keys and no network.
 
 ## Where things are
 
-- `core/pipeline.py` — one entry point for CLI and API; everything else is a
+- `core/pipeline.py`: one entry point for CLI and API; everything else is a
   helper.
-- `docs/architecture.md` — the flow, the shops, the retry, result v2.
-- `docs/settings.md` — every setting, its default and its risk.
-- `docs/api.md` — routes and events for the web page.
-- `docs/troubleshooting.md` — blocked shops, CAPTCHA, LLM limits, missing Chrome.
-- `docs/evaluation.md` — how to measure recall and precision.
-- `docs/llm-providers.md` — adding a provider.
-- `docs/DECISIONS.md` — why the code does what it does.
+- `docs/architecture.md`: the flow, the shops, the retry, result v2.
+- `docs/settings.md`: every setting, its default and its risk.
+- `docs/api.md`: routes and events for the web page.
+- `docs/troubleshooting.md`: blocked shops, CAPTCHA, LLM limits, missing Chrome.
+- `docs/evaluation.md`: how to measure recall and precision.
+- `docs/llm-providers.md`: adding a provider.
+- `docs/DECISIONS.md`: why the code does what it does.

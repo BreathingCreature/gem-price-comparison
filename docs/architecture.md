@@ -84,18 +84,36 @@ See [llm-providers.md](llm-providers.md).
 
 ## Frontend
 
-Plain HTML, CSS and JavaScript, no build step. `frontend/render.js` is a
-DOM-free formatting module (money, shop wording, link safety) so it can be
-tested with Node; `frontend/app.js` only touches the DOM. `window.GEM_API_BASE`
-points the page at another server.
+Plain HTML, CSS and JavaScript, no build step and no external requests:
+
+- `frontend/index.html` holds the two screens (start and run), the fixed
+  section ids and inline SVG icons.
+- `frontend/app.js` owns the DOM, the EventSource and the theme. It batches
+  events with `requestAnimationFrame`, closes the source on `done`, reconnects
+  with `?after=<last seq>` and replays a saved run through `/api/traces/`.
+- `frontend/render.js` is DOM-free and Node-loadable. `applyEvent` folds an
+  event into one stats object; `laneModel` and `pipelineModel` turn that object
+  into the shop counters and map nodes; `answerModel`, `barRows`,
+  `matchRows`, `csvText` and `summaryText` build the visible result.
+- `frontend/style.css` keeps every colour, shadow and type size in custom
+  properties and uses `light-dark()` for the light and dark themes.
+
+Event-to-counter flow: the pipeline emits `shop_started`, `search_finished`,
+`filter_finished`, `candidate_checking`, `candidate_verdict` and
+`shop_finished`. `R.applyEvent` stores the per-shop totals, and the next frame
+paints those totals. No counter uses a timer or a guessed value.
+
+Demo mode: `GEM_DEMO=1 python -m uvicorn api.server:app --port 8000`, then open
+http://127.0.0.1:8000. The page shows the demo badge, runs the same event
+stream against fake shops and needs no keys or network.
 
 ## Storage
 
-- `cache/` — one JSON per URL, TTL `CACHE_TTL_SECONDS`.
-- `traces/` — one JSON per run, compact, rotated by count and age.
-- `cache/runs/` — one small record per finished run, so the recent list and a
+- `cache/`: one JSON per URL, TTL `CACHE_TTL_SECONDS`.
+- `traces/`: one JSON per run, compact, rotated by count and age.
+- `cache/runs/`: one small record per finished run, so the recent list and a
   saved result survive a restart.
-- `debug_html/` — only written by a failed live doctor canary or a scraper
+- `debug_html/`: only written by a failed live doctor canary or a scraper
   debug path.
 
 ## Why the pipeline file is still big
