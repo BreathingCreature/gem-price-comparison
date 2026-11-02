@@ -200,6 +200,13 @@ def test_is_product_url_accepts_and_rejects():
     assert _js("r.isProductUrl('')") is False
 
 
+def test_is_product_url_matches_the_python_table():
+    cases = json.loads((Path(__file__).parent / "url_cases.json").read_text(encoding="utf-8"))
+    urls = [case["url"] for case in cases]
+    out = _js("(" + json.dumps(urls) + ").map(function (u) { return r.isProductUrl(u); })")
+    assert out == [case["ok"] for case in cases]
+
+
 def test_scale_for_uses_25_percent_steps():
     rows = [{"delta": 150, "price": 1149, "isGem": False}, {"delta": 0, "price": 1299, "isGem": True}]
     out = _js("r.scaleFor(" + __import__("json").dumps(rows) + ")")
@@ -207,6 +214,70 @@ def test_scale_for_uses_25_percent_steps():
     rows2 = [{"delta": 700, "price": 500, "isGem": False}, {"delta": 0, "price": 1299, "isGem": True}]
     out2 = _js("r.scaleFor(" + __import__("json").dumps(rows2) + ")")
     assert out2["half"] in (0.5, 0.75, 1.0)
+
+
+def test_possible_rows_keep_their_delta_confidence_and_reason():
+    result = {
+        "gem": {"price": {"low": 1299.0}},
+        "possible_matches": [{
+            "shop": "amazon.in", "title": "M650 pack", "price": 2199.0,
+            "confidence": 0.62, "why": "different pack",
+        }],
+    }
+    row = _js("r.possibleRows(" + json.dumps(result) + ")[0]")
+    assert row["delta"] == 900.0
+    assert row["vsGem"] == "\u20b9900 more"
+    assert row["confidence"] == 0.62
+    assert row["confidenceText"] == "62%"
+    assert row["confidenceWidth"] == 62
+    assert row["why"] == "different pack"
+    assert row["samePrice"] is False
+    same = _js(
+        "r.possibleRows({gem:{price:{low:1299}},possible_matches:[{shop:'a',price:1299}]})[0]"
+    )
+    assert same["delta"] == 0
+    assert same["samePrice"] is True
+
+
+def test_filter_finished_by_shop_gives_each_web_row_its_own_counts():
+    stats = _js(
+        "(() => { const s = r.newStats(); ["
+        "{type:'shop_started',shop:'indiamart.com'},"
+        "{type:'shop_started',shop:'croma.com'},"
+        "{type:'filter_finished',shop:'other_shops',seen:5,sent:3,dropped:2,"
+        "by_shop:{'indiamart.com':{seen:2,sent:2,dropped:0},'croma.com':{seen:3,sent:1,dropped:2}}}"
+        "].forEach(e => r.applyEvent(s, e)); return s; })()"
+    )
+    rows = {row["key"]: row for row in _js("r.laneRows(" + json.dumps(stats) + ")")}
+    assert rows["indiamart.com"]["kept"] == 2
+    assert rows["indiamart.com"]["dropped"] == 0
+    assert rows["croma.com"]["kept"] == 1
+    assert rows["croma.com"]["dropped"] == 2
+
+
+def test_lane_row_model_uses_plain_signs_and_a_single_confirmed_number():
+    row = {
+        "queries": 3, "queriesDone": 3, "seen": 12, "kept": 12, "dropped": 3,
+        "judged": 5, "matches": 1, "possible": 0, "rejected": 4, "status": "found",
+    }
+    out = _js("r.laneRowModel(" + json.dumps(row) + ")")
+    assert out["search"] == "3/3"
+    assert out["filter"] == "+12 -3"
+    assert out["verify"] == "+1 -4"
+    assert out["confirmed"] == 1
+    zero = _js("r.laneRowModel({seen:2,kept:0,dropped:0,matches:0,rejected:0})")
+    assert zero["filter"] == "0"
+    assert zero["confirmed"] == 0
+
+
+def test_gem_product_event_keeps_image_and_specs_for_the_card():
+    stats = _js(
+        "(() => { const s = r.newStats(); r.applyEvent(s, {type:'gem_product',"
+        "title:'M650',price:1299,brand:'Logitech',model:'M650',"
+        "image:'https://mkp.gem.gov.in/a.jpg',specs:{Colour:'Graphite'}}); return s; })()"
+    )
+    assert stats["gem"]["image"] == "https://mkp.gem.gov.in/a.jpg"
+    assert stats["gem"]["specs"] == {"Colour": "Graphite"}
 
 
 def test_lane_rows_drops_marketplaces():

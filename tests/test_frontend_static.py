@@ -52,4 +52,4 @@ def test_the_page_explains_what_to_do_when_no_llm_is_ready():
 def test_the_script_only_calls_routes_that_exist():
     script = (FRONTEND_DIR / "app.js").read_text(encoding="utf-8")
     called = set(re.findall(r'API\s*\+\s*"(/api/[a-z/]+)', script))
-    assert called == {"/api/health", "/api/runs", "/api/runs/", "/api/llm/status", "/api/traces/"}
+    assert called == {"/api/health", "/api/runs", "/api/runs/", "/api/llm/status", "/api/traces/", "/api/icon/"}
