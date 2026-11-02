@@ -305,6 +305,26 @@ def test_a_failed_web_search_is_not_searched_not_not_found():
     assert other["retryable"] is True
 
 
+def test_a_generic_page_that_failed_to_load_is_not_searched():
+    shops = pipeline._shop_entries(
+        flipkart_results=[], amazon_results=[], discovery_results=[],
+        flipkart_candidates=[], amazon_candidates=[],
+        generic_candidates=[{
+            "source_domain": "croma.com",
+            "url": "https://www.croma.com/demo-m650",
+            "scraper_used": "generic",
+            "structured_fields": None,
+            "raw_page_text": None,
+            "fetch_error": "demo: the shop blocked the page",
+        }],
+        match_result=MatchBatchResult(), prefilter_dropped=[], lane_errors=[], lane_seconds={},
+        nothing_found=True,
+    )
+    entry = shops["croma.com"]
+    assert entry["status"] == result.SHOP_NOT_SEARCHED
+    assert "blocked the page" in entry["reason"]
+
+
 def test_a_clean_empty_web_search_is_still_not_found():
     shops = pipeline._shop_entries(
         flipkart_results=[], amazon_results=[],

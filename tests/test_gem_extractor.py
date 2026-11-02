@@ -21,6 +21,7 @@ from scrapers.gem import (  # noqa: E402
     classify_price,
     extract_gem_product,
     parse_gem_url,
+    _extract_image,
     _extract_specs,
 )
 from scrapers import gem as gem_module  # noqa: E402
@@ -118,6 +119,31 @@ def test_extract_specs_from_dl():
     specs = _extract_specs(soup)
     assert specs["Brand"] == "Logitech"
     assert specs["Model"] == "M650"
+
+
+def test_extract_image_accepts_only_https_gem_hosts():
+    html = """
+    <meta property="og:image" content="https://mkp.gem.gov.in/images/mouse.jpg">
+    <img src="https://example.com/other.jpg">
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assert _extract_image(soup) == "https://mkp.gem.gov.in/images/mouse.jpg"
+
+
+def test_extract_image_falls_back_to_a_gem_page_image_and_rejects_the_rest():
+    html = """
+    <img src="/images/relative.jpg">
+    <img src="http://mkp.gem.gov.in/insecure.jpg">
+    <img src="https://gem.gov.in.evil.com/fake.jpg">
+    <img data-src="https://cdn.gem.gov.in/real.jpg">
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assert _extract_image(soup) == "https://cdn.gem.gov.in/real.jpg"
+
+
+def test_extract_image_returns_none_when_no_candidate_is_on_the_gem_host():
+    soup = BeautifulSoup('<img src="https://example.com/a.jpg">', "lxml")
+    assert _extract_image(soup) is None
 
 
 # --- extract_gem_product (full flow, fake network) ------------------------------

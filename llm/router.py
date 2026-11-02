@@ -784,6 +784,8 @@ class Router:
         text = (f"HTTP {status}: " if status else "") + f"{type(exc).__name__}: {str(exc)[:200]}"
         used_up_until: Optional[float] = None
         with self._lock:
+            endpoint.calls += 1
+            endpoint.total_seconds += seconds
             endpoint.errors += 1
             endpoint.fail_streak += 1
             endpoint.last_error = text

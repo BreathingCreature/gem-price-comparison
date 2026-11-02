@@ -461,12 +461,15 @@ def _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds) -
 def _shop_status(facts: _ShopFacts) -> tuple[str, str]:
     blocked = [r for r in facts.results if _cand_dict(r).get("blocked")]
     errored = [r for r in facts.results if _cand_dict(r).get("error")]
+    failed_pages = [c for c in facts.candidates if _cand_dict(c).get("fetch_error")]
     if facts.matches:
         return result_module.SHOP_FOUND, ""
     if blocked:
         return result_module.SHOP_NOT_SEARCHED, "blocked/CAPTCHA"
     if errored:
         return result_module.SHOP_NOT_SEARCHED, str(_cand_dict(errored[0]).get("error"))
+    if failed_pages:
+        return result_module.SHOP_NOT_SEARCHED, str(_cand_dict(failed_pages[0]).get("fetch_error"))
     if facts.lane_error:
         return result_module.SHOP_INCOMPLETE, facts.lane_error
     if facts.seconds is not None and facts.seconds > LANE_TIME_LIMIT_SECONDS:
@@ -758,7 +761,31 @@ def _verify_lane(normalized, candidates: list, match_fn, *, name: str, label: st
     (match_result, dropped_by_prefilter)."""
     usable = [c for c in candidates if _usable(c)]
     kept, dropped = _prefilter_candidates(usable, normalized)
-    events.emit("filter_finished", shop=name, seen=len(usable), dropped=len(dropped), sent=len(kept))
+    event = {"shop": name, "seen": len(usable), "dropped": len(dropped), "sent": len(kept)}
+    if name == "other_shops":
+        by_shop: dict[str, dict] = {}
+
+        def bucket(value):
+            domain = _norm_domain(value)
+            if not domain:
+                return None
+            entry = by_shop.setdefault(domain, {"seen": 0, "sent": 0, "dropped": 0})
+            return entry
+
+        for candidate in usable:
+            entry = bucket(_cand_dict(candidate).get("source_domain"))
+            if entry is not None:
+                entry["seen"] += 1
+        for candidate in kept:
+            entry = bucket(_cand_dict(candidate).get("source_domain"))
+            if entry is not None:
+                entry["sent"] += 1
+        for candidate in dropped:
+            entry = bucket(_cand_dict(candidate).get("source_domain"))
+            if entry is not None:
+                entry["dropped"] += 1
+        event["by_shop"] = by_shop
+    events.emit("filter_finished", **event)
     if not kept:
         return matcher.MatchBatchResult(), dropped
     events.emit("stage", name=f"match_{name}", label=f"Checking {label}")
@@ -1091,6 +1118,7 @@ def read_gem(ctx: RunContext, extract_fn) -> None:
         model=gem_product_dict.get("model"),
         category=gem_product_dict.get("category_slug"),
         specs=gem_product_dict.get("specs") or {},
+        image=gem_product_dict.get("image"),
     )
     events.emit("product_ready", title=gem_product_dict.get("title"), price=gem_product_dict.get("gem_price"))
 
