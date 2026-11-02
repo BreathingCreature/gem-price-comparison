@@ -145,6 +145,10 @@ def _golden(name):
 
 
 def test_demo_events_and_result_match_the_baseline(monkeypatch):
+    # Sequential lanes: parallel shops finish in thread order, which differs
+    # between platforms (the golden failed on ubuntu only). Same events, one
+    # fixed order.
+    monkeypatch.setattr(pipeline, "PARALLEL_SEARCH", False)
     monkeypatch.setattr(demo, "_pause", lambda *_args, **_kwargs: None)
     seen = []
     result = demo.demo_runner(DEMO_URL, False, seen.append)
@@ -199,3 +203,15 @@ if __name__ == "__main__":
                 json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             print(name, len(events), "events")
+
+        # The demo golden is regenerated the same way, with the demo pauses off.
+        demo._pause = lambda *_args, **_kwargs: None
+        seen = []
+        demo_result = demo.demo_runner(DEMO_URL, False, seen.append)
+        (GOLDEN / "demo-event-types.txt").write_text(
+            "\n".join(event["type"] for event in seen) + "\n", encoding="utf-8"
+        )
+        (GOLDEN / "demo-result.json").write_text(
+            json.dumps(_clean(demo_result), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        print("demo", len(seen), "events")
