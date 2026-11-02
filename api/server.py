@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import requests
 from pydantic import BaseModel
@@ -212,6 +212,60 @@ def _same_registrable_domain(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain) or domain.endswith("." + host)
 
 
+def _host_from_value(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        try:
+            host = urlparse(text).hostname
+        except ValueError:
+            return ""
+    else:
+        host = text
+    host = (host or "").lower().rstrip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
+def _domains_in_run(job) -> set[str]:
+    """The hosts a run actually contains. Never a substring of a title."""
+    domains: set[str] = set()
+
+    def add(value):
+        host = _host_from_value(value)
+        if host and _ICON_DOMAIN_RE.match(host):
+            domains.add(host)
+            if host.startswith("www."):
+                domains.add(host[4:])
+
+    result = getattr(job, "result", None)
+    if not isinstance(result, dict):
+        result = job.get("result") if isinstance(job, dict) else None
+    gem_url = getattr(job, "gem_url", None)
+    if gem_url is None and isinstance(job, dict):
+        gem_url = job.get("gem_url")
+    add(gem_url)
+    if not isinstance(result, dict):
+        return domains
+    gem = result.get("gem") if isinstance(result.get("gem"), dict) else {}
+    add(gem.get("url"))
+    add(gem.get("image"))
+    for key in (result.get("shops") or {}):
+        add(key)
+    for list_name in ("matches", "possible_matches", "similar"):
+        for row in result.get(list_name) or []:
+            if not isinstance(row, dict):
+                continue
+            add(row.get("shop"))
+            add(row.get("source_domain"))
+            add(row.get("url"))
+            add(row.get("candidate_url"))
+    for value in result.get("not_found_on") or []:
+        add(value)
+    return domains
+
+
+
 def _host_is_public(host: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, None)
@@ -227,7 +281,7 @@ def _host_is_public(host: str) -> bool:
     return True
 
 
-def _url_safe_for_icon(url: str, domain: str, *, allowed_prefix: str = "image/", max_bytes: int = 100000) -> bool:
+def _url_safe_for_icon(url: str, domain: str) -> bool:
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -237,9 +291,7 @@ def _url_safe_for_icon(url: str, domain: str, *, allowed_prefix: str = "image/",
     host = (parsed.hostname or "").lower()
     if not host or not _same_registrable_domain(host, domain):
         return False
-    if not _host_is_public(host):
-        return False
-    return True
+    return _host_is_public(host)
 
 
 def _safe_icon_get(url: str, domain: str, *, allowed_prefix: str = "image/", max_bytes: int = 100000):
@@ -267,31 +319,42 @@ def _safe_icon_get(url: str, domain: str, *, allowed_prefix: str = "image/", max
             current = nxt
             continue
         try:
-            data = response.content
+            if response.status_code != 200:
+                return None
+            content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if not content_type.startswith(allowed_prefix):
+                return None
+            length = response.headers.get("Content-Length")
+            if length and str(length).isdigit() and int(length) > max_bytes:
+                return None
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(8192):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks), content_type
         finally:
             response.close()
-        if response.status_code != 200:
-            return None
-        if len(data) > max_bytes:
-            return None
-        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if not content_type.startswith(allowed_prefix):
-            return None
-        return data, content_type
+
 
 
 def _domain_in_saved_runs(domain: str, manager) -> bool:
     jobs = getattr(manager, "_jobs", {}) or {}
     for job in jobs.values():
-        if domain in json.dumps(job, default=str):
+        if domain in _domains_in_run(job):
             return True
     try:
         for record in runs_store.list_runs():
-            if domain in json.dumps(record, default=str):
+            if domain in _domains_in_run(record):
                 return True
     except Exception:
         pass
     return False
+
 
 
 def _fetch_site_icon(domain: str, cache_dir: Path):
@@ -505,12 +568,18 @@ def create_app(
             return {"error": redact(f"{type(exc).__name__}: {exc}"), "endpoints": []}
         return {"strategy": router.strategy, "endpoints": router.status()}
 
-    @app.get("/api/icon/{domain}")
+    @app.api_route("/api/icon/{domain}", methods=["GET", "HEAD"])
     def site_icon(domain: str):
         if not _ICON_DOMAIN_RE.match(domain):
             raise HTTPException(status_code=404, detail="Unknown domain.")
+        if demo:
+            # Demo mode promises no network calls; the page draws its letter tile.
+            return Response(status_code=204)
         if not _domain_in_saved_runs(domain, manager):
-            raise HTTPException(status_code=404, detail="Unknown domain.")
+            # No fetch for a domain no run contains. 204 rather than 404: the
+            # page probes icons before a run's result exists, and a 404 would
+            # print a console error for every shop while the run is going.
+            return Response(status_code=204)
         result = _fetch_site_icon(domain, pipeline.CACHE_DIR / "icons")
         if result is None:
             return Response(status_code=204)
@@ -518,6 +587,25 @@ def create_app(
         return Response(
             content=data,
             media_type=content_type,
+            headers={"Cache-Control": f"max-age={_ICON_CACHE_MAX_AGE}"},
+        )
+
+    @app.api_route("/icons/{name}", methods=["GET", "HEAD"])
+    def provider_icon(name: str):
+        """A local provider logo, or 204 so the page's HEAD probe stays quiet.
+
+        The page draws a monogram and only swaps in a file when the probe says
+        one exists. Answering 404 for a missing optional file would still print
+        a console error on every page load, so an absent icon is a 204.
+        """
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}\.svg", name):
+            raise HTTPException(status_code=404, detail="No such icon.")
+        path = FRONTEND_DIR / "icons" / name
+        if not path.is_file():
+            return Response(status_code=204)
+        return FileResponse(
+            path,
+            media_type="image/svg+xml",
             headers={"Cache-Control": f"max-age={_ICON_CACHE_MAX_AGE}"},
         )
 

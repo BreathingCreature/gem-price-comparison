@@ -10,10 +10,11 @@ network. Set `GEM_DEMO=1` first to run a fake pipeline (no scraping, no LLM
 calls), which is the easy way to work on the frontend.
 
 Every response carries `Content-Security-Policy: default-src 'self'; img-src
-'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri
-'none'; form-action 'self'`, `X-Content-Type-Options: nosniff` and
-`Referrer-Policy: no-referrer`. CORS is closed by default; set `CORS_ORIGINS` to
-a comma-separated allowlist only if another origin must call the API.
+'self' data: https://*.gem.gov.in; style-src 'self'; script-src 'self';
+connect-src 'self'; base-uri 'none'; form-action 'self'`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. CORS is
+closed by default; set `CORS_ORIGINS` to a comma-separated allowlist only if
+another origin must call the API.
 
 ## Routes
 
@@ -24,7 +25,9 @@ a comma-separated allowlist only if another origin must call the API.
 | `GET /api/runs` | The 20 most recent runs, newest first. Live jobs come first, then the runs saved on disk, so the list survives a restart. Each item has `id`, `gem_url`, `title`, `state`, `status`, `cheapest_price`, `saving_vs_gem`, `match_count`, `queue_position`, `checked_at`, `from_cache`, `live`. `queue_position` is 0 once the run starts or finishes. |
 | `GET /api/runs/{id}` | A live job answers with `status`, `state` (`shown`, `done`, `failed`), timestamps, `queue_position`, `event_count`, `result`, `error`, `live: true`. A finished run whose job is gone is read from disk (`live: false`), so a result can still be opened after a restart. 404 when neither knows the id. |
 | `GET /api/runs/{id}/events` | Server-sent events. Replays every event from the start, then follows the live run. `?after=N` (or the `Last-Event-ID` header) continues after event number N. Ends with `event: done` and `{"status": "done"}` or `"failed"`. Up to 8 streams run at once; the ninth answers 429. Closing a tab releases its stream. |
-| `GET /api/icon/{domain}` | Favicon bytes for a domain that appears in a run held in memory or a saved run record. Returns 204 on failure. Cached for one day. | The LLM router's view: strategy and, per endpoint, state (`ready`, `failing`, `cooling`, `disabled`, `limit`), calls, errors, average seconds, last error, `last_status` (HTTP code of the last failure, if any) and `last_failure_ago` (seconds). `failing` means its last call failed within the last 15 minutes and the router has not seen a success since: it will be retried, but it is not "ready". `cooling` carries the remaining seconds and the error that caused the rest. `limit` means the endpoint used up its allowance for today; the state survives a restart. `disabled` with `"retired": true` means the provider answered 404 for that model, and the next model in the list is used. |
+| `GET /api/icon/{domain}` | Favicon bytes for a domain that appears in a run held in memory or in a saved run record. The route only fetches `https://<domain>/favicon.ico` (then a `<link rel="icon">` on the home page), stays on the same registrable domain for at most two redirects, refuses private addresses, responses over 100 KB and anything that is not an image, and caches the bytes for one day. Answers 204 when no icon can be fetched, and also when the domain is not part of a run (it never fetches for a domain it has not seen); a malformed domain is a 404. Demo mode answers 204 without any network call. |
+| `GET /icons/{name}` | A provider logo from `frontend/icons/`, served as `image/svg+xml` and cached for one day. Answers 204 when the file is absent, so an optional logo never logs a console error; a name that is not a plain lowercase `.svg` file name is a 404. |
+| `GET /api/llm/status` | The LLM router's view: strategy and, per endpoint, state (`ready`, `failing`, `cooling`, `disabled`, `limit`), calls, errors, average seconds, last error, `last_status` (HTTP code of the last failure, if any) and `last_failure_ago` (seconds). `calls` counts attempts, including failed ones; `errors` counts the failed attempts. `failing` means its last attempt failed within the last 15 minutes and the router has not seen a success since: it will be retried, but it is not "ready". `cooling` carries the remaining seconds and the error that caused the rest. `limit` means the endpoint used up its allowance for today; the state survives a restart. `disabled` with `"retired": true` means the provider answered 404 for that model, and the next model in the list is used. |
 | `GET /api/traces/{trace_id}` | The saved trace JSON of a finished run (it includes every event). Long page text is cut to 1000 characters with a `... (trimmed)` suffix; set `GEM_DEBUG=1` on the server to get the raw text. |
 
 Only one run executes at a time by default (set `GEM_JOBS=2` to let two run together: Chrome and the shops tolerate that, not five). Others wait in `queued`.
@@ -47,7 +50,7 @@ run started), `type`, plus the fields below.
 | `search_health` | engine, ok, reason | a discovery engine worked or failed |
 | `discovery_finished` | queries, urls, issues | other shop pages worth opening |
 | `scrape_started` / `scrape_finished` | url / title, price, url, domain, error | one of those pages was opened |
-| `filter_finished` | shop, seen, dropped, sent | one lane's filter result: how many listings it saw, dropped and sent to the LLM |
+| `filter_finished` | shop, seen, dropped, sent, by_shop | one lane's filter result: how many listings it saw, dropped and sent to the LLM. For `other_shops`, `by_shop` is an additive map from shop domain to its own `seen`, `sent` and `dropped` counts. |
 | `prefilter_finished` | kept, dropped, top | one pass of the early filter (also used for retry listings) |
 | `candidates_total` | count | how many listings go to the matcher |
 | `candidate_checking` | url, domain, title, price, index, total | the matcher started on one listing |
@@ -94,7 +97,8 @@ Rules the frontend can rely on:
   "from_cache": false,
   "checked_at": "2026-10-20T10:00:00+00:00",
   "trace_id": "abc123",
-  "gem": {"title": "...", "price": {"low": 1299.0, "high": 1299.0, "kind": "fixed"}},
+  "gem": {"title": "...", "canonical_name": "...", "price": {"low": 1299.0, "high": 1299.0, "kind": "fixed"},
+          "image": "https://mkp.gem.gov.in/...", "specs": {"Colour": "Graphite"}},
   "shops": {
     "flipkart.com": {"status": "found", "reason": "", "seen": 3, "dropped": 1, "checked": 2,
                      "matches": 1, "price": 1149.0, "retried": true, "retryable": false, "seconds": 6.2}
