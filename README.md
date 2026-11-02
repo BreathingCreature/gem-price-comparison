@@ -93,15 +93,15 @@ can be opened again.
 Demo mode (`GEM_DEMO=1`) runs the real pipeline with fake pages, so you can work
 on the page with no keys and no network.
 
-![Start screen with the GeM link field and the five pipeline steps](docs/img/frontend-start.png)
+![Start screen with the GeM link field](docs/screens/start-1440-light.png)
 
 The start screen asks for one link and explains the five steps the run will take.
 
-![Run screen with the cheapest price and the live pipeline map](docs/img/frontend-done.png)
+![Run screen with the cheapest price and the live pipeline map](docs/screens/done-collapsed-1440-light.png)
 
 The run screen puts the first honest price next to the live shop counters.
 
-![Mobile run screen at 390 pixels wide](docs/img/frontend-mobile.png)
+![Mobile run screen at 390 pixels wide](docs/screens/done-collapsed-390-light.png)
 
 The answer, pipeline map and tabs fit a 390 pixel phone without sideways scrolling.
 
