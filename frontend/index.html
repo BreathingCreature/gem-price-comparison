@@ -11,201 +11,129 @@
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="topbar">
+<button id="back-btn" class="icon-button" type="button" aria-label="Back to the start page" title="Back to the start page" hidden>
+<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"></path></svg>
+</button>
 <a class="brand" href="/" aria-label="GeM Price Comparison, home">
-<svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
-<rect x="2" y="2" width="36" height="36" rx="11" fill="currentColor"></rect>
-<path class="brand-glyph" d="M13 12h11.5a4.5 4.5 0 0 1 0 9H17l7.5 7"></path>
-<circle class="brand-dot" cx="27" cy="27" r="1.8"></circle>
-</svg>
+<svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="14" height="14" rx="3"></rect><path d="M5 5h4.5a1.5 1.5 0 010 3H6.5L9.5 11"></path></svg>
 <span class="brand-name">GeM Price Comparison</span>
 </a>
 <div class="top-actions">
-<button id="llm-health" class="health" hidden title="LLM endpoint health">
-<span id="llm-health-dot" class="dot" aria-hidden="true"></span>
-<span id="llm-health-text">Checking LLM endpoints</span>
+<span id="demo-badge" class="badge" hidden title="Demo data: fake shops, a fake LLM and a fake GeM page. No network calls are made.">Demo data</span>
+<span id="run-clock" class="clock" hidden>00:00</span>
+<span id="run-state-label" class="run-state" hidden>Starting</span>
+<button id="run-again" class="button button-quiet" type="button" hidden>Run again</button>
+<button id="theme-toggle" class="icon-button" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
+<svg class="theme-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M8 1v2M8 13v2M2.9 2.9l1.4 1.4M11.7 11.7l1.4 1.4M1 8h2M13 8h2M2.9 13.1l1.4-1.4M11.7 4.3l1.4-1.4"></path></svg>
+<svg class="theme-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.7A6 6 0 016.3 2.5a6 6 0 109.2 8.4z"></path></svg>
 </button>
-<button id="theme-toggle" class="icon-button" aria-label="Switch to dark theme" title="Switch theme">
-<svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true">
-<circle cx="12" cy="12" r="4"></circle>
-<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
-</svg>
-<svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true">
-<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path>
-</svg>
-</button>
-<span id="demo-badge" class="badge badge-demo" hidden title="Demo data: fake shops, a fake LLM and a fake GeM page. No network calls are made.">Demo data</span>
 </div>
 </header>
 <main id="main" class="shell">
-<div id="llm-banner" class="connection" role="status" hidden>
-<strong>No LLM endpoint is ready.</strong>
-<span>Add <code>NVIDIA_API_KEY</code> to <code>.env</code>, or copy <code>llm_providers.example.json</code> to <code>llm_providers.json</code> and add a provider key, then reload this page.</span>
-</div>
-<section id="start-screen" class="screen" aria-labelledby="hero-title">
-<div class="hero">
-<p class="kicker">A price check for public buying</p>
-<h1 id="hero-title">Is the GeM price fair?</h1>
-<p class="lede">Paste a GeM product link. The tool reads the listing, searches Indian shops for the same product, and shows the first honest answer while the rest of the run finishes.</p>
+<section id="start-screen" class="start-screen" aria-labelledby="start-title">
+<h1 id="start-title" class="sr-only">GeM Price Comparison</h1>
 <form id="run-form" class="run-form" novalidate>
 <div class="search-control">
 <label class="sr-only" for="gem-url">GeM product link</label>
-<input id="gem-url" name="gem-url" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://mkp.gem.gov.in/.../p-123-456-cat.html" aria-describedby="url-error">
+<input id="gem-url" name="gem-url" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://mkp.gem.gov.in/computer-mouse/logitech-m650/p-5812034-2-cat.html" aria-describedby="url-error">
 <button id="run-btn" class="button button-primary" type="submit">Compare</button>
 </div>
 <p id="url-error" class="form-error" role="alert" hidden></p>
-<label class="switch">
-<input id="refresh" type="checkbox">
-<span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
-<span class="switch-text">Refresh <span class="hint">Ignore the saved result</span></span>
-</label>
 </form>
-</div>
-<section class="explain" aria-labelledby="steps-title">
-<div class="section-head">
-<h2 id="steps-title">What happens when you press Compare</h2>
-<p>Five stages, one pipeline. The page only shows what the run actually reports.</p>
-</div>
-<ol class="steps">
-<li class="step">
-<span class="step-icon" aria-hidden="true">
-<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"></path><path d="M14 3v4h4M9 12h6M9 16h6"></path></svg>
-</span>
-<span class="step-number">01</span>
-<h3>Read the GeM page</h3>
-<p>Plain HTTP and selectors pull the title, brand, model, specs and price. No model is involved yet.</p>
-</li>
-<li class="step">
-<span class="step-icon" aria-hidden="true">
-<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path><path d="M18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z"></path></svg>
-</span>
-<span class="step-number">02</span>
-<h3>Understand the product (LLM)</h3>
-<p>The LLM turns the listing into a search identity: a canonical name, brand, model, key identifiers and search words.</p>
-</li>
-<li class="step">
-<span class="step-icon" aria-hidden="true">
-<svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5"></path><path d="M4 9v11h16V9"></path><path d="M3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"></path><path d="M9 20v-6h6v6"></path></svg>
-</span>
-<span class="step-number">03</span>
-<h3>Search three lanes at once</h3>
-<p>Flipkart, Amazon and other Indian shops run together. A web search finds the other shops; every page is fetched by code.</p>
-</li>
-<li class="step">
-<span class="step-icon" aria-hidden="true">
-<svg viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg>
-</span>
-<span class="step-number">04</span>
-<h3>Filter, then check each listing</h3>
-<p>A cheap title filter keeps the strongest listings per shop. The LLM then judges each one against the reference product.</p>
-</li>
-<li class="step">
-<span class="step-icon" aria-hidden="true">
-<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"></path><path d="M8.5 12l2.4 2.4 4.6-5"></path></svg>
-</span>
-<span class="step-number">05</span>
-<h3>Safety checks and one retry</h3>
-<p>Code checks the currency, the price band and the confidence threshold. The first result appears at once; gaps are retried once.</p>
-</li>
-</ol>
-</section>
 <section class="recent" aria-labelledby="recent-title">
 <div class="section-head">
 <h2 id="recent-title">Recent runs</h2>
 <p id="recent-note">Saved on this machine, newest first.</p>
 </div>
-<div id="recent-grid" class="recent-grid" aria-live="polite"></div>
-<p id="recent-empty" class="empty">No runs yet. Paste a GeM link above and the first result will appear as soon as a shop answers.</p>
+<div id="recent-grid" class="recent-list" aria-live="polite"></div>
+<p id="recent-empty" class="empty">No runs yet. Paste a GeM link above.</p>
 </section>
 </section>
-<section id="run-screen" class="screen" hidden aria-labelledby="verdict-title">
+<section id="run-screen" class="run-screen" hidden aria-labelledby="gem-title">
+<div id="llm-banner" class="connection" role="status" hidden>
+<strong>No LLM endpoint is ready.</strong>
+<span>Add <code>NVIDIA_API_KEY</code> to <code>.env</code>, or copy <code>llm_providers.example.json</code> to <code>llm_providers.json</code> and add a provider key, then reload this page.</span>
+</div>
 <div id="connection-banner" class="connection" role="status" hidden>
 <span id="connection-text">Reconnecting</span>
-<button id="retry-connection" class="button button-quiet">Retry now</button>
+<button id="retry-connection" class="button button-quiet" type="button">Retry now</button>
 </div>
 <div id="page-alert" class="sr-only" aria-live="polite"></div>
-<div class="runbar">
-<button id="back-btn" class="button button-quiet">
-<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>
-Back
-</button>
-<div class="runbar-status">
-<span id="run-clock" class="clock">00:00</span>
-<span id="run-state-label" class="run-state">Starting</span>
-</div>
-<button id="copy-link" class="button button-quiet">Copy link</button>
-</div>
-<div id="run-error" class="alert alert-bad" role="alert" hidden>
+<div id="run-error" class="alert" role="alert" hidden>
 <strong>The run failed.</strong>
 <span id="run-error-text"></span>
 </div>
-<article id="verdict" class="verdict" data-kind="searching" aria-labelledby="verdict-title">
-<div class="verdict-product">
-<p id="verdict-kicker" class="kicker">Reading the GeM page</p>
-<h1 id="verdict-title">Looking for the same product</h1>
-<div id="gem-meta" class="chips"></div>
-<p id="understanding" class="understanding"></p>
-<div id="search-words" class="search-words"></div>
+<article id="gem-card" class="card gem-card" aria-labelledby="gem-title" hidden>
+<div class="gem-image-wrap">
+<img id="gem-image" class="gem-image" alt="" width="160" height="160" referrerpolicy="no-referrer" hidden>
+<span id="gem-image-fallback" class="gem-image-fallback" aria-hidden="true">
+<svg viewBox="0 0 16 16"><path d="M2 3h12v10H2z"></path><path d="M2 11l4-4 3 3 2-2 3 3"></path></svg>
+</span>
 </div>
-<div class="verdict-answer">
-<p id="answer-kicker" class="answer-kicker">Searching shops</p>
-<p id="answer-price" class="answer-price">Searching</p>
-<p id="answer-shop" class="answer-shop"></p>
-<p id="answer-saving" class="answer-saving"></p>
-<a id="answer-link" class="button button-primary" target="_blank" rel="noopener noreferrer" hidden>Open the listing</a>
-<div id="price-bars" class="bars" aria-label="Prices found, compared with GeM"></div>
-<p id="answer-detail" class="answer-detail">The first honest result appears as soon as a shop answers.</p>
+<div class="gem-body">
+<p id="gem-kicker" class="kicker">The GeM listing</p>
+<h1 id="gem-title">Reading the GeM page</h1>
+<p id="gem-price" class="gem-price"></p>
+<p id="gem-price-kind" class="gem-price-kind"></p>
+<dl id="gem-specs" class="specs"></dl>
+<button id="gem-specs-toggle" class="text-button" type="button" hidden></button>
 </div>
 </article>
-<section class="card pipeline-card" aria-labelledby="pipeline-title">
-<div class="section-head section-head-tight">
+<section id="pipeline-card" class="card pipeline-card" aria-labelledby="pipeline-title">
+<div class="pipeline-head">
+<div class="pipeline-heading">
 <h2 id="pipeline-title">Pipeline</h2>
-<p>Every counter below comes from the run's own events.</p>
+<p id="pipeline-summary-text" class="pipeline-summary">Waiting for the run.</p>
 </div>
+<button id="pipeline-toggle" class="button button-quiet" type="button" aria-expanded="true" aria-controls="pipeline-body">Hide details</button>
+</div>
+<div id="pipeline-body">
 <div id="pipeline-map" class="pipeline-map">
-<svg id="map-links" class="map-links" aria-hidden="true"></svg>
-<div id="node-read" class="map-node" data-state="waiting">
-<span class="node-label">Read GeM page</span>
-<span id="node-read-value" class="node-value">waiting</span>
-</div>
-<div id="node-understand" class="map-node" data-state="waiting">
-<span class="node-label">Understand (LLM)</span>
-<span id="node-understand-value" class="node-value">waiting</span>
-</div>
+<div id="pipeline-top" class="pipeline-top"></div>
 <div id="map-lanes" class="map-lanes"></div>
-<div id="node-checks" class="map-node" data-state="waiting">
-<span class="node-label">Checks and first result</span>
-<span id="node-checks-value" class="node-value">waiting</span>
+<div id="pipeline-end" class="pipeline-end"></div>
 </div>
-<div id="node-retry" class="map-node" data-state="waiting">
-<span class="node-label">Retry gaps</span>
-<span id="node-retry-value" class="node-value">not needed yet</span>
-</div>
-</div>
-<div id="status-legend" class="legend" aria-label="Shop status meanings">
-<p class="legend-intro"><strong>Shop states.</strong> "Not found" means the shop was searched and nothing matched. "Could not search" means it was blocked or skipped; the answer is then incomplete, not a no.</p>
-<ul class="legend-list">
-<li><span class="status-chip status-found">Found a match</span> A confirmed match was kept.</li>
-<li><span class="status-chip status-possible">Possible only</span> A listing looked close but was not confirmed.</li>
-<li><span class="status-chip status-not-found">Not found</span> Searched, nothing matched.</li>
-<li><span class="status-chip status-warning">Could not search</span> Blocked, skipped or out of time.</li>
-</ul>
 </div>
 </section>
-<section class="card tabs-card" aria-label="Run details">
+<article id="verdict" class="card summary" data-kind="searching" aria-labelledby="verdict-title" hidden>
+<div class="summary-head">
+<p id="answer-kicker" class="kicker">Searching shops</p>
+<h2 id="verdict-title" class="summary-title">Best price found</h2>
+</div>
+<div class="summary-body">
+<div class="summary-answer">
+<p id="answer-price" class="answer-price">Searching</p>
+<p class="answer-shop-line"><span id="answer-shop-icon" class="answer-shop-icon"></span><span id="answer-shop" class="answer-shop"></span></p>
+<p id="answer-saving" class="answer-saving"></p>
+<a id="answer-link" class="button button-primary" target="_blank" rel="noopener noreferrer" hidden>Open the listing</a>
+</div>
+<div id="price-bars" class="bars" aria-label="Prices found, compared with GeM"></div>
+<p id="answer-detail" class="answer-detail"></p>
+</div>
+</article>
+<section class="card tabs-card" aria-label="Run details" hidden id="details-card">
 <div class="tabbar">
 <div id="tablist" class="tablist" role="tablist" aria-label="Run details">
 <button id="tab-matches" class="tab" role="tab" aria-selected="true" aria-controls="panel-matches" data-tab="matches">Matches <span id="count-matches" class="tab-count">0</span></button>
 <button id="tab-possible" class="tab" role="tab" aria-selected="false" aria-controls="panel-possible" data-tab="possible" tabindex="-1">Possible <span id="count-possible" class="tab-count">0</span></button>
 <button id="tab-activity" class="tab" role="tab" aria-selected="false" aria-controls="panel-activity" data-tab="activity" tabindex="-1">Activity <span id="count-activity" class="tab-count">0</span></button>
-<button id="tab-system" class="tab" role="tab" aria-selected="false" aria-controls="panel-system" data-tab="system" tabindex="-1">LLM and system</button>
+<button id="tab-system" class="tab" role="tab" aria-selected="false" aria-controls="panel-system" data-tab="system" tabindex="-1">System</button>
 </div>
 </div>
 <div id="panel-matches" class="tab-panel" role="tabpanel" aria-labelledby="tab-matches" tabindex="0">
 <p id="matches-empty" class="empty">No confirmed match yet. This tab fills in when a shop returns the same product.</p>
 <div id="matches-table-wrap" class="table-wrap" hidden>
-<table class="data-table">
+<table class="data-table matches-table">
 <thead>
-<tr><th scope="col">Shop</th><th scope="col">Listing</th><th scope="col">Price</th><th scope="col">Against GeM</th><th scope="col">Confidence</th><th scope="col">Checks</th><th scope="col"><span class="sr-only">Link</span></th></tr>
+<tr>
+<th scope="col" class="cell-shop">Shop</th>
+<th scope="col" class="cell-price">
+<span>Price</span>
+<span id="scale-labels" class="scale-labels"><span>cheaper</span><span id="scale-gem">GeM</span><span>dearer</span></span>
+</th>
+<th scope="col" class="cell-confidence" title="The model's own certainty, in percent.">Confidence</th>
+<th scope="col" class="cell-why"><span class="sr-only">Why this was accepted</span></th>
+</tr>
 </thead>
 <tbody id="matches-body"></tbody>
 </table>
@@ -213,16 +141,16 @@ Back
 <div id="matches-cards" class="match-cards"></div>
 <p class="note">Prices are for the listing as shown. Check quantity, colour and bundle before you buy.</p>
 <div class="panel-actions">
-<button id="copy-summary" class="button button-quiet">Copy summary</button>
-<button id="download-csv" class="button button-quiet">Download CSV</button>
+<button id="copy-summary" class="button button-quiet" type="button">Copy summary</button>
+<button id="download-csv" class="button button-quiet" type="button">Download CSV</button>
 </div>
 </div>
 <div id="panel-possible" class="tab-panel" role="tabpanel" aria-labelledby="tab-possible" tabindex="0" hidden>
 <p id="possible-empty" class="empty">No possible matches. This tab lists listings that looked close but were not confirmed.</p>
 <div id="possible-table-wrap" class="table-wrap" hidden>
-<table class="data-table">
+<table class="data-table possible-table">
 <thead>
-<tr><th scope="col">Shop</th><th scope="col">Listing</th><th scope="col">Price</th><th scope="col">Why not confirmed</th><th scope="col"><span class="sr-only">Link</span></th></tr>
+<tr><th scope="col" class="cell-shop">Shop</th><th scope="col" class="cell-price"><span>Price</span><span class="scale-labels"><span>cheaper</span><span id="possible-scale-gem">GeM</span><span>dearer</span></span></th><th scope="col" class="cell-confidence" title="The model's own certainty, in percent.">Confidence</th><th scope="col" class="possible-why-head">Why it is only possible</th></tr>
 </thead>
 <tbody id="possible-body"></tbody>
 </table>
@@ -246,15 +174,26 @@ Back
 <div id="panel-system" class="tab-panel" role="tabpanel" aria-labelledby="tab-system" tabindex="0" hidden>
 <p id="llm-strategy" class="strategy">LLM endpoint status is loading.</p>
 <div class="table-wrap">
-<table class="data-table compact">
+<table class="data-table compact providers-table">
 <thead>
-<tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">State</th><th scope="col">Calls</th><th scope="col">Errors</th><th scope="col">Average</th><th scope="col">Note</th></tr>
+<tr>
+<th scope="col">Provider</th>
+<th scope="col">State</th>
+<th scope="col" title="since server start">Calls</th>
+<th scope="col" title="since server start">Errors</th>
+<th scope="col">This run</th>
+<th scope="col">Note</th>
+</tr>
 </thead>
 <tbody id="llm-table-body"></tbody>
 </table>
 </div>
 <p id="llm-run-summary" class="run-llm"></p>
 <dl id="run-stats" class="run-stats"></dl>
+<details id="shops-details" class="shops-details">
+<summary>Shops <span id="shops-count"></span></summary>
+<div id="shops-list" class="shops-list"></div>
+</details>
 </div>
 </section>
 <section id="similar-section" class="card" hidden aria-labelledby="similar-title">
@@ -273,9 +212,16 @@ Back
 </section>
 </section>
 </main>
-<footer class="foot">
-<p>Prices are a snapshot from the shops that answered. Unknown stays unknown.</p>
-</footer>
+<dialog id="link-dialog" class="dialog" aria-labelledby="link-dialog-title">
+<div class="dialog-body">
+<h2 id="link-dialog-title">Enter a product link</h2>
+<p>That link is a search or category page. Open one product on GeM and paste its link here.</p>
+<code class="dialog-example">https://mkp.gem.gov.in/computer-mouse/logitech-m650/p-5812034-2-cat.html</code>
+<form method="dialog">
+<button id="dialog-close" class="button button-primary" type="submit">Close</button>
+</form>
+</div>
+</dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 <script src="render.js"></script>
 <script src="app.js"></script>
