@@ -261,8 +261,9 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
         ("flipkart.com", 1149.0),
         ("amazon.in", 1199.0),
         ("indiamart.com", 1249.0),
+        ("reliancedigital.in", 1499.0),
     ]
-    assert [m["bulk"] for m in result["matches"]] == [False, False, True]
+    assert [m["bulk"] for m in result["matches"]] == [False, False, True, False]
     assert result["cheapest"]["shop"] == "flipkart.com"
     assert result["cheapest"]["saving_vs_gem"] == 150.0
     assert [(p["shop"], p["why"]) for p in result["possible_matches"]] == [("amazon.in", "different pack")]
@@ -270,6 +271,7 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     assert result["shops"]["amazon.in"]["status"] == "found"
     assert result["shops"]["flipkart.com"]["status"] == "found" and result["shops"]["flipkart.com"]["retried"] is True
     assert result["shops"]["indiamart.com"]["status"] == "found"
+    assert result["shops"]["reliancedigital.in"]["status"] == "found"
     assert result["shops"]["example-shop.in"]["status"] == "not_found"
     seen, _ = read_stream(client, run_id)
     types = {e["type"] for e in seen}

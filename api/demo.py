@@ -30,6 +30,48 @@ DEMO_AMAZON_PRICE = 1199.0
 DEMO_PACK_PRICE = 2199.0
 DEMO_OTHER_PRICE = 699.0
 DEMO_B2B_PRICE = 1249.0
+DEMO_DEARER_PRICE = 1499.0
+
+# A local drawing keeps the demo offline while still exercising the image
+# branch in the GeM card. The page accepts data: images as well as GeM hosts.
+# It is percent-encoded, not base64: the key-shaped-text redactor treats a long
+# base64 run as a secret and would replace the image source with [hidden].
+DEMO_IMAGE = (
+    "data:image/svg+xml,"
+    "%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22160%22%20height"
+    "%3D%22160%22%20viewBox%3D%220%200%20160%20160%22%3E%3Crect%20width%3D%22160%22%20height%"
+    "3D%22160%22%20fill%3D%22%23eef1f5%22%2F%3E%3Crect%20x%3D%2252%22%20y%3D%2236%22%20width%"
+    "3D%2256%22%20height%3D%2288%22%20rx%3D%2228%22%20fill%3D%22%23d9dce1%22%20stroke%3D%22%2"
+    "35a6270%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M80%2040v34%22%20stroke%3D%22%"
+    "235a6270%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M72%2080h16%22%20stroke%3D%22"
+    "%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Ctext%20x%3D%2280%22%20y%3D%22140%22%20text"
+    "-anchor%3D%22middle%22%20font-family%3D%22Segoe%20UI%2C%20sans-serif%22%20font-size%3D%2"
+    "212%22%20fill%3D%22%235a6270%22%3EGeM%20demo%3C%2Ftext%3E%3C%2Fsvg%3E"
+)
+DEMO_SPECS = {
+    "Connectivity": "Bluetooth 5.1 and Logi Bolt USB receiver",
+    "Colour": "Graphite",
+    "Sensor": "Darkfield high precision",
+    "Buttons": "5 programmable buttons",
+    "Battery": "1 AA battery, up to 24 months",
+    "Compatible with": "Windows 10 or later, macOS 10.14 or later, Linux, iPadOS 14 or later, Android 8 or later",
+    "Dimensions": "105.4 mm x 65.8 mm x 38.2 mm",
+    "Weight": "101 g including battery",
+    "Scroll wheel": "SmartWheel with horizontal scrolling",
+    "Silent clicks": "Yes, quiet click switches",
+    "Wireless range": "10 m",
+    "Package contents": "Mouse, USB receiver, AA battery, user documentation",
+    "Warranty": "1 year limited hardware warranty",
+    "Country of origin": "China",
+    "Model number": "910-006259",
+    "Part number": "M650-GRAPHITE-DEMO",
+}
+DEMO_OTHER_SHOPS = (
+    ("example-shop.in", "https://www.example-shop.in/m221", "Logitech M221 Silent Wireless Mouse", DEMO_OTHER_PRICE),
+    ("indiamart.com", "https://www.indiamart.com/demo-m650", "Logitech M650 Signature Wireless Mouse", DEMO_B2B_PRICE),
+    ("reliancedigital.in", "https://www.reliancedigital.in/demo-m650", "Logitech M650 Signature Wireless Mouse", DEMO_DEARER_PRICE),
+    ("croma.com", "https://www.croma.com/demo-m650", None, None),
+)
 
 
 def _pause(seconds: float = DEMO_DELAY) -> None:
@@ -46,7 +88,8 @@ def _gem_product(gem_url: str) -> dict:
         "brand": "Logitech",
         "model": "M650",
         "category_slug": "computer-mouse",
-        "specs": {"Connectivity": "Bluetooth", "Colour": "Graphite"},
+        "image": DEMO_IMAGE,
+        "specs": dict(DEMO_SPECS),
     }
 
 
@@ -73,13 +116,14 @@ def _normalize(product: dict) -> dict:
     }
 
 
-def _candidate(domain: str, url: str, title: str, price: float) -> CandidateResult:
+def _candidate(domain: str, url: str, title: str, price: float, *, error: str = "") -> CandidateResult:
     return CandidateResult(
         source_domain=domain,
         url=url,
         scraper_used=domain.split(".")[0],
-        structured_fields={"title": title, "price": price, "currency": "INR", "in_stock": True},
+        structured_fields=None if error else {"title": title, "price": price, "currency": "INR", "in_stock": True},
         raw_page_text=None,
+        fetch_error=error or None,
     )
 
 
@@ -139,7 +183,7 @@ def _discover(queries, allowed_domains):
     _pause()
     from discovery.discover import DiscoveryResult
 
-    urls = ["https://www.example-shop.in/m221", "https://www.indiamart.com/demo-m650"]
+    urls = [entry[1] for entry in DEMO_OTHER_SHOPS]
     return [
         DiscoveryResult(
             query=queries[0] if queries else FIRST_QUERY,
@@ -151,8 +195,11 @@ def _discover(queries, allowed_domains):
 
 def _generic_scrape(url: str) -> CandidateResult:
     _pause()
-    if "indiamart.com" in url:
-        return _candidate("indiamart.com", url, "Logitech M650 Signature Wireless Mouse", DEMO_B2B_PRICE)
+    for domain, page_url, title, price in DEMO_OTHER_SHOPS:
+        if page_url == url:
+            if title is None:
+                return _candidate(domain, url, "", 0.0, error="demo: the shop blocked the page")
+            return _candidate(domain, url, title, price)
     return _candidate("example-shop.in", url, "Logitech M221 Silent Mouse", DEMO_OTHER_PRICE)
 
 

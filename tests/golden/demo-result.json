@@ -12,7 +12,8 @@
     "example-shop.in",
     "flipkart.com",
     "indiamart.com",
-    "other"
+    "other",
+    "reliancedigital.in"
   ],
   "comparison": {
     "cheapest_match_price": 1149.0,
@@ -25,7 +26,7 @@
     "brand": "Logitech",
     "canonical_name": "Logitech M650 Signature Wireless Mouse",
     "described_by": "llm",
-    "image": null,
+    "image": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22160%22%20height%3D%22160%22%20viewBox%3D%220%200%20160%20160%22%3E%3Crect%20width%3D%22160%22%20height%3D%22160%22%20fill%3D%22%23eef1f5%22%2F%3E%3Crect%20x%3D%2252%22%20y%3D%2236%22%20width%3D%2256%22%20height%3D%2288%22%20rx%3D%2228%22%20fill%3D%22%23d9dce1%22%20stroke%3D%22%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M80%2040v34%22%20stroke%3D%22%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M72%2080h16%22%20stroke%3D%22%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Ctext%20x%3D%2280%22%20y%3D%22140%22%20text-anchor%3D%22middle%22%20font-family%3D%22Segoe%20UI%2C%20sans-serif%22%20font-size%3D%2212%22%20fill%3D%22%235a6270%22%3EGeM%20demo%3C%2Ftext%3E%3C%2Fsvg%3E",
     "model": "M650",
     "price": {
       "high": 1299.0,
@@ -33,8 +34,22 @@
       "low": 1299.0
     },
     "specs": {
+      "Battery": "1 AA battery, up to 24 months",
+      "Buttons": "5 programmable buttons",
       "Colour": "Graphite",
-      "Connectivity": "Bluetooth"
+      "Compatible with": "Windows 10 or later, macOS 10.14 or later, Linux, iPadOS 14 or later, Android 8 or later",
+      "Connectivity": "Bluetooth 5.1 and Logi Bolt USB receiver",
+      "Country of origin": "China",
+      "Dimensions": "105.4 mm x 65.8 mm x 38.2 mm",
+      "Model number": "910-006259",
+      "Package contents": "Mouse, USB receiver, AA battery, user documentation",
+      "Part number": "M650-GRAPHITE-DEMO",
+      "Scroll wheel": "SmartWheel with horizontal scrolling",
+      "Sensor": "Darkfield high precision",
+      "Silent clicks": "Yes, quiet click switches",
+      "Warranty": "1 year limited hardware warranty",
+      "Weight": "101 g including battery",
+      "Wireless range": "10 m"
     },
     "title": "Logitech M650 Signature Wireless Mouse (Demo)",
     "url": "https://mkp.gem.gov.in/demo/p-123.html"
@@ -44,10 +59,25 @@
     "category_slug": "computer-mouse",
     "gem_price": 1299.0,
     "gem_price_type": "fixed",
+    "image": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22160%22%20height%3D%22160%22%20viewBox%3D%220%200%20160%20160%22%3E%3Crect%20width%3D%22160%22%20height%3D%22160%22%20fill%3D%22%23eef1f5%22%2F%3E%3Crect%20x%3D%2252%22%20y%3D%2236%22%20width%3D%2256%22%20height%3D%2288%22%20rx%3D%2228%22%20fill%3D%22%23d9dce1%22%20stroke%3D%22%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M80%2040v34%22%20stroke%3D%22%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M72%2080h16%22%20stroke%3D%22%235a6270%22%20stroke-width%3D%222%22%2F%3E%3Ctext%20x%3D%2280%22%20y%3D%22140%22%20text-anchor%3D%22middle%22%20font-family%3D%22Segoe%20UI%2C%20sans-serif%22%20font-size%3D%2212%22%20fill%3D%22%235a6270%22%3EGeM%20demo%3C%2Ftext%3E%3C%2Fsvg%3E",
     "model": "M650",
     "specs": {
+      "Battery": "1 AA battery, up to 24 months",
+      "Buttons": "5 programmable buttons",
       "Colour": "Graphite",
-      "Connectivity": "Bluetooth"
+      "Compatible with": "Windows 10 or later, macOS 10.14 or later, Linux, iPadOS 14 or later, Android 8 or later",
+      "Connectivity": "Bluetooth 5.1 and Logi Bolt USB receiver",
+      "Country of origin": "China",
+      "Dimensions": "105.4 mm x 65.8 mm x 38.2 mm",
+      "Model number": "910-006259",
+      "Package contents": "Mouse, USB receiver, AA battery, user documentation",
+      "Part number": "M650-GRAPHITE-DEMO",
+      "Scroll wheel": "SmartWheel with horizontal scrolling",
+      "Sensor": "Darkfield high precision",
+      "Silent clicks": "Yes, quiet click switches",
+      "Warranty": "1 year limited hardware warranty",
+      "Weight": "101 g including battery",
+      "Wireless range": "10 m"
     },
     "title": "Logitech M650 Signature Wireless Mouse (Demo)",
     "url": "https://mkp.gem.gov.in/demo/p-123.html"
@@ -124,6 +154,30 @@
       },
       "title": "Logitech M650 Signature Wireless Mouse",
       "url": "https://www.indiamart.com/demo-m650"
+    },
+    {
+      "bulk": false,
+      "candidate_url": "https://www.reliancedigital.in/demo-m650",
+      "cheaper_than_gem": false,
+      "confidence": 0.94,
+      "delta_vs_gem": 200.0,
+      "extraction_source": "scraper",
+      "in_stock": true,
+      "is_match": true,
+      "outcome": "match",
+      "price": 1499.0,
+      "price_used": 1499.0,
+      "reason": "Same model number and a plausible price.",
+      "shop": "reliancedigital.in",
+      "source_domain": "reliancedigital.in",
+      "structured_fields": {
+        "currency": "INR",
+        "in_stock": true,
+        "price": 1499.0,
+        "title": "Logitech M650 Signature Wireless Mouse"
+      },
+      "title": "Logitech M650 Signature Wireless Mouse",
+      "url": "https://www.reliancedigital.in/demo-m650"
     }
   ],
   "not_found_on": [
@@ -155,7 +209,9 @@
   ],
   "result_version": 2,
   "search_issues": [
-    "flipkart.com: blocked/CAPTCHA - scrape failed (not counted as 'not found')"
+    "flipkart.com: blocked/CAPTCHA - scrape failed (not counted as 'not found')",
+    "croma.com: fetch failed (demo: the shop blocked the page)",
+    "croma.com: fetch failed on retry (demo: the shop blocked the page)"
   ],
   "shops": {
     "amazon.in": {
@@ -167,6 +223,16 @@
       "retryable": false,
       "seen": 3,
       "status": "found"
+    },
+    "croma.com": {
+      "checked": 0,
+      "dropped": 0,
+      "matches": 0,
+      "reason": "demo: the shop blocked the page",
+      "retried": true,
+      "retryable": false,
+      "seen": 1,
+      "status": "not_searched"
     },
     "example-shop.in": {
       "checked": 1,
@@ -199,20 +265,31 @@
       "status": "found"
     },
     "other": {
-      "checked": 2,
+      "checked": 3,
       "dropped": 0,
       "matches": 0,
       "reason": "no confirmed match in the final result",
       "retried": false,
       "retryable": false,
-      "seen": 2,
+      "seen": 4,
       "status": "not_found"
+    },
+    "reliancedigital.in": {
+      "checked": 1,
+      "dropped": 0,
+      "matches": 1,
+      "reason": "",
+      "retried": false,
+      "retryable": false,
+      "seen": 1,
+      "status": "found"
     }
   },
   "similar": [],
   "skipped": [],
   "state": "done",
   "warnings": [
-    "indiamart.com is a B2B/bulk marketplace - its price may be wholesale, not retail."
+    "indiamart.com is a B2B/bulk marketplace - its price may be wholesale, not retail.",
+    "croma.com: not_searched (demo: the shop blocked the page)"
   ]
 }
