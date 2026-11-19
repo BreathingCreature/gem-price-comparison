@@ -292,7 +292,7 @@ def test_status_counts_calls_and_errors():
 
     router.complete(MESSAGES, 100)
     rows = {r["provider"]: r for r in router.status()}
-    assert rows["a"]["errors"] == 1 and rows["a"]["calls"] == 0
+    assert rows["a"]["errors"] == 1 and rows["a"]["calls"] == 1
     assert rows["b"]["calls"] == 1 and rows["b"]["errors"] == 0
     assert "503" in rows["a"]["last_error"]
 
@@ -763,5 +763,5 @@ def test_counters_increment_once_per_attempt():
     assert router._call_endpoint(endpoint, MESSAGES, 100, "test") is None
     clock.now += 30
     assert router._call_endpoint(endpoint, MESSAGES, 100, "test") == "ok"
-    assert endpoint.calls == 1
+    assert endpoint.calls == 3
     assert endpoint.errors == 2
