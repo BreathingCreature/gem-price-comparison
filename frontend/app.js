@@ -1180,8 +1180,9 @@ function paintShopRows(stats) {
     record.el.title = pipelineRowTitle(row);
     var nameEl = record.el.querySelector(".shop-status");
     if (nameEl) setText(nameEl, row.status ? R.shopStatusLabel(row.status) : "Searching");
-    updateStep(record.el, "-filter", model.filter, row.kept || row.dropped ? "done" : "active");
-    updateStep(record.el, "-verify", model.verify, row.judged || row.rejected ? "done" : "active");
+    var stepState = row.status ? "done" : "active";
+    updateStep(record.el, "-filter", model.filter, row.kept || row.dropped ? "done" : stepState);
+    updateStep(record.el, "-verify", model.verify, row.judged || row.rejected ? "done" : stepState);
     updateStep(record.el, "-confirmed", String(row.matches || 0), row.matches ? "done" : (row.status ? "done" : "waiting"));
   });
   var more = gel("shop-more");
@@ -1204,7 +1205,7 @@ function paintShopRows(stats) {
 }
 
 function updateStep(root, suffix, value, kind) {
-  var valueEl = root.querySelector(".step[id$='" + suffix + "-value']");
+  var valueEl = root.querySelector(".step-value[id$='" + suffix + "-value']");
   var step = root.querySelector(".step[id$='" + suffix + "']");
   if (!valueEl || !step) return;
   setState(step, kind);
@@ -1740,6 +1741,14 @@ function buildFeedFilters() {
 function bindEvents() {
   $("theme-toggle").addEventListener("click", function () {
     applyTheme(currentTheme() === "dark" ? "light" : "dark");
+  });
+  $("scroll-hint").addEventListener("click", function (event) {
+    var target = $("recent-title");
+    if (!target) return;
+    event.preventDefault();
+    var top = target.getBoundingClientRect().top + (window.pageYOffset || 0) - 60;
+    try { window.scrollTo({ top: top, behavior: "auto" }); }
+    catch (e) { window.scrollTo(0, top); }
   });
   $("run-form").addEventListener("submit", function (event) {
     event.preventDefault();

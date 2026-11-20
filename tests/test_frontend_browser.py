@@ -4,6 +4,7 @@ Skipped unless Playwright is installed. The suite must stay runnable without a
 browser; this file is the extra check that the page really works after the unit
 tests have read the pure models.
 """
+import copy
 import socket
 import threading
 import time
@@ -194,7 +195,16 @@ def test_the_start_page_is_only_the_link_box_and_recent_runs(browser, demo_serve
         assert page.locator("#recent-title").is_visible()
         assert page.locator("#demo-badge").inner_text() == "Demo data"
         assert page.locator("#llm-banner").is_hidden()
+        assert page.locator("#scroll-hint").is_visible()
+        hint = page.locator("#scroll-hint").bounding_box()
+        assert hint is not None and hint["y"] > 700, "the recent-runs hint sits at the bottom edge"
         assert _js(cdp, "document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+        before = _js(cdp, "document.querySelector('#recent-title').getBoundingClientRect().top")
+        page.click("#scroll-hint")
+        page.wait_for_timeout(200)
+        after = _js(cdp, "document.querySelector('#recent-title').getBoundingClientRect().top")
+        assert after < before, f"the recent heading did not move from {before}"
+        assert _js(cdp, "window.scrollY") > 0
         _assert_clean(console_errors, page_errors, requests, responses, demo_server)
     finally:
         context.close()
@@ -277,7 +287,7 @@ def test_a_demo_run_hides_the_answer_until_done_then_collapses(browser, demo_ser
         page.click("#theme-toggle")
         assert _js(cdp, "document.documentElement.getAttribute('data-theme')") == "light"
 
-        for width in (1440, 1024, 768, 390):
+        for width in (1440, 1024, 768, 360, 1280, 1920):
             page.set_viewport_size({"width": width, "height": 900})
             page.wait_for_timeout(120)
             assert _js(
@@ -286,9 +296,104 @@ def test_a_demo_run_hides_the_answer_until_done_then_collapses(browser, demo_ser
             ), f"the page scrolls sideways at {width} px"
             assert _overlaps(cdp) == [], f"two controls overlap at {width} px"
 
+        # A long title and a long shop name must wrap, not push the page out.
+        _js(cdp, "document.querySelector('#gem-title').textContent = 'Wireless mouse with a very long product title '.repeat(5)")
+        _js(cdp, "document.querySelector('#answer-shop').textContent = 'on a-shop-with-a-very-long-name.example'")
+        for width in (360, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.wait_for_timeout(120)
+            assert _js(
+                cdp,
+                "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+            ), f"a long title scrolls sideways at {width} px"
+            assert _overlaps(cdp) == [], f"a long title overlaps a control at {width} px"
+
+        # 200 percent zoom halves the layout viewport, the same reflow a browser
+        # zoom asks for. The page must still fit without sideways scrolling.
+        page.set_viewport_size({"width": 1440, "height": 900})
+        _js(cdp, "document.documentElement.style.zoom = '200%'")
+        page.wait_for_timeout(150)
+        assert _js(cdp, "document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+        assert _overlaps(cdp) == [], "two controls overlap at 200 percent zoom"
+        _js(cdp, "document.documentElement.style.zoom = ''")
+
         _assert_clean(console_errors, page_errors, requests, responses, demo_server)
     finally:
         context.close()
+
+
+def test_twelve_other_shops_fit_every_width(browser):
+    """The six-row cap, the Show more toggle and the narrow layouts."""
+    previous_delay = demo.DEMO_DELAY
+    demo.DEMO_DELAY = 0
+    try:
+        base = demo.demo_runner(DEMO_URL, False, lambda event: None)
+    finally:
+        demo.DEMO_DELAY = previous_delay
+    result = copy.deepcopy(base)
+    for index in range(1, 9):
+        result["shops"][f"extra-{index}.example"] = {
+            "seen": 3,
+            "dropped": 1,
+            "checked": 2,
+            "matches": 0,
+            "possible": 0,
+            "rejected": 2,
+            "status": "not_found",
+            "reason": "searched, nothing confirmed",
+            "seconds": 1.2,
+            "retried": False,
+            "retryable": False,
+        }
+    other_shops = [
+        key for key in result["shops"]
+        if key not in ("flipkart.com", "amazon.in", "other")
+    ]
+
+    def runner(gem_url, refresh, on_event):
+        sequence = 0
+
+        def emit(event):
+            nonlocal sequence
+            sequence += 1
+            event["seq"] = sequence
+            event.setdefault("t", 0)
+            on_event(event)
+
+        emit({"type": "run_started"})
+        emit({"type": "gem_product", "title": "Logitech M650", "price": 1299.0,
+              "price_type": "fixed", "brand": "Logitech", "model": "M650"})
+        emit({"type": "normalized", "canonical_name": "Logitech M650", "brand": "Logitech",
+              "model": "M650", "queries": ["logitech m650"], "key_identifiers": ["M650"]})
+        for shop in other_shops:
+            emit({"type": "shop_started", "shop": shop})
+            emit({"type": "filter_finished", "shop": shop, "sent": 2, "dropped": 1, "seen": 3})
+            emit({"type": "shop_updated", "shop": shop, "status": "not_found"})
+        return result
+
+    server, thread, url = _serve(create_app(runner=runner, demo=True))
+    context, page, cdp, console_errors, page_errors, requests, responses = _new_page(browser, url)
+    try:
+        page.fill("#gem-url", DEMO_URL)
+        page.click("#run-btn")
+        page.locator("#run-state-label", has_text="Done").wait_for(timeout=30_000)
+        page.click("#pipeline-toggle")
+        assert page.locator("#shop-rows .shop-row").count() == len(other_shops)
+        assert page.locator("#shop-extra-1-example-filter-value").inner_text() == "+2 -1"
+        assert page.locator("#shop-more").inner_text() == f"Show {len(other_shops) - 6} more"
+        page.click("#shop-more")
+        for width in (360, 1024, 1280, 1920):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.wait_for_timeout(120)
+            assert _js(
+                cdp,
+                "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+            ), f"twelve shops scroll sideways at {width} px"
+            assert _overlaps(cdp) == [], f"twelve shops overlap a control at {width} px"
+        _assert_clean(console_errors, page_errors, requests, responses, url)
+    finally:
+        context.close()
+        _stop(server, thread)
 
 
 def test_the_system_tab_counts_this_run_for_each_provider(browser):

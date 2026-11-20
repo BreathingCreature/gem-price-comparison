@@ -31,6 +31,7 @@
 </header>
 <main id="main" class="shell">
 <section id="start-screen" class="start-screen" aria-labelledby="start-title">
+<div class="start-hero">
 <h1 id="start-title" class="sr-only">GeM Price Comparison</h1>
 <form id="run-form" class="run-form" novalidate>
 <div class="search-control">
@@ -40,6 +41,11 @@
 </div>
 <p id="url-error" class="form-error" role="alert" hidden></p>
 </form>
+<a id="scroll-hint" class="scroll-hint" href="#recent-title">
+<span>Recent runs</span>
+<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"></path></svg>
+</a>
+</div>
 <section class="recent" aria-labelledby="recent-title">
 <div class="section-head">
 <h2 id="recent-title">Recent runs</h2>
