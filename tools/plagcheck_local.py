@@ -136,7 +136,7 @@ def check(target_text: str, corpus: dict[str, dict], n: int,
 
 def render_md(result: dict, target: Path) -> str:
     lines = [
-        f"# Plagiarism check — {target.name}",
+        f"# Plagiarism check - {target.name}",
         "",
         f"- target words: {result['target_words']}",
         f"- target sentences (>= 8 words counted): {result['target_sentences']}",

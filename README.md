@@ -95,11 +95,11 @@ on the page with no keys and no network.
 
 ![Start screen with the GeM link field](docs/screens/start-1440-light.png)
 
-The start screen asks for one link and explains the five steps the run will take.
+The start screen asks for one product link. Recent runs sit below it.
 
 ![Run screen with the cheapest price and the live pipeline map](docs/screens/done-collapsed-1440-light.png)
 
-The run screen puts the first honest price next to the live shop counters.
+The run screen shows the best price when the run finishes; the pipeline folds to a one-line summary.
 
 ![Mobile run screen at 390 pixels wide](docs/screens/done-collapsed-390-light.png)
 
