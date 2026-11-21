@@ -53,7 +53,7 @@ MAX_EVENT_STREAMS = 8
 TRACE_TEXT_LIMIT = 1000
 CSP = (
     "default-src 'self'; img-src 'self' data: https://*.gem.gov.in; style-src 'self'; "
-    "script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'"
+    "script-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'"
 )
 _TRACE_TEXT_KEYS = ("raw_page_text", "page_text", "html", "raw_html")
 
@@ -112,7 +112,16 @@ class RunRequest(BaseModel):
 
 
 def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) -> dict:
-    return pipeline.run_pipeline(gem_url, refresh=refresh, on_event=on_event)
+    # highlights_fn: the real LLM path (cache, call, grounding gate,
+    # fallback). Demo runs and injected runners never reach here.
+    from llm import highlights as llm_highlights
+
+    return pipeline.run_pipeline(
+        gem_url,
+        refresh=refresh,
+        on_event=on_event,
+        highlights_fn=llm_highlights.compute_highlights,
+    )
 
 
 def _warm_up() -> None:
@@ -294,6 +303,12 @@ def _url_safe_for_icon(url: str, domain: str) -> bool:
     return _host_is_public(host)
 
 
+def _svg_content_type(content_type: str) -> bool:
+    """SVG is a document, not an image: it can carry script, so never serve one."""
+    text = (content_type or "").split(";")[0].strip().lower()
+    return text == "image/svg+xml" or text.endswith("+svg")
+
+
 def _safe_icon_get(url: str, domain: str, *, allowed_prefix: str = "image/", max_bytes: int = 100000):
     """Fetch one URL with the icon safety rules. Returns (bytes, content_type) or None."""
     from urllib.parse import urljoin
@@ -324,6 +339,10 @@ def _safe_icon_get(url: str, domain: str, *, allowed_prefix: str = "image/", max
             content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if not content_type.startswith(allowed_prefix):
                 return None
+            # image/x-icon and image/vnd.microsoft.icon arrive here through the
+            # image/ prefix; SVG is refused on purpose (see _svg_content_type).
+            if _svg_content_type(content_type):
+                return None
             length = response.headers.get("Content-Length")
             if length and str(length).isdigit() and int(length) > max_bytes:
                 return None
@@ -343,18 +362,55 @@ def _safe_icon_get(url: str, domain: str, *, allowed_prefix: str = "image/", max
 
 
 def _domain_in_saved_runs(domain: str, manager) -> bool:
+    """True when a run contains this host, ignoring the www. form.
+
+    The page asks for the host it drew (sometimes www.shop.in) while a run
+    stores the bare host, so an exact string compare answered 204 for a shop
+    the run had actually seen. Round 4's letter tiles came from that.
+    """
+    wanted = _host_from_value(domain)
+    if not wanted:
+        return False
+
+    def wanted_by_run(job) -> bool:
+        return any(_same_registrable_domain(wanted, host) for host in _domains_in_run(job))
+
     jobs = getattr(manager, "_jobs", {}) or {}
     for job in jobs.values():
-        if domain in _domains_in_run(job):
+        if wanted_by_run(job):
             return True
     try:
         for record in runs_store.list_runs():
-            if domain in _domains_in_run(record):
+            if wanted_by_run(record):
                 return True
     except Exception:
         pass
     return False
 
+
+
+def _icon_link_from_html(html: str, base: str):
+    """The href of the page's declared icon, in any attribute order.
+
+    Round 4 only matched rel before href, so a page written the other way
+    round was treated as having no icon at all. apple-touch-icon is asked for
+    first because it is the largest file a shop declares.
+    """
+    from urllib.parse import urljoin
+
+    tags = re.findall(r"<link\b[^>]*>", html, re.I)
+    for wanted in ("apple-touch-icon", "icon"):
+        for tag in tags:
+            rel = re.search(r"\brel\s*=\s*[\"']([^\"']*)[\"']", tag, re.I)
+            if not rel:
+                continue
+            names = rel.group(1).lower().split()
+            if not any(wanted in name for name in names):
+                continue
+            href = re.search(r"\bhref\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
+            if href:
+                return urljoin(base, href.group(1))
+    return None
 
 
 def _fetch_site_icon(domain: str, cache_dir: Path):
@@ -377,12 +433,9 @@ def _fetch_site_icon(domain: str, cache_dir: Path):
                 html = home[0].decode("utf-8", "replace")
             except Exception:
                 html = ""
-            match = re.search(r'<link[^>]+rel=["\']?[^"\']*icon[^"\']*["\']?[^>]*href=["\']([^"\']+)["\']', html, re.I)
-            if match:
-                from urllib.parse import urljoin
-
-                icon_url = urljoin(f"https://{domain}/", match.group(1))
-                result = _safe_icon_get(icon_url, domain)
+            match_url = _icon_link_from_html(html, f"https://{domain}/")
+            if match_url:
+                result = _safe_icon_get(match_url, domain)
 
     if result is None:
         return None
@@ -572,15 +625,20 @@ def create_app(
     def site_icon(domain: str):
         if not _ICON_DOMAIN_RE.match(domain):
             raise HTTPException(status_code=404, detail="Unknown domain.")
+        # The lookup and the cache key use the bare host, so the page may ask
+        # for www.shop.in or shop.in and both get the same icon.
+        lookup = _host_from_value(domain)
+        if not lookup or not _ICON_DOMAIN_RE.match(lookup):
+            raise HTTPException(status_code=404, detail="Unknown domain.")
         if demo:
-            # Demo mode promises no network calls; the page draws its letter tile.
+            # Demo mode promises no network calls; the page draws a globe.
             return Response(status_code=204)
-        if not _domain_in_saved_runs(domain, manager):
+        if not _domain_in_saved_runs(lookup, manager):
             # No fetch for a domain no run contains. 204 rather than 404: the
             # page probes icons before a run's result exists, and a 404 would
             # print a console error for every shop while the run is going.
             return Response(status_code=204)
-        result = _fetch_site_icon(domain, pipeline.CACHE_DIR / "icons")
+        result = _fetch_site_icon(lookup, pipeline.CACHE_DIR / "icons")
         if result is None:
             return Response(status_code=204)
         data, content_type = result

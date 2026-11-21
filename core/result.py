@@ -8,7 +8,7 @@ the evaluator all read the same shape.
 
 Shape (docs/api.md, spec/08_INTERFACES.md §2):
     result_version, run_id, trace_id, checked_at, from_cache, state,
-    gem {url,title,canonical_name,brand,model,price{low,high,kind},described_by},
+    gem {url,title,canonical_name,brand,model,price{low,high,kind},highlights[],described_by},
     shops {domain: {status,reason,seen,dropped,checked,matches,retried,retryable,seconds}},
     matches[]  (cheapest first, out-of-stock last),
     possible_matches[] (each with `why`),
@@ -180,7 +180,14 @@ def _add_unfinished_warnings(shops: dict, warnings: list) -> None:
                 warnings.append(line)
 
 
-def _gem_view(gem_url: str, gem_product: dict, normalized: dict, described_by: str | None, gem_price) -> dict:
+def _gem_view(
+    gem_url: str,
+    gem_product: dict,
+    normalized: dict,
+    described_by: str | None,
+    gem_price,
+    highlights: list | None = None,
+) -> dict:
     return {
         "url": gem_url or gem_product.get("url"),
         "title": gem_product.get("title"),
@@ -191,6 +198,9 @@ def _gem_view(gem_url: str, gem_product: dict, normalized: dict, described_by: s
         or {"low": gem_price, "high": gem_price, "kind": gem_product.get("gem_price_type", "unknown")},
         "image": gem_product.get("image"),
         "specs": gem_product.get("specs") or {},
+        # Key facts for the card; [] when the run did not ask for any, so
+        # readers can rely on the key existing on every fresh result.
+        "highlights": list(highlights or []),
         "described_by": described_by or normalized.get("described_by") or "llm",
     }
 
@@ -215,6 +225,7 @@ def build_result(
     run_id: str | None = None,
     checked_at: str | None = None,
     described_by: str | None = None,
+    highlights: list | None = None,
 ) -> dict:
     gem_product = dict(gem_product or {})
     normalized = normalized or {}
@@ -235,7 +246,7 @@ def build_result(
         for name, entry in shops.items()
         if entry.get("status") in (SHOP_FOUND, SHOP_POSSIBLE, SHOP_NOT_FOUND)
     )
-    gem_view = _gem_view(gem_url, gem_product, normalized, described_by, gem_price)
+    gem_view = _gem_view(gem_url, gem_product, normalized, described_by, gem_price, highlights=highlights)
 
     return {
         # --- v2 ---

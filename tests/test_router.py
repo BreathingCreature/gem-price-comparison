@@ -297,6 +297,19 @@ def test_status_counts_calls_and_errors():
     assert "503" in rows["a"]["last_error"]
 
 
+def test_two_failures_then_a_success_count_as_three_attempts():
+    """One count per attempt, success or not: the System tab's Calls and
+    Errors columns must read 3 and 2 after two failures and one answer."""
+    a = FakeClient([FakeHTTPError(400), FakeHTTPError(400)], label="a")
+    router, _ = make_router({"a": a}, max_wait=120.0)
+
+    assert router.complete(MESSAGES, 100) == "answer from a"
+    row = router.status()[0]
+    assert (row["calls"], row["errors"]) == (3, 2)
+    assert a.calls == 3
+    assert row["state"] == "ready"  # the success cleared the failure streak
+
+
 # --- reading llm_providers.json -----------------------------------------------------
 
 def _write_config(tmp_path, data):

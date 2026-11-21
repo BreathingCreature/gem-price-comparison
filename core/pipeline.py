@@ -89,6 +89,7 @@ from llm import router as llm_router
 from llm.router import GatewayExhausted
 from scrapers import gem as gem_extractor
 from llm import client as llm_client
+from llm import highlights as llm_highlights
 import discovery
 from llm import match as matcher
 from scrapers import flipkart as flipkart_scraper
@@ -717,6 +718,7 @@ def _aggregate(
     trace_id: str,
     state: str,
     from_cache: bool = False,
+    highlights: list | None = None,
 ) -> tuple[dict, list, list]:
     """Turn the pass's pieces into a v2 result (one place, called for the
     first result and again after the retry). Returns (result, matches, possible)."""
@@ -751,6 +753,7 @@ def _aggregate(
         state=state,
         from_cache=from_cache,
         trace_id=trace_id,
+        highlights=highlights,
     )
     return result, confirmed, possible
 
@@ -1074,6 +1077,8 @@ class RunContext:
     retried_shops: set = field(default_factory=set)
     similar: list = field(default_factory=list)
     result: dict = field(default_factory=dict)
+    highlights_job: object = None
+    highlights: list = field(default_factory=list)
 
 
 def _cached_result(gem_url: str, refresh: bool, use_cache: bool) -> Optional[dict]:
@@ -1623,6 +1628,30 @@ def _summary_line(ctx: RunContext) -> str:
     )
 
 
+def _resolve_highlights(ctx: RunContext) -> None:
+    """Take the background highlights job's answer when it arrived inside
+    the wait cap; otherwise use the deterministic fallback. Emitted here,
+    on the main thread: a plain thread cannot see the contextvar sink
+    (see core/events.py). No job means no event at all, so runs that
+    disable the feature emit nothing new."""
+    job = ctx.highlights_job
+    if job is None:
+        return
+    outcome = None
+    try:
+        if job.wait(llm_highlights.HIGHLIGHT_WAIT_SECONDS):
+            outcome = job.result()
+    except Exception as exc:
+        logger.debug("Highlights job unusable (%s: %s) - using the fallback.", type(exc).__name__, exc)
+    if not isinstance(outcome, dict):
+        outcome = {"facts": llm_highlights.fallback_highlights(ctx.gem_product_dict), "source": "fallback"}
+    raw_facts = outcome.get("facts")
+    facts = [row for row in raw_facts if isinstance(row, dict)] if isinstance(raw_facts, list) else []
+    source = "llm" if outcome.get("source") == "llm" else "fallback"
+    ctx.highlights = facts
+    events.emit("gem_highlights", facts=list(facts), source=source)
+
+
 def finish(ctx: RunContext) -> None:
     final_possible = list(getattr(ctx.final_match_result, "possible_matches", []) or [])
     final_shops = _shop_entries(
@@ -1642,6 +1671,9 @@ def finish(ctx: RunContext) -> None:
     )
     ctx.trace["stages"]["shops"] = final_shops
 
+    # --- key facts for the card: the LLM answer if it arrived in time ---
+    _resolve_highlights(ctx)
+
     # --- comparison arithmetic - the actual point of the project ----------------------
     result, confirmed, final_possible = _aggregate(
         gem_url=ctx.gem_url,
@@ -1655,6 +1687,7 @@ def finish(ctx: RunContext) -> None:
         tried_domains=ctx.tried_domains,
         trace_id=ctx.trace_id,
         state="done",
+        highlights=ctx.highlights,
     )
     ctx.result = result
     ctx.confirmed = confirmed
@@ -1698,6 +1731,7 @@ def _run_pipeline(
     generic_scrape_fn=generic_scraper.scrape,
     match_fn=matcher.match_candidates,
     expand_search_fn=llm_client.expand_search,
+    highlights_fn=None,  # None -> no highlights job, no event, [] on the card (see llm/highlights.py)
     use_cache: bool = True,
 ) -> dict:
     events.emit("run_started", gem_url=gem_url, refresh=refresh)
@@ -1725,6 +1759,10 @@ def _run_pipeline(
         _start_browser(ctx)
         read_gem(ctx, extract_fn)
         understand(ctx, normalize_fn)
+        if highlights_fn is not None:
+            # Started only now, so it can never delay the normalise step;
+            # the first pass below is what it overlaps with.
+            ctx.highlights_job = llm_highlights.start_highlights(ctx.gem_product_dict, highlights_fn=highlights_fn)
         first_pass(ctx, amazon_search_fn, discover_fn, generic_scrape_fn)
         first_result(ctx)
         retry_pass(ctx, expand_search_fn, amazon_search_fn, discover_fn, generic_scrape_fn)

@@ -344,11 +344,17 @@ def main(argv=None) -> int:
         return 2
 
     from core import config, pipeline
+    from llm import highlights as llm_highlights
 
     config.log_startup_check()
     printer = Printer(args.gem_url, no_wait=args.no_wait or args.json)
     try:
-        result = pipeline.run_pipeline(args.gem_url, refresh=args.refresh, on_event=printer.on_event)
+        result = pipeline.run_pipeline(
+            args.gem_url,
+            refresh=args.refresh,
+            on_event=printer.on_event,
+            highlights_fn=llm_highlights.compute_highlights,
+        )
     except Exception as e:
         print(f"Pipeline failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 1

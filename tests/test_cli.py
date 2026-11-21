@@ -285,7 +285,7 @@ def test_json_prints_the_v2_result(monkeypatch):
 
 
 def test_no_wait_passes_no_waiting_output(monkeypatch):
-    def runner(url, refresh, on_event):
+    def runner(url, refresh, on_event, **kwargs):
         on_event({"type": "run_finished", "result": _v2_result(state="shown")})
         on_event({"type": "shop_updated", "shop": "flipkart.com", "status": "found", "price": 1149.0})
         on_event({"type": "done"})
@@ -321,12 +321,27 @@ def test_fast_is_still_accepted(monkeypatch):
 def test_the_refresh_flag_reaches_the_pipeline(monkeypatch):
     seen = {}
 
-    def runner(url, refresh, on_event):
+    def runner(url, refresh, on_event, **kwargs):
         seen["refresh"] = refresh
         return _v2_result()
 
     _run_main([GEM_URL, "--refresh"], monkeypatch, runner)
     assert seen["refresh"] is True
+
+
+def test_the_cli_asks_for_the_real_highlights_path(monkeypatch):
+    """The CLI is a live entry point, so it passes the module's own
+    compute_highlights (cache, LLM, gate, fallback), not nothing."""
+    from llm import highlights as llm_highlights
+
+    seen = {}
+
+    def runner(url, refresh, on_event, **kwargs):
+        seen.update(kwargs)
+        return _v2_result()
+
+    _run_main([GEM_URL], monkeypatch, runner)
+    assert seen.get("highlights_fn") is llm_highlights.compute_highlights
 
 
 if __name__ == "__main__":

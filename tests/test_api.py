@@ -73,13 +73,30 @@ def test_health_says_whether_it_is_demo_mode(client):
 def test_every_response_carries_the_security_headers(client):
     expected = (
         "default-src 'self'; img-src 'self' data: https://*.gem.gov.in; style-src 'self'; script-src 'self'; "
-        "connect-src 'self'; base-uri 'none'; form-action 'self'"
+        "font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'"
     )
     for path in ("/", "/api/health"):
         headers = client.get(path).headers
         assert headers["content-security-policy"] == expected
         assert headers["x-content-type-options"] == "nosniff"
         assert headers["referrer-policy"] == "no-referrer"
+
+
+def test_the_real_runner_passes_the_highlights_path(monkeypatch):
+    """Live runs ask for the module's own compute_highlights; injected
+    runners (the ones the other tests use) never see it."""
+    from api import server as server_module
+    from llm import highlights as llm_highlights
+
+    seen = {}
+
+    def fake_run(gem_url, refresh=False, on_event=None, **kwargs):
+        seen.update(kwargs)
+        return {"result_version": 2}
+
+    monkeypatch.setattr(pipeline, "run_pipeline", fake_run)
+    server_module._real_runner(GEM_URL, False, lambda event: None)
+    assert seen.get("highlights_fn") is llm_highlights.compute_highlights
 
 
 def test_cors_is_off_until_origins_are_configured(monkeypatch):

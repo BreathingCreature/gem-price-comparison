@@ -180,6 +180,71 @@ def test_demo_mode_returns_no_icon_instead_of_making_a_network_call(monkeypatch)
     assert response.status_code == 204
 
 
+def test_the_www_form_of_a_known_shop_still_gets_an_icon(monkeypatch):
+    """Round 4 drew a letter because the page asked for www.shop.in."""
+    app = create_app(runner=lambda *a: {})
+    job = Job("https://mkp.gem.gov.in/computer-mouse/one/p-1-2-cat.html", False)
+    job.result = {"shops": {"example-shop.in": {"status": "found"}}, "matches": []}
+    app.state.manager._jobs[job.id] = job
+    seen = []
+
+    def fetch(domain, cache_dir):
+        seen.append(domain)
+        return b"png", "image/png"
+
+    monkeypatch.setattr(server, "_fetch_site_icon", fetch)
+    response = TestClient(app).get("/api/icon/www.example-shop.in")
+    assert response.status_code == 200
+    assert response.content == b"png"
+    assert seen == ["example-shop.in"]  # one cache entry for both spellings
+
+
+def test_a_page_that_declares_its_icon_after_the_href_is_still_read():
+    html = (
+        '<link rel="stylesheet" href="/a.css">'
+        '<link href="/icon.png" rel="icon">'
+        '<link rel="apple-touch-icon" href="/touch.png">'
+    )
+    assert server._icon_link_from_html(html, "https://shop.in/") == "https://shop.in/touch.png"
+
+
+def test_a_site_without_a_favicon_ico_uses_the_icon_it_declares(tmp_path, monkeypatch):
+    def fake_get(url, domain, **kwargs):
+        if url.endswith("/favicon.ico"):
+            return None
+        if url.endswith("/"):
+            return b'<link href="/x.png" rel="icon">', "text/html"
+        if url.endswith("/x.png"):
+            return b"png-bytes", "image/png"
+        raise AssertionError("unexpected fetch " + url)
+
+    monkeypatch.setattr(server, "_safe_icon_get", fake_get)
+    assert server._fetch_site_icon("shop.example", tmp_path) == (b"png-bytes", "image/png")
+
+
+def test_both_ico_content_types_are_accepted(monkeypatch):
+    _public(monkeypatch)
+    for content_type in ("image/x-icon", "image/vnd.microsoft.icon"):
+        monkeypatch.setattr(
+            server.requests,
+            "get",
+            lambda *a, **k: FakeResponse(body=b"\x00\x00\x01\x00", content_type=content_type),
+        )
+        data, got = server._safe_icon_get("https://shop.example/favicon.ico", "shop.example")
+        assert data == b"\x00\x00\x01\x00"
+        assert got == content_type
+
+
+def test_an_svg_icon_is_refused(monkeypatch):
+    _public(monkeypatch)
+    monkeypatch.setattr(
+        server.requests,
+        "get",
+        lambda *a, **k: FakeResponse(body=b"<svg xmlns='http://www.w3.org/2000/svg'/>", content_type="image/svg+xml"),
+    )
+    assert server._safe_icon_get("https://shop.example/favicon.svg", "shop.example") is None
+
+
 def test_a_missing_provider_icon_answers_204(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "FRONTEND_DIR", tmp_path)
     client = TestClient(create_app(runner=lambda *a: {}))
