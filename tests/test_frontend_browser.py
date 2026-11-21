@@ -153,13 +153,13 @@ def _overlaps(cdp):
         cdp,
         """(() => {
           const groups = [
-            ['.topbar > *'],
+            ['.topbar .left', '.topbar .right'],
             ['.search-control > *'],
-            ['#pipeline-top .pipeline-node'],
-            ['.lane'],
-            ['.lane-steps .step'],
-            ['.tablist .tab'],
-            ['.summary-body > *']
+            ['#pipeline-top .step-line'],
+            ['#map-lanes > .lane', '#shop-rows > .lane'],
+            ['.lane > *'],
+            ['.tabs .tab'],
+            ['.summary .sum-left', '.summary .sum-right']
           ];
           const bad = [];
           for (const selectors of groups) {
@@ -245,26 +245,27 @@ def test_a_demo_run_hides_the_answer_until_done_then_collapses(browser, demo_ser
         page.locator("#run-state-label", has_text="Done").wait_for(timeout=45_000)
         page.locator("#verdict").wait_for(state="visible")
         assert page.locator("#answer-price").inner_text() == "\u20b91,149"
-        assert page.locator("#answer-shop").inner_text() == "on flipkart.com"
-        assert "saves" in page.locator("#answer-saving").inner_text()
+        assert page.locator("#answer-shop").inner_text() == "flipkart.com"
+        assert "Saves" in page.locator("#answer-saving").inner_text()
         assert page.locator("#count-matches").inner_text() == "4"
         assert page.locator("#count-possible").inner_text() == "1"
         assert page.locator("#gem-title").inner_text() == "Logitech M650 Signature Wireless Mouse"
         assert page.locator("#gem-image").is_visible()
         assert page.locator("#gem-specs .spec-row").count() > 0
-        assert page.locator("#lane-flipkart-status").inner_text() == "Found a match"
-        assert page.locator("#lane-amazon-status").inner_text() == "Found a match"
-        assert page.locator("#lane-other-status").inner_text() == "Found a match"
+        assert page.locator("#lane-flipkart-status").inner_text() == "found"
+        assert page.locator("#lane-amazon-status").inner_text() == "found"
+        assert page.locator("#lane-other-status").inner_text() == "found"
         assert page.locator("#shop-rows .shop-row").count() >= 4
 
         # The pipeline folds itself away once the run is done, and the reader
-        # can open it again.
+        # can open it again with the chevron.
         assert page.locator("#pipeline-body").is_hidden()
-        assert page.locator("#pipeline-toggle").inner_text() == "Show details"
         assert page.locator("#pipeline-toggle").get_attribute("aria-expanded") == "false"
+        assert page.locator("#pipeline-card").get_attribute("data-open") == "false"
+        assert page.locator("#pipeline-toggle").inner_text().strip() == ""
         page.click("#pipeline-toggle")
         assert page.locator("#pipeline-body").is_visible()
-        assert page.locator("#pipeline-toggle").inner_text() == "Hide details"
+        assert page.locator("#pipeline-toggle").get_attribute("aria-expanded") == "true"
 
         # The event source is closed by the page, not left polling.
         assert _js(cdp, "window.__eventSources.map(s => s.readyState)") == [2]
@@ -283,7 +284,7 @@ def test_a_demo_run_hides_the_answer_until_done_then_collapses(browser, demo_ser
 
         page.click("#theme-toggle")
         assert _js(cdp, "document.documentElement.getAttribute('data-theme')") == "dark"
-        assert _js(cdp, "getComputedStyle(document.body).backgroundColor") == "rgb(36, 39, 44)"
+        assert _js(cdp, "getComputedStyle(document.body).backgroundColor") == "rgb(27, 30, 35)"
         page.click("#theme-toggle")
         assert _js(cdp, "document.documentElement.getAttribute('data-theme')") == "light"
 
@@ -323,7 +324,7 @@ def test_a_demo_run_hides_the_answer_until_done_then_collapses(browser, demo_ser
 
 
 def test_twelve_other_shops_fit_every_width(browser):
-    """The six-row cap, the Show more toggle and the narrow layouts."""
+    """Every other-shop row is shown at once, at the narrow layouts too."""
     previous_delay = demo.DEMO_DELAY
     demo.DEMO_DELAY = 0
     try:
@@ -380,8 +381,8 @@ def test_twelve_other_shops_fit_every_width(browser):
         page.click("#pipeline-toggle")
         assert page.locator("#shop-rows .shop-row").count() == len(other_shops)
         assert page.locator("#shop-extra-1-example-filter-value").inner_text() == "+2 -1"
-        assert page.locator("#shop-more").inner_text() == f"Show {len(other_shops) - 6} more"
-        page.click("#shop-more")
+        # The design has no cap and no Show more: every shop is on the map.
+        assert page.locator("#shop-more").count() == 0
         for width in (360, 1024, 1280, 1920):
             page.set_viewport_size({"width": width, "height": 900})
             page.wait_for_timeout(120)
@@ -457,13 +458,88 @@ def test_the_system_tab_counts_this_run_for_each_provider(browser):
         page.click("#run-btn")
         page.locator("#run-state-label", has_text="Done").wait_for(timeout=20_000)
         page.click("#tab-system")
-        page.locator("tr[data-endpoint='fake/model']").wait_for(state="visible")
-        cells = page.locator("tr[data-endpoint='fake/model'] td")
-        assert cells.nth(2).inner_text() == "7"
-        assert cells.nth(3).inner_text() == "2"
-        assert cells.nth(4).inner_text() == "1 call"
+        row = page.locator("div.p-row[data-endpoint='fake/model']")
+        row.wait_for(state="visible")
+        assert row.locator(".p-calls").inner_text() == "7"
+        assert row.locator(".p-errors").inner_text() == "2"
+        assert row.locator(".p-run").inner_text() == "1 call"
         _assert_clean(console_errors, page_errors, requests, responses, url)
     finally:
         context.close()
         _stop(server, thread)
         router_module.get_router = original
+
+
+def test_fact_values_wrap_as_words_and_keep_an_eight_character_cell(browser):
+    """The '6to10' bug: never let a spec value collapse into letter tiles."""
+    long_value = (
+        "Bluetooth 5.1 and Logi Bolt USB receiver with a stable wireless link "
+        "to the computer and a long battery life of up to twenty four months "
+        "on a single AA cell under normal office use and moderate clicking"
+    )
+    result = {
+        "result_version": 2,
+        "state": "done",
+        "gem": {
+            "title": "Mouse with long specs",
+            "price": {"low": 1299.0, "high": 1299.0, "kind": "fixed"},
+            "specs": {"Battery life": "6 to 10 hours", "Long note": long_value},
+            "highlights": [],
+        },
+        "cheapest": None,
+        "matches": [],
+        "possible_matches": [],
+        "similar": [],
+        "shops": {},
+        "warnings": [],
+        "from_cache": False,
+    }
+
+    def runner(gem_url, refresh, on_event):
+        on_event({
+            "seq": 1, "t": 0, "type": "gem_product", "title": "Mouse with long specs",
+            "price": 1299.0, "price_type": "fixed", "brand": "Brand", "model": "M1",
+            "specs": {"Battery life": "6 to 10 hours", "Long note": long_value},
+        })
+        on_event({
+            "seq": 2, "t": 0, "type": "normalized", "canonical_name": "Mouse with long specs",
+            "brand": "Brand", "model": "M1", "queries": ["mouse"], "key_identifiers": ["M1"],
+        })
+        time.sleep(0.2)
+        return result
+
+    server, thread, url = _serve(create_app(runner=runner, demo=False))
+    context, page, cdp, console_errors, page_errors, requests, responses = _new_page(browser, url)
+    try:
+        page.fill("#gem-url", DEMO_URL)
+        page.click("#run-btn")
+        page.locator("#gem-card").wait_for(state="visible")
+        values = _js(
+            cdp,
+            "Array.from(document.querySelectorAll('#gem-specs dd')).map(function (dd) {"
+            " var probe = document.createElement('span');"
+            " probe.textContent = '00000000';"
+            " probe.style.font = getComputedStyle(dd).font;"
+            " document.body.appendChild(probe);"
+            " var eight = probe.getBoundingClientRect().width;"
+            " probe.remove();"
+            " return {width: dd.getBoundingClientRect().width, eight: eight,"
+            " wrap: getComputedStyle(dd).overflowWrap, text: dd.textContent};"
+            "})",
+        )
+        assert len(values) >= 2
+        for value in values:
+            assert value["wrap"] == "break-word", value
+            assert value["width"] >= value["eight"] - 1, value
+        assert any("6 to 10 hours" in value["text"] for value in values)
+        for width in (360, 768, 1280):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.wait_for_timeout(120)
+            assert _js(
+                cdp,
+                "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+            ), f"long fact values scroll sideways at {width} px"
+        _assert_clean(console_errors, page_errors, requests, responses, url)
+    finally:
+        context.close()
+        _stop(server, thread)

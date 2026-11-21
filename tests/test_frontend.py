@@ -55,7 +55,9 @@ def test_safehref_only_lets_web_links_through():
 
 
 def test_every_link_in_the_page_goes_through_linkortext():
-    assert APP_JS.count("linkOrText(") >= 4
+    # The matches table and the similar list are the two built link sites; the
+    # old cards view added a third, and it is gone with the redesign.
+    assert APP_JS.count("linkOrText(") >= 3
     assert "safeHref" in APP_JS.split("function linkOrText", 1)[1].split("}", 1)[0]
 
 

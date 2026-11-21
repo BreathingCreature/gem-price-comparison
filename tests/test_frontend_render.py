@@ -297,3 +297,25 @@ def test_should_auto_collapse_only_at_done_without_manual_toggle():
     assert _js("r.shouldAutoCollapse(false, 'done')") is True
     assert _js("r.shouldAutoCollapse(true, 'done')") is False
     assert _js("r.shouldAutoCollapse(false, 'running')") is False
+
+
+def test_model_icon_prefers_the_family_then_the_provider():
+    assert _js("r.modelIcon({provider:'nvidia',model:'nvidia/nemotron-3-ultra-550b-a55b'})")["key"] == "nvidia-color"
+    assert _js("r.modelIcon({provider:'openrouter',model:'google/gemma-4-31b-it'})")["key"] == "gemma-color"
+    assert _js("r.modelIcon({provider:'nvidia',model:'meta/llama-3.3-70b-instruct'})")["key"] == "meta-color"
+    assert _js("r.modelIcon({provider:'nvidia',model:'openai/gpt-oss-20b'})")["key"] == "openai"
+    assert _js("r.modelIcon({provider:'mystery',model:'Gemini-2.5-flash'})")["key"] == "gemini-color"
+    # No family in the name: the provider decides.
+    assert _js("r.modelIcon({provider:'nvidia',model:'super-vl-120b'})")["key"] == "nvidia-color"
+    assert _js("r.modelIcon({provider:'openrouter',model:'mystery-model'})")["key"] == "openrouter-color"
+
+
+def test_model_icon_marks_the_black_glyphs_as_mono_and_unknown_as_empty():
+    assert _js("r.modelIcon({provider:'openai',model:'gpt-4o'})")["mono"] is True
+    assert _js("r.modelIcon({provider:'anthropic',model:'some-model'})")["mono"] is True
+    assert _js("r.modelIcon({provider:'groq',model:'some-model'})")["mono"] is True
+    assert _js("r.modelIcon({provider:'nvidia',model:'nemotron-3-nano'})")["mono"] is False
+    empty = _js("r.modelIcon({provider:'mystery',model:'whatever-1'})")
+    assert empty == {"key": "", "mono": False, "family": False}
+    assert _js("r.modelIcon(null)")["key"] == ""
+

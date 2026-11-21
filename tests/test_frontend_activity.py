@@ -35,6 +35,7 @@ EVENT_SAMPLES = [
     {"type": "run_started"}, {"type": "cache_hit"},
     {"type": "stage", "name": "extract", "label": "Reading the GeM product page"},
     {"type": "gem_product", "title": "Mouse", "price": 100, "price_type": "fixed"},
+    {"type": "gem_highlights", "facts": [{"label": "Brand", "value": "A"}], "source": "llm"},
     {"type": "normalized", "canonical_name": "Mouse", "brand": "A", "model": "B1", "queries": ["a b1"], "key_identifiers": ["B1"]},
     {"type": "llm_call", "endpoint": "e", "purpose": "verify", "seconds": 1.2, "ok": True},
     {"type": "llm_call", "endpoint": "e", "purpose": "verify", "seconds": 1.2, "ok": False, "status": 429, "error": "slow down"},

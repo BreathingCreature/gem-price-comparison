@@ -8,8 +8,9 @@ var gel = $; // dynamic ids are built at run time, not in the page
 var MAX_FEED_LINES = 600;
 var THEME_KEY = "gem-price-theme";
 var POLL_MS = 2000;
-var SHOP_ROWS_SHOWN = 6;
-var MONOGRAM_COLORS = ["#1f57c3", "#17784a", "#9a5a00", "#7a3ea1", "#0f6b78", "#a13d2d", "#40536b", "#6b5b1f"];
+var FACTS_SHOWN = 8;
+var GLOBE_PATH = "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18";
+var GEM_PATH = "M4 9l1.5-5h13L20 9M4 9v10h16V9M4 9c0 2 3 2 4 0 1 2 3 2 4 0 1 2 3 2 4 0 1 2 4 2 4 0M10 19v-5h4v5";
 var state = {
   health: null, demo: false, gates: {}, providers: null,
   runs: [], view: "start", runId: null, source: null, lastSeq: 0,
@@ -20,9 +21,10 @@ var state = {
   submitting: false, active: false, queued: false, finished: false, failed: false,
   renderedResult: null, lastClock: "", lastUrl: "",
   pipelineUserToggled: false, pipelineCollapsed: false,
-  shopsExpanded: false, shopRowOrder: [], shopRowEls: {},
+  highlights: [], shopRowOrder: [], shopRowEls: {},
   specsExpanded: false, providerPoll: null, providerEls: {},
-  iconProbes: {}, toastTimer: null
+  iconProbes: {}, shopManifest: null, shopManifestPromise: null,
+  toastTimer: null
 };
 
 function h(tag, attrs) {
@@ -55,16 +57,34 @@ function setText(el, text) {
 }
 function setState(el, value) { if (el && el.dataset.state !== value) el.dataset.state = value; }
 
-function svg(path) {
+function svgEl(paths, className) {
   var ns = "http://www.w3.org/2000/svg";
   var el = document.createElementNS(ns, "svg");
-  el.setAttribute("viewBox", "0 0 16 16");
+  el.setAttribute("viewBox", "0 0 24 24");
   el.setAttribute("aria-hidden", "true");
-  el.setAttribute("class", "icon");
-  var p = document.createElementNS(ns, "path");
-  p.setAttribute("d", path);
-  el.appendChild(p);
+  el.setAttribute("class", className || "svg");
+  (Array.isArray(paths) ? paths : [paths]).forEach(function (d) {
+    var p = document.createElementNS(ns, "path");
+    p.setAttribute("d", d);
+    el.appendChild(p);
+  });
   return el;
+}
+
+function globeGlyph() {
+  return h("span", { class: "ico glyph" }, svgEl(GLOBE_PATH));
+}
+function gemGlyph() {
+  return h("span", { class: "ico glyph" }, svgEl(GEM_PATH));
+}
+function chipGlyph() {
+  return h("span", { class: "ico glyph" }, svgEl([
+    "M9 3v2M15 3v2M9 19v2M15 19v2M3 9h2M3 15h2M19 9h2M19 15h2",
+    "M7 7h10v10H7z"
+  ]));
+}
+function externalArrow() {
+  return svgEl(["M14 4h6v6M20 4l-9 9", "M18 14v5H5V6h5"]);
 }
 
 function linkOrText(url, label, attrs) {
@@ -84,6 +104,47 @@ function toast(message) {
 }
 function announce(message) { setText($("page-alert"), message); }
 
+/* Icons: the bundled shop manifest first, then the site icon route, then a globe. */
+function bareHost(value) {
+  var text = String(value == null ? "" : value).trim().toLowerCase();
+  text = text.replace(/^[a-z]+:\/\//, "").split("/")[0].split("?")[0].split("#")[0];
+  text = text.replace(/:\d+$/, "");
+  return text;
+}
+
+function hostCandidates(host) {
+  var list = [host];
+  var noWww = host.replace(/^www\./, "");
+  if (noWww !== host) list.push(noWww);
+  var parts = noWww.split(".");
+  while (parts.length > 3) {
+    parts.shift();
+    list.push(parts.join("."));
+  }
+  return list;
+}
+
+function loadShopIcons() {
+  if (state.shopManifestPromise) return state.shopManifestPromise;
+  state.shopManifestPromise = fetch(API + "/shops/manifest.json")
+    .then(function (response) { return response.ok ? response.json() : null; })
+    .then(function (body) {
+      state.shopManifest = body && body.icons ? body.icons : {};
+      return state.shopManifest;
+    })
+    .catch(function () { state.shopManifest = {}; return state.shopManifest; });
+  return state.shopManifestPromise;
+}
+
+function manifestIcon(host) {
+  var icons = state.shopManifest || {};
+  var names = hostCandidates(host);
+  for (var i = 0; i < names.length; i += 1) {
+    if (icons[names[i]]) return icons[names[i]];
+  }
+  return "";
+}
+
 function probeIcon(src, onReady) {
   var known = state.iconProbes[src];
   if (known === "no") return;
@@ -99,47 +160,40 @@ function probeIcon(src, onReady) {
 }
 
 function siteIcon(domain) {
-  var name = String(domain || "").toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
-  var wrap = h("span", { class: "site-icon", title: name },
-    h("span", { class: "site-icon-letter", text: (name.charAt(0) || "?").toUpperCase() }));
-  if (!name) return wrap;
-  probeIcon(API + "/api/icon/" + encodeURIComponent(name), function () {
-    if (wrap.classList.contains("has-image")) return;
-    var img = h("img", { src: API + "/api/icon/" + encodeURIComponent(name), alt: "", width: "16", height: "16", loading: "lazy" });
-    img.addEventListener("load", function () { wrap.classList.add("has-image"); });
-    img.addEventListener("error", function () { if (img.parentNode) img.parentNode.removeChild(img); });
+  var host = bareHost(domain);
+  var wrap = h("span", { class: "site-icon", title: host });
+  if (!host) { wrap.hidden = true; return wrap; }
+  function showGlobe() {
+    clear(wrap);
+    wrap.classList.add("is-glyph");
+    wrap.appendChild(svgEl(GLOBE_PATH));
+  }
+  function showImage(src) {
+    clear(wrap);
+    wrap.classList.remove("is-glyph");
+    var img = h("img", { src: src, alt: "", width: "20", height: "20", loading: "lazy" });
+    img.addEventListener("error", showGlobe);
     wrap.appendChild(img);
-  });
+  }
+  function choose() {
+    var file = manifestIcon(host);
+    if (file) { showImage(API + "/shops/" + encodeURIComponent(file)); return; }
+    var api = API + "/api/icon/" + encodeURIComponent(host);
+    probeIcon(api, function () { if (wrap.isConnected) showImage(api); });
+  }
+  if (state.shopManifest !== null) choose(); else showGlobe();
+  loadShopIcons().then(function () { if (wrap.isConnected) choose(); });
   return wrap;
 }
 
-
-function monogram(name) {
-  name = String(name || "endpoint");
-  var letter = (name.charAt(0) || "?").toUpperCase();
-  var hash = 0;
-  for (var i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 997;
-  var tile = h("span", { class: "monogram", text: letter });
-  tile.style.backgroundColor = MONOGRAM_COLORS[hash % MONOGRAM_COLORS.length];
-  return tile;
-}
-
-function providerIcon(name) {
-  var label = R.providerLabel(name).toLowerCase();
-  var key = label.split(/[./:]/)[0] || "endpoint";
-  var wrap = h("span", { class: "provider-icon" }, monogram(key));
-  probeIcon("icons/" + encodeURIComponent(key) + ".svg", function () {
-    if (wrap.classList.contains("has-image")) return;
-    var img = h("img", { src: "icons/" + encodeURIComponent(key) + ".svg", alt: "", width: "16", height: "16" });
-    img.addEventListener("load", function () {
-      var old = wrap.querySelector(".monogram");
-      if (old) old.remove();
-      wrap.classList.add("has-image");
-    });
-    img.addEventListener("error", function () { if (img.parentNode) img.parentNode.removeChild(img); });
-    wrap.appendChild(img);
+function modelIconEl(endpoint) {
+  var info = R.modelIcon(endpoint);
+  if (!info.key) return chipGlyph();
+  var img = h("img", { class: "ico" + (info.mono ? " mono" : ""), src: API + "/icons/" + encodeURIComponent(info.key) + ".svg", alt: "" });
+  img.addEventListener("error", function () {
+    if (img.parentNode) img.parentNode.replaceChild(chipGlyph(), img);
   });
-  return wrap;
+  return img;
 }
 
 function savedTheme() {
@@ -232,12 +286,6 @@ function recentTime(run, status) {
   if (run.created) return R.relativeTime(new Date(run.created * 1000).toISOString());
   return "saved run";
 }
-function recentClass(status) {
-  if (status === "running") return "is-running";
-  if (status === "failed") return "is-failed";
-  if (status === "cached") return "is-cached";
-  return "is-done";
-}
 
 function paintRecent() {
   var list = $("recent-grid");
@@ -257,11 +305,10 @@ function paintRecent() {
   shown.forEach(function (run) {
     var status = R.recentState(run);
     var title = run.title || "Untitled run";
-    var row = h("button", { class: "recent-row", type: "button" },
-      h("span", { class: "recent-title", text: title }),
-      h("span", { class: "recent-price", text: run.cheapest_price != null ? R.money(run.cheapest_price) : "No confirmed price" }),
-      h("span", { class: "recent-time", text: recentTime(run, status) }),
-      h("span", { class: "recent-state " + recentClass(status), text: recentLabel(status) }));
+    var row = h("button", { class: "recent", type: "button" },
+      h("span", { class: "t", text: title }),
+      h("span", { class: "p", text: run.cheapest_price != null ? R.money(run.cheapest_price) : "No confirmed price" }),
+      h("span", { class: "w", text: recentTime(run, status) + " \u00b7 " + recentLabel(status) }));
     row.title = title;
     row.addEventListener("click", function () { openSavedRun(run.id); });
     fragment.appendChild(row);
@@ -379,6 +426,7 @@ function openSavedRun(runId) {
     }
     state.result = run.result;
     state.lastUrl = (run.result.gem && run.result.gem.url) || run.gem_url || state.lastUrl;
+    state.highlights = (run.result.gem && run.result.gem.highlights) || [];
     $("run-again").hidden = !state.lastUrl;
     state.finished = true;
     state.failed = run.status === "failed";
@@ -497,6 +545,12 @@ function handle(event) {
     case "cache_hit": setRunStatus("Cached result", "done"); break;
     case "gem_product": paintGemCard(); break;
     case "normalized": paintGemCard(); break;
+    case "gem_highlights":
+      state.highlights = event.facts || [];
+      if (state.result && state.result.gem) state.result.gem.highlights = state.highlights;
+      state.renderedResult = null;
+      paintGemCard();
+      break;
     case "shop_started": state.renderedResult = null; break;
     case "shop_finished": state.renderedResult = null; break;
     case "shop_updated":
@@ -573,13 +627,14 @@ function resetRunView() {
   state.lastClock = "";
   state.pipelineUserToggled = false;
   state.pipelineCollapsed = false;
-  state.shopsExpanded = false;
   state.shopRowOrder = [];
   state.shopRowEls = {};
+  state.highlights = [];
   state.specsExpanded = false;
   stopClock();
   setText($("run-clock"), "00:00");
-  setText($("run-state-label"), "Starting");
+  setText($("run-state-text"), "Starting");
+  $("run-state-label").dataset.state = "queued";
   $("run-error").hidden = true;
   setText($("run-error-text"), "");
   $("connection-banner").hidden = true;
@@ -589,6 +644,8 @@ function resetRunView() {
   $("gem-card").hidden = true;
   $("verdict").hidden = true;
   $("details-card").hidden = true;
+  $("gem-url-link").hidden = true;
+  setText($("gem-url-host"), "");
   setText($("gem-title"), "Reading the GeM page");
   setText($("gem-price"), "");
   setText($("gem-price-kind"), "");
@@ -599,9 +656,7 @@ function resetRunView() {
   $("gem-specs-toggle").hidden = true;
   clear($("price-bars"));
   clear($("matches-body"));
-  clear($("matches-cards"));
   clear($("possible-body"));
-  clear($("possible-cards"));
   clear($("similar-list"));
   clear($("warnings-list"));
   clear($("activity-list"));
@@ -610,8 +665,8 @@ function resetRunView() {
   clear($("shops-list"));
   $("shops-details").open = false;
   setText($("shops-count"), "");
-  setText($("answer-kicker"), "");
-  setText($("verdict-title"), "");
+  setText($("answer-kicker"), "Searching shops");
+  setText($("verdict-title"), "Best price found");
   setText($("answer-price"), "");
   setText($("answer-shop"), "");
   clear($("answer-shop-icon"));
@@ -654,9 +709,8 @@ function tickClock() {
 }
 
 function setRunStatus(label, kind) {
-  var el = $("run-state-label");
-  setText(el, label);
-  el.dataset.state = kind;
+  setText($("run-state-text"), label);
+  $("run-state-label").dataset.state = kind;
 }
 
 function finishRun(status) {
@@ -680,7 +734,14 @@ function finishRun(status) {
   }
   if (!state.result && state.runId) {
     fetch(API + "/api/runs/" + encodeURIComponent(state.runId)).then(function (response) { return response.json(); })
-      .then(function (run) { if (run && run.result) { state.result = run.result; state.renderedResult = null; } paintAll(); loadRuns(); scrollToSummary(); })
+      .then(function (run) {
+        if (run && run.result) {
+          state.result = run.result;
+          state.highlights = (run.result.gem && run.result.gem.highlights) || [];
+          state.renderedResult = null;
+        }
+        paintAll(); loadRuns(); scrollToSummary();
+      })
       .catch(function () { loadRuns(); });
   } else {
     paintAll();
@@ -762,13 +823,15 @@ function gemModel() {
   var stats = state.stats.gem || {};
   var price = gem.price || (stats.price != null ? { low: stats.price, high: stats.price, kind: stats.priceType || "unknown" } : null);
   return {
+    url: gem.url || state.lastUrl || "",
     title: gem.canonical_name || gem.title || stats.title || "",
     pageTitle: gem.title || stats.title || "",
     brand: gem.brand || stats.brand || "",
     model: gem.model || stats.model || "",
     price: price,
     image: gem.image || stats.image || "",
-    specs: gem.specs || stats.specs || {}
+    specs: gem.specs || stats.specs || {},
+    highlights: gem.highlights || []
   };
 }
 
@@ -778,13 +841,23 @@ function paintGemCard() {
   var hasProduct = !!(gem.title || gem.price);
   card.hidden = !hasProduct;
   if (!hasProduct) return;
-  setText($("gem-kicker"), gem.title ? "The GeM listing" : "Reading the GeM page");
   setText($("gem-title"), gem.title || gem.pageTitle || "Reading the GeM page");
+  var href = R.safeHref(gem.url);
+  var link = $("gem-url-link");
+  if (href) {
+    link.href = href;
+    link.hidden = false;
+    setText($("gem-url-host"), bareHost(href));
+  } else {
+    link.removeAttribute("href");
+    link.hidden = true;
+    setText($("gem-url-host"), "");
+  }
   if (gem.price && gem.price.low != null) {
     setText($("gem-price"), R.moneyRange(gem.price));
-    setText($("gem-price-kind"), "GeM price, " + R.priceKindLabel(gem.price.kind));
+    setText($("gem-price-kind"), R.priceKindLabel(gem.price.kind));
   } else {
-    setText($("gem-price"), "Price not read yet");
+    setText($("gem-price"), "Price not read");
     setText($("gem-price-kind"), "");
   }
   paintGemImage(gem.image);
@@ -829,23 +902,41 @@ function specsEntries(gem) {
   return rows;
 }
 
+function gemFacts(gem) {
+  var rows = [];
+  var fromResult = gem.highlights;
+  var highlights = (Array.isArray(fromResult) && fromResult.length) ? fromResult : (state.highlights || []);
+  if (highlights.length) {
+    highlights.forEach(function (fact) {
+      if (!fact || fact.label == null || fact.value == null) return;
+      rows.push({ key: String(fact.label), value: String(fact.value) });
+    });
+  }
+  if (rows.length) return rows;
+  return specsEntries(gem);
+}
+
 function paintSpecs(gem) {
   var list = $("gem-specs");
   var toggle = $("gem-specs-toggle");
   clear(list);
-  var rows = specsEntries(gem);
-  var limit = state.specsExpanded ? rows.length : 12;
+  var rows = gemFacts(gem);
+  if (!rows.length) {
+    rows = [{ key: "Details", value: "No details were read from the page." }];
+  }
+  var limit = state.specsExpanded ? rows.length : FACTS_SHOWN;
   rows.slice(0, limit).forEach(function (row) {
     var value = row.value;
     var dd = h("dd", { text: value.length > 120 ? value.slice(0, 117) + "..." : value });
     if (value.length > 120) dd.title = value;
     list.appendChild(h("div", { class: "spec-row" }, h("dt", { text: row.key }), dd));
   });
-  if (rows.length > 12) {
+  if (rows.length > FACTS_SHOWN) {
     toggle.hidden = false;
-    setText(toggle, state.specsExpanded ? "Show fewer" : "Show all " + rows.length);
+    setText(toggle, state.specsExpanded ? "Show fewer" : "Show all " + rows.length + " details");
   } else {
     toggle.hidden = true;
+    state.specsExpanded = false;
   }
 }
 
@@ -863,18 +954,18 @@ function paintSummary() {
   setText($("answer-kicker"), model.kicker);
   setText($("verdict-title"), model.title || model.kicker || "Result");
   setText($("answer-detail"), model.detail);
-  setText($("answer-shop"), model.shop ? "on " + model.shop : "");
+  setText($("answer-shop"), model.shop || "");
   var shopIcon = $("answer-shop-icon");
   clear(shopIcon);
   if (model.shop) shopIcon.appendChild(siteIcon(model.shop));
   setText($("answer-price"), model.price != null ? R.money(model.price) : (model.headline || ""));
   var saving = result ? R.savingInfo(result) : null;
   var savingEl = $("answer-saving");
-  savingEl.className = "answer-saving" + (saving && saving.dearer ? " is-dearer" : "");
+  savingEl.className = "save" + (saving && saving.dearer ? " is-dearer" : "");
   if (saving) {
-    setText(savingEl, saving.cheaper ? "saves " + R.money(saving.amount) + ", " + saving.percent.toFixed(1) + "%"
-      : saving.dearer ? "costs " + R.money(Math.abs(saving.amount)) + " more, " + Math.abs(saving.percent).toFixed(1) + "%"
-      : "the same price as GeM");
+    setText(savingEl, saving.cheaper ? "Saves " + R.money(saving.amount) + " (" + saving.percent.toFixed(1) + "%) against GeM"
+      : saving.dearer ? "Costs " + R.money(Math.abs(saving.amount)) + " (" + Math.abs(saving.percent).toFixed(1) + "%) more than GeM"
+      : "The same price as GeM");
   } else {
     setText(savingEl, "");
   }
@@ -890,171 +981,136 @@ function paintBars(result) {
   if (!result) return;
   var model = R.barRows(result);
   if (model.rows.length < 2) return;
+  var gemPrice = result && result.gem && result.gem.price ? result.gem.price.low : null;
   model.rows.forEach(function (row) {
-    var fill = h("span", { class: "bar-fill" });
+    var fill = h("i", { class: row.isGem ? "gem" : "" });
     fill.style.width = Math.max(0, Math.min(100, row.width)) + "%";
-    var tags = [];
-    if (row.isGem) tags.push("GeM");
-    if (row.cheapest) tags.push("cheapest");
-    if (row.bulk) tags.push("B2B");
-    if (!row.inStock) tags.push("out of stock");
-    container.appendChild(h("div", { class: "bar-row" + (row.isGem ? " is-gem" : "") + (row.cheapest ? " is-cheapest" : "") },
-      h("span", { class: "bar-label", text: row.label }),
+    var note = "";
+    if (!row.isGem && gemPrice != null && row.price != null && Number(row.price) !== Number(gemPrice)) {
+      note = (row.price < gemPrice ? "-" : "+") + R.money(Math.abs(Number(row.price) - Number(gemPrice)));
+    }
+    var value = h("span", { class: "val" }, R.money(row.price), note ? h("small", { text: note }) : "");
+    container.appendChild(h("div", { class: "bar-row" },
+      h("span", { class: "name" }, row.isGem ? gemGlyph() : siteIcon(row.label), h("span", { text: row.label })),
       h("span", { class: "bar-track" }, fill),
-      h("span", { class: "bar-price" }, R.money(row.price), tags.length ? h("span", { class: "bar-tag", text: tags.join(", ") }) : "")));
+      value));
   });
 }
 
 /* The pipeline is built once and only its values change, so a row never moves. */
 var LANE_STEPS = [["search", "Search"], ["filter", "Filter"], ["verify", "Verify"], ["confirmed", "Confirmed"]];
-var SHOP_STEPS = [["filter", "Filter"], ["verify", "Verify"], ["confirmed", "Confirmed"]];
 
-function stepEl(id, label) {
-  return h("div", { class: "step", id: id, dataset: { state: "waiting" } },
-    h("span", { class: "step-label", text: label }),
-    h("span", { class: "step-value", id: id + "-value", text: "waiting" }));
+function laneCell(id, label, withSmall) {
+  return h("div", { class: "cell", id: id, dataset: { label: label } },
+    h("b", { id: id + "-value", text: "waiting" }),
+    withSmall ? h("small", { id: id + "-small" }) : null);
 }
 
-function laneIcon(lane) {
-  if (lane && lane.key) {
-    var name = String(lane.key).toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
-    return h("span", { class: "site-icon", title: name },
-      h("span", { class: "site-icon-letter", text: (name.charAt(0) || "?").toUpperCase() }));
-  }
-  return h("span", { class: "lane-icon" }, svg("M7 2.2a4.8 4.8 0 104.1 7.3L14 12.6"));
+function laneStateEl(id) {
+  return h("span", { class: "state", id: id },
+    h("span", { class: "dot", "aria-hidden": "true" }),
+    h("span", { id: id + "-text", text: "Waiting" }));
+}
+
+function laneWho(icon, name) {
+  return h("div", { class: "who" }, icon, h("span", null, name));
 }
 
 function buildPipeline() {
-  var top = $("pipeline-top");
   var lanes = $("map-lanes");
-  var end = $("pipeline-end");
-  clear(top);
   clear(lanes);
-  clear(end);
-  top.appendChild(h("div", { class: "pipeline-node", id: "node-read", dataset: { state: "waiting" } },
-    h("span", { class: "node-label", text: "Read GeM page" }),
-    h("span", { class: "node-value", id: "node-read-value", text: "waiting" })));
-  var understand = h("div", { class: "pipeline-node", id: "node-understand", dataset: { state: "waiting" } },
-    h("span", { class: "node-label", text: "Understand (LLM)" }),
-    h("span", { class: "node-value", id: "node-understand-value", text: "waiting" }));
-  understand.appendChild(h("details", { class: "node-detail", id: "understand-detail", hidden: "" },
-    h("summary", { id: "understand-summary" }),
-    h("ul", { id: "understand-queries", class: "plain-list" })));
-  top.appendChild(understand);
-
+  state.shopRowEls = {};
+  state.shopRowOrder = [];
   R.LANES.forEach(function (lane) {
     if (lane.id === "other") {
-      var web = h("section", { class: "lane lane-web", id: "lane-other", dataset: { state: "waiting" } },
-        h("div", { class: "lane-head" },
-          laneIcon(lane),
-          h("span", { class: "lane-name", text: "Web search" }),
-          h("span", { class: "lane-status", id: "lane-other-status", text: "Waiting" })));
-      var steps = h("div", { class: "lane-steps", id: "lane-other-steps" });
-      steps.appendChild(stepEl("lane-other-search", "Discover"));
-      steps.appendChild(stepEl("lane-other-filter", "Filter"));
-      steps.appendChild(stepEl("lane-other-verify", "Verify"));
-      steps.appendChild(stepEl("lane-other-confirmed", "Confirmed"));
-      web.appendChild(steps);
-      web.appendChild(h("div", { class: "shop-rows", id: "shop-rows" }));
-      web.appendChild(h("button", { class: "text-button shop-more", id: "shop-more", type: "button", hidden: "" }));
-      lanes.appendChild(web);
+      lanes.appendChild(h("div", { class: "lane", id: "lane-other", dataset: { state: "waiting" } },
+        laneWho(globeGlyph(), "Web search"),
+        laneCell("lane-other-search", "Search", true),
+        laneCell("lane-other-filter", "Filter"),
+        laneCell("lane-other-verify", "Verify"),
+        laneCell("lane-other-confirmed", "Confirmed"),
+        laneStateEl("lane-other-status")));
       return;
     }
-    var laneEl = h("section", { class: "lane", id: "lane-" + lane.id, dataset: { state: "waiting" } },
-      h("div", { class: "lane-head" },
-        laneIcon(lane),
-        h("span", { class: "lane-name", text: lane.label }),
-        h("span", { class: "lane-status", id: "lane-" + lane.id + "-status", text: "Waiting" })));
-    var laneSteps = h("div", { class: "lane-steps", id: "lane-" + lane.id + "-steps" });
-    LANE_STEPS.forEach(function (pair) { laneSteps.appendChild(stepEl("lane-" + lane.id + "-" + pair[0], pair[1])); });
-    laneEl.appendChild(laneSteps);
-    lanes.appendChild(laneEl);
+    lanes.appendChild(h("div", { class: "lane", id: "lane-" + lane.id, dataset: { state: "waiting" } },
+      laneWho(siteIcon(lane.key), lane.label),
+      laneCell("lane-" + lane.id + "-search", "Search", true),
+      laneCell("lane-" + lane.id + "-filter", "Filter"),
+      laneCell("lane-" + lane.id + "-verify", "Verify"),
+      laneCell("lane-" + lane.id + "-confirmed", "Confirmed"),
+      laneStateEl("lane-" + lane.id + "-status")));
   });
-
-  end.appendChild(h("div", { class: "end-markers" },
-    h("span", { class: "end-marker", id: "node-checks", dataset: { state: "waiting" } }, "Checks and first result: ", h("span", { id: "node-checks-value", text: "waiting" })),
-    h("span", { class: "end-marker", id: "node-retry", dataset: { state: "waiting" } }, "Retry gaps: ", h("span", { id: "node-retry-value", text: "not needed yet" }))));
+  lanes.appendChild(h("div", { class: "shop-rows", id: "shop-rows" }));
 }
 
 function setPipelineCollapsed(collapsed) {
   state.pipelineCollapsed = !!collapsed;
+  var card = $("pipeline-card");
   var body = $("pipeline-body");
   var button = $("pipeline-toggle");
+  if (card) card.dataset.open = state.pipelineCollapsed ? "false" : "true";
   if (body) body.hidden = state.pipelineCollapsed;
-  if (button) {
-    button.setAttribute("aria-expanded", state.pipelineCollapsed ? "false" : "true");
-    setText(button, state.pipelineCollapsed ? "Show details" : "Hide details");
-  }
-  paintPipelineSummary();
+  if (button) button.setAttribute("aria-expanded", state.pipelineCollapsed ? "false" : "true");
 }
 
 function applyPipelineCollapsed() { setPipelineCollapsed(state.pipelineCollapsed); }
 
-function paintPipelineSummary() {
-  var elapsed = state.elapsedSeconds;
-  var summary = R.pipelineSummary(state.stats, elapsed);
-  var text;
-  if (state.finished && !state.failed) {
-    text = "Pipeline finished: " + summary.lanes + " lanes, " + summary.shops + " shops, " + summary.steps + " steps, " + elapsed.toFixed(1) + " s.";
-  } else if (state.failed) {
-    text = "Pipeline stopped: " + summary.lanes + " lanes, " + summary.shops + " shops, " + summary.steps + " steps.";
-  } else {
-    text = summary.lanes + " lanes, " + summary.shops + " shops, " + summary.steps + " steps.";
-  }
-  setText($("pipeline-summary-text"), text);
+var STATE_WORDS = { found: "found", possible: "possible", not_found: "not found", not_searched: "blocked", incomplete: "incomplete", timed_out: "timed out" };
+function stateWord(status) { return STATE_WORDS[status] || "waiting"; }
+
+function stateView(entry) {
+  var status = (entry && entry.status) || "";
+  if (status === "found") return { name: "done", label: stateWord(status) };
+  if (status === "possible") return { name: "warning", label: stateWord(status) };
+  if (status === "not_found") return { name: "none", label: stateWord(status) };
+  if (status === "not_searched") return { name: "blocked", label: stateWord(status) };
+  if (status === "incomplete" || status === "timed_out") return { name: "warning", label: stateWord(status) };
+  if (entry && entry.lastBlocked && entry.blocked) return { name: "blocked", label: "blocked" };
+  if (entry && (entry.queries || entry.listings || entry.judged || entry.kept)) return { name: "active", label: "working" };
+  return { name: "waiting", label: "waiting" };
+}
+
+function applyLaneView(laneEl, stateEl, textEl, view, title) {
+  setState(laneEl, view.name);
+  if (stateEl) stateEl.className = "state " + view.name;
+  setText(textEl, view.label);
+  laneEl.title = title || "";
 }
 
 function paintPipeline() {
   var stats = state.stats;
-  var lanes = R.pipelineModel(stats);
-  updateMapNode("node-read", "node-read-value", lanes.read);
-  updateMapNode("node-understand", "node-understand-value", lanes.understand);
-  var product = stats.product || {};
-  var detail = gel("understand-detail");
-  if (detail) {
-    var queries = product.queries || [];
-    if (queries.length) {
-      detail.hidden = false;
-      setText(gel("understand-summary"), queries.length + " search phrase" + (queries.length === 1 ? "" : "s"));
-      var listEl = gel("understand-queries");
-      clear(listEl);
-      queries.slice(0, 12).forEach(function (query) { listEl.appendChild(h("li", { text: query })); });
-    } else {
-      detail.hidden = true;
-    }
-  }
-  lanes.lanes.forEach(function (lane) {
-    var laneEl = $("lane-" + lane.id);
+  var model = R.pipelineModel(stats);
+  setStepLine("node-read", model.read);
+  setStepLine("node-understand", model.understand);
+  var laneModels = {};
+  model.lanes.forEach(function (lane) { laneModels[lane.id] = lane; });
+  ["flipkart", "amazon"].forEach(function (id) {
+    var laneEl = $("lane-" + id);
     if (!laneEl) return;
-    var entry = laneStats(lane.id);
-    var model = R.laneRowModel(entry);
-    var values = {
-      search: model.search,
-      filter: model.filter,
-      verify: model.verify,
-      confirmed: String(model.confirmed)
-    };
-    setState(laneEl, lane.state);
-    setText($("lane-" + lane.id + "-status"), lane.statusLabel);
-    laneEl.title = laneTitle(lane.id, lane.help);
-    lane.nodes.forEach(function (node) {
-      var id = "lane-" + lane.id + "-" + node.id;
-      setState($(id), node.state);
-      var value = values[node.id] == null ? node.value : values[node.id];
-      setNodeValue($(id + "-value"), value, node.state);
-    });
-    var confirmedEl = $("lane-" + lane.id + "-confirmed");
-    if (confirmedEl) {
-      var confirmedDone = model.confirmed > 0 || !!entry.status;
-      setState(confirmedEl, confirmedDone ? "done" : "waiting");
-      setNodeValue($("lane-" + lane.id + "-confirmed-value"), String(model.confirmed), confirmedDone ? "done" : "waiting");
-    }
+    var entry = laneStats(id);
+    var row = R.laneRowModel(entry);
+    var view = stateView(entry);
+    applyLaneView(laneEl, $("lane-" + id + "-status"), gel("lane-" + id + "-status-text"), view, laneTitle(id, laneModels[id] && laneModels[id].help));
+    setNodeValue(gel("lane-" + id + "-search-value"), row.search, view.name);
+    setText(gel("lane-" + id + "-search-small"), listingText(entry.seen || entry.listings || 0));
+    setNodeValue(gel("lane-" + id + "-filter-value"), row.filter, entry.filtered ? "done" : view.name);
+    setNodeValue(gel("lane-" + id + "-verify-value"), row.verify, entry.judged || row.confirmed ? "done" : view.name);
+    setNodeValue(gel("lane-" + id + "-confirmed-value"), String(row.confirmed), row.confirmed ? "done" : view.name);
   });
   paintWebLane(stats);
-  updateMapNode("node-checks", "node-checks-value", lanes.checks);
-  updateMapNode("node-retry", "node-retry-value", lanes.retry);
   paintShopRows(stats);
-  paintPipelineSummary();
+}
+
+function listingText(count) {
+  var n = Number(count) || 0;
+  if (!n) return "";
+  return n + " listing" + (n === 1 ? "" : "s");
+}
+
+function setStepLine(id, node) {
+  var line = $(id);
+  if (line) setState(line, node.state);
+  setNodeValue($(id + "-value"), node.value, node.state);
 }
 
 function laneStats(id) {
@@ -1069,47 +1125,57 @@ function setNodeValue(el, value, nodeState) {
   clear(el);
   if (text === "0") {
     el.textContent = text;
-    el.dataset.kind = "muted";
+    el.className = "muted";
+    return;
+  }
+  if (text === "waiting" || text === "-") {
+    el.textContent = text;
+    el.className = "muted";
     return;
   }
   var parts = text.split(" ");
   if (parts.length === 2 && /^[+-]?\d+$/.test(parts[0]) && /^-?\d+$/.test(parts[1])) {
-    el.appendChild(h("span", { class: "count-good", text: parts[0] }));
+    el.appendChild(h("span", { class: "pos", text: parts[0] }));
     el.appendChild(document.createTextNode(" "));
-    el.appendChild(h("span", { class: "count-bad", text: parts[1] }));
-    el.dataset.kind = "counts";
+    el.appendChild(h("span", { class: parts[1] === "-0" ? "zero" : "neg", text: parts[1] }));
     return;
   }
   el.textContent = text;
-  el.dataset.kind = nodeState === "blocked" || nodeState === "warning" ? "bad"
-    : nodeState === "done" ? "good" : nodeState === "active" ? "accent" : "muted";
+  el.className = nodeState === "blocked" || nodeState === "warning" ? "warn"
+    : nodeState === "done" || nodeState === "none" ? "pos"
+    : nodeState === "active" ? "accent" : "muted";
 }
 
 function paintWebLane(stats) {
   var rows = R.laneRows(stats);
-  var total = { kept: 0, dropped: 0, matches: 0, rejected: 0, seen: 0 };
-  rows.forEach(function (row) {
-    total.kept += Number(row.kept) || 0;
-    total.dropped += Number(row.dropped) || 0;
-    total.matches += Number(row.matches) || 0;
-    total.rejected += Number(row.rejected) || 0;
-    total.seen += Number(row.listings) || 0;
+  var total = { listings: 0 };
+  rows.forEach(function (row) { total.listings += Number(row.listings) || 0; });
+  var pages = (stats.shops.other && stats.shops.other.listings) || total.listings || 0;
+  var view = webStateView(stats, rows);
+  applyLaneView(gel("lane-other"), gel("lane-other-status"), gel("lane-other-status-text"), view,
+    rows.map(function (row) { return row.shop + ": " + pipelineRowTitle(row); }).join("\n"));
+  setNodeValue(gel("lane-other-search-value"), pages ? pages + " page" + (pages === 1 ? "" : "s") : "waiting", view.name);
+  setText(gel("lane-other-search-small"), rows.length ? rows.length + " shop" + (rows.length === 1 ? "" : "s") : "");
+  ["filter", "verify", "confirmed"].forEach(function (step) {
+    var el = gel("lane-other-" + step + "-value");
+    if (!el) return;
+    el.textContent = "-";
+    el.className = "muted";
   });
-  var discover = R.laneRowModel({ queries: 0, queriesDone: 0, seen: (stats.shops.other && stats.shops.other.listings) || total.seen, kept: 0, dropped: 0, rejected: 0, matches: 0 });
-  setState(gel("lane-other-search"), total.seen || (stats.shops.other && stats.shops.other.listings) ? "done" : (stats.step === "search" ? "active" : "waiting"));
-  setNodeValue(gel("lane-other-search-value"), discover.search, total.seen ? "done" : "waiting");
-  var filterState = total.kept || total.dropped ? "done" : (rows.length ? "active" : "waiting");
-  setState(gel("lane-other-filter"), filterState);
-  setNodeValue(gel("lane-other-filter-value"), total.kept || total.dropped ? R.pairCount(total.kept, total.dropped) : "waiting", filterState);
-  var verifyState = total.matches || total.rejected ? "done" : (total.kept ? "active" : "waiting");
-  setState(gel("lane-other-verify"), verifyState);
-  setNodeValue(gel("lane-other-verify-value"), total.matches || total.rejected ? R.pairCount(total.matches, total.rejected) : "waiting", verifyState);
-  var confirmedState = total.matches ? "done" : (state.finished ? "done" : "waiting");
-  setState(gel("lane-other-confirmed"), confirmedState);
-  setNodeValue(gel("lane-other-confirmed-value"), String(total.matches || 0), confirmedState);
-  var status = (stats.shops.other && stats.shops.other.status) || webStatus(stats);
-  setText(gel("lane-other-status"), status ? R.shopStatusLabel(status) : (rows.length ? "Searching" : "Waiting"));
-  gel("lane-other").title = rows.map(function (row) { return row.shop + ": " + pipelineRowTitle(row); }).join("\n");
+}
+
+function webStateView(stats, rows) {
+  var status = webStatus(stats);
+  if (status) {
+    if (status === "found") return { name: "done", label: stateWord(status) };
+    if (status === "possible") return { name: "warning", label: stateWord(status) };
+    if (status === "not_found") return { name: "none", label: stateWord(status) };
+    if (status === "not_searched") return { name: "blocked", label: stateWord(status) };
+    return { name: "warning", label: stateWord(status) };
+  }
+  if (rows.length) return { name: "active", label: "searching" };
+  if (stats.shops.other && stats.shops.other.listings) return { name: "active", label: "reading" };
+  return { name: "waiting", label: "waiting" };
 }
 
 function webStatus(stats) {
@@ -1118,6 +1184,9 @@ function webStatus(stats) {
   if (rows.some(function (row) { return row.status === "found"; })) return "found";
   if (rows.some(function (row) { return row.status === "possible"; })) return "possible";
   if (rows.some(function (row) { return row.status === "not_searched"; })) return "not_searched";
+  if (rows.some(function (row) { return row.status === "incomplete" || row.status === "timed_out"; })) {
+    return rows.some(function (row) { return row.status === "timed_out"; }) ? "timed_out" : "incomplete";
+  }
   if (rows.every(function (row) { return row.status === "not_found"; })) return "not_found";
   return "";
 }
@@ -1149,7 +1218,6 @@ function laneTitle(id, fallback) {
   return text || fallback || "";
 }
 
-
 function shopSafeId(domain) {
   return "shop-" + String(domain).toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
@@ -1157,64 +1225,31 @@ function shopSafeId(domain) {
 function paintShopRows(stats) {
   var rows = R.laneRows(stats);
   var container = gel("shop-rows");
-  rows.forEach(function (row) {
-    if (state.shopRowEls[row.shop]) return;
-    var id = shopSafeId(row.shop);
-    var el = h("div", { class: "shop-row", id: id, dataset: { state: "waiting" } },
-      h("div", { class: "shop-head" },
-        siteIcon(row.shop),
-        h("span", { class: "shop-name", text: row.shop }),
-        h("span", { class: "shop-status", text: row.status ? R.shopStatusLabel(row.status) : "Searching" })));
-    var steps = h("div", { class: "shop-steps" });
-    SHOP_STEPS.forEach(function (pair) { steps.appendChild(stepEl(id + "-" + pair[0], pair[1])); });
-    el.appendChild(steps);
-    state.shopRowEls[row.shop] = { el: el, steps: steps };
-    state.shopRowOrder.push(row.shop);
-    container.appendChild(el);
-  });
+  if (!container) return;
   rows.forEach(function (row) {
     var record = state.shopRowEls[row.shop];
-    if (!record) return;
+    if (!record) {
+      var id = shopSafeId(row.shop);
+      var el = h("div", { class: "lane sub shop-row", id: id, dataset: { state: "waiting" } },
+        laneWho(siteIcon(row.shop), row.shop),
+        laneCell(id + "-search", "Search"),
+        laneCell(id + "-filter", "Filter"),
+        laneCell(id + "-verify", "Verify"),
+        laneCell(id + "-confirmed", "Confirmed"),
+        laneStateEl(id + "-status"));
+      container.appendChild(el);
+      record = { id: id, el: el };
+      state.shopRowEls[row.shop] = record;
+      state.shopRowOrder.push(row.shop);
+    }
     var model = R.laneRowModel(row);
-    setState(record.el, row.status === "found" ? "done" : row.status === "possible" ? "warning" : row.status === "not_searched" || row.status === "incomplete" || row.status === "timed_out" ? "warning" : "active");
-    record.el.title = pipelineRowTitle(row);
-    var nameEl = record.el.querySelector(".shop-status");
-    if (nameEl) setText(nameEl, row.status ? R.shopStatusLabel(row.status) : "Searching");
-    var stepState = row.status ? "done" : "active";
-    updateStep(record.el, "-filter", model.filter, row.kept || row.dropped ? "done" : stepState);
-    updateStep(record.el, "-verify", model.verify, row.judged || row.rejected ? "done" : stepState);
-    updateStep(record.el, "-confirmed", String(row.matches || 0), row.matches ? "done" : (row.status ? "done" : "waiting"));
+    var view = stateView(row);
+    applyLaneView(record.el, gel(record.id + "-status"), gel(record.id + "-status-text"), view, pipelineRowTitle(row));
+    setNodeValue(gel(record.id + "-search-value"), "-", "waiting");
+    setNodeValue(gel(record.id + "-filter-value"), model.filter, row.kept || row.dropped ? "done" : view.name);
+    setNodeValue(gel(record.id + "-verify-value"), model.verify, row.judged || row.rejected ? "done" : view.name);
+    setNodeValue(gel(record.id + "-confirmed-value"), String(model.confirmed), model.confirmed ? "done" : view.name);
   });
-  var more = gel("shop-more");
-  if (!more) return;
-  state.shopRowOrder.forEach(function (shop, index) {
-    var record = state.shopRowEls[shop];
-    if (!record) return;
-    record.el.hidden = index >= SHOP_ROWS_SHOWN && !state.shopsExpanded;
-  });
-  var hiddenCount = Math.max(0, state.shopRowOrder.length - SHOP_ROWS_SHOWN);
-  if (hiddenCount && !state.shopsExpanded) {
-    more.hidden = false;
-    setText(more, "Show " + hiddenCount + " more");
-  } else if (hiddenCount) {
-    more.hidden = false;
-    setText(more, "Show fewer");
-  } else {
-    more.hidden = true;
-  }
-}
-
-function updateStep(root, suffix, value, kind) {
-  var valueEl = root.querySelector(".step-value[id$='" + suffix + "-value']");
-  var step = root.querySelector(".step[id$='" + suffix + "']");
-  if (!valueEl || !step) return;
-  setState(step, kind);
-  setNodeValue(valueEl, value, kind);
-}
-
-function updateMapNode(nodeId, valueId, node) {
-  setState($(nodeId), node.state);
-  setNodeValue($(valueId), node.value, node.state);
 }
 
 function paintMatches() {
@@ -1224,9 +1259,7 @@ function paintMatches() {
   var empty = $("matches-empty");
   var wrap = $("matches-table-wrap");
   var body = $("matches-body");
-  var cards = $("matches-cards");
   clear(body);
-  clear(cards);
   setText(empty, ready ? "No confirmed match yet. This tab fills in when a shop returns the same product." : "Results appear when the run finishes.");
   empty.hidden = rows.length > 0;
   wrap.hidden = rows.length === 0;
@@ -1240,126 +1273,91 @@ function paintMatches() {
   var fragment = document.createDocumentFragment();
   rows.forEach(function (row) {
     var best = !!(cheapest && row.price != null && Number(row.price) === Number(cheapest.price) && R.shopKey(row.shop) === R.shopKey(cheapest.shop || ""));
-    var pair = matchRow(row, scale, gemPrice, best);
-    fragment.appendChild(pair[0]);
-    fragment.appendChild(pair[1]);
-    cards.appendChild(matchCard(row, scale, gemPrice, best));
+    fragment.appendChild(matchRow(row, scale, gemPrice, best));
   });
   body.appendChild(fragment);
 }
 
 function matchRow(row, scale, gemPrice, best) {
-  var tr = h("tr", { class: best ? "is-best" : "" });
-  tr.appendChild(shopCell(row, best));
-  tr.appendChild(priceCell(row, scale, gemPrice));
-  var confidence = h("td", { class: "cell-confidence" });
-  confidence.appendChild(confidenceView(row));
-  tr.appendChild(confidence);
-  var why = h("td", { class: "cell-why" });
-  var button = h("button", { class: "disclosure", type: "button", "aria-expanded": "false", "aria-label": "Why this was accepted" });
-  button.appendChild(svg("M6 3l5 5-5 5"));
-  why.appendChild(button);
-  tr.appendChild(why);
-
-  var detail = h("tr", { class: "why-row", hidden: "" });
-  var cell = h("td", { colspan: "4" });
-  cell.appendChild(whyDetails(row.reason, row.checks));
-  detail.appendChild(cell);
+  var el = h("div", { class: "m-row" + (best ? " best" : "") });
+  el.appendChild(shopCell(row, best));
+  el.appendChild(priceCell(row, scale, gemPrice));
+  el.appendChild(confidenceCell(row));
+  var button = h("button", { class: "m-open", type: "button", "aria-label": "Why this was accepted", "aria-expanded": "false" },
+    svgEl("M6 9l6 6 6-6"));
+  el.appendChild(button);
+  var why = h("div", { class: "why" });
+  fillWhy(why, row.reason, row.checks);
+  el.appendChild(why);
   button.addEventListener("click", function () {
-    var open = detail.hidden;
-    detail.hidden = !open;
+    var open = !el.classList.contains("open");
+    el.classList.toggle("open", open);
     button.setAttribute("aria-expanded", open ? "true" : "false");
-    button.classList.toggle("is-open", open);
   });
-  return [tr, detail];
+  return el;
 }
 
 function shopCell(row, best) {
-  var cell = h("td", { class: "cell-shop" + (best ? " is-best" : "") });
-  var line = h("div", { class: "shop-line" });
-  line.appendChild(siteIcon(row.shop));
-  line.appendChild(linkOrText(row.url, row.shop || "shop", { class: "shop-link" }));
-  if (row.bulk) line.appendChild(h("span", { class: "note-tag", text: "B2B" }));
-  if (!row.inStock) line.appendChild(h("span", { class: "note-tag is-bad", text: "out of stock" }));
-  cell.appendChild(line);
-  var title = h("span", { class: "listing-title", text: row.title || "Untitled listing" });
+  var cell = h("div", { class: "m-shop" });
+  cell.appendChild(siteIcon(row.shop));
+  var names = h("div", { class: "names" });
+  var label = [h("span", { text: row.shop || "shop" }), externalArrow()];
+  names.appendChild(linkOrText(row.url, label, { class: "name" }));
+  if (best) names.appendChild(h("span", { class: "tag", text: "Best price" }));
+  if (row.bulk) names.appendChild(h("span", { class: "tag", text: "B2B" }));
+  if (!row.inStock) names.appendChild(h("span", { class: "tag is-bad", text: "out of stock" }));
+  var title = h("div", { class: "title", text: row.title || "Untitled listing" });
   if (row.title) title.title = row.title;
-  cell.appendChild(title);
+  names.appendChild(title);
+  cell.appendChild(names);
   return cell;
 }
 
 function priceCell(row, scale, gemPrice) {
-  var cell = h("td", { class: "cell-price" });
-  cell.appendChild(h("span", { class: "price-strong", text: row.priceText }));
-  cell.appendChild(priceDelta(row, scale, gemPrice));
+  var cell = h("div", { class: "m-price" });
+  cell.appendChild(h("strong", { text: row.priceText }));
+  cell.appendChild(scaleEl(row, scale, gemPrice));
   return cell;
 }
 
-function priceDelta(row, scale, gemPrice) {
+function scaleEl(row, scale, gemPrice) {
+  var track = h("div", { class: "scale" }, h("span", { class: "mid" }));
   if (row.delta == null || gemPrice == null) {
-    return h("span", { class: "delta-note", text: "GeM price unknown" });
+    track.appendChild(h("span", { class: "amt", text: "GeM price unknown" }));
+    return track;
   }
-  var track = h("span", { class: "delta-track" });
   var denom = scale.half * gemPrice;
   var fraction = denom > 0 ? Math.min(1, Math.abs(row.delta) / denom) : 0;
-  var aria;
-  if (row.delta === 0) {
-    aria = "The same price as GeM";
-  } else {
-    var fill = h("span", { class: "delta-fill " + (row.delta < 0 ? "is-less" : "is-more") });
-    fill.style.width = (fraction * 50) + "%";
-    fill.style.left = row.delta < 0 ? (50 - fraction * 50) + "%" : "50%";
+  var width = (fraction * 50).toFixed(1) + "%";
+  if (row.delta !== 0) {
+    var side = row.delta < 0 ? "cheap" : "dear";
+    var fill = h("span", { class: "fill " + side });
+    fill.style.width = width;
+    var amount = h("span", { class: "amt " + side, text: (row.delta < 0 ? "-" : "+") + R.money(Math.abs(row.delta)) });
+    amount.style.setProperty("--w", width);
     track.appendChild(fill);
-    var amount = h("span", { class: "delta-amount " + (row.delta < 0 ? "is-less" : "is-more") });
-    amount.textContent = (row.delta < 0 ? "-" : "+") + R.money(Math.abs(row.delta));
-    amount.style.left = row.delta < 0 ? (50 - fraction * 50) + "%" : (50 + fraction * 50) + "%";
-    amount.style.transform = row.delta < 0 ? "translateX(-100%)" : "translateX(0)";
     track.appendChild(amount);
-    aria = R.money(Math.abs(row.delta)) + (row.delta < 0 ? " cheaper than GeM" : " dearer than GeM");
   }
-  track.appendChild(h("span", { class: "delta-tick", "aria-hidden": "true" }));
   track.setAttribute("role", "img");
-  track.setAttribute("aria-label", aria);
+  track.setAttribute("aria-label", row.delta === 0
+    ? "The same price as GeM"
+    : R.money(Math.abs(row.delta)) + (row.delta < 0 ? " cheaper than GeM" : " dearer than GeM"));
   return track;
 }
 
-function confidenceView(row) {
-  var value = row.confidence;
-  if (value == null) return h("span", { class: "confidence muted", text: "-" });
-  var min = Number(state.gates.min_confidence != null ? state.gates.min_confidence : 0.75);
+function confidenceCell(row) {
+  if (row.confidence == null) return h("div", { class: "m-conf muted", text: "-" });
   var low = Number(state.gates.low_confidence != null ? state.gates.low_confidence : 0.85);
-  return h("span", { class: "confidence" + (value < low ? " is-warn" : ""), text: String(Math.round(value * 100)) });
+  return h("div", { class: "m-conf" + (row.confidence < low ? " low" : ""), text: String(Math.round(row.confidence * 100)) });
 }
 
-function whyDetails(reason, checks) {
-  var body = h("div", { class: "why-body" });
+function fillWhy(body, reason, checks) {
   if (reason) body.appendChild(h("p", { text: reason }));
   if (checks && checks.length) {
     var list = h("ul");
     checks.forEach(function (check) { list.appendChild(h("li", { text: check })); });
     body.appendChild(list);
   }
-  return body;
-}
-
-function matchCard(row, scale, gemPrice, best) {
-  var card = h("article", { class: "match-card" + (best ? " is-best" : "") });
-  var head = h("div", { class: "match-card-head" });
-  head.appendChild(siteIcon(row.shop));
-  head.appendChild(linkOrText(row.url, row.shop || "shop", { class: "shop-link" }));
-  if (row.bulk) head.appendChild(h("span", { class: "note-tag", text: "B2B" }));
-  if (!row.inStock) head.appendChild(h("span", { class: "note-tag is-bad", text: "out of stock" }));
-  card.appendChild(head);
-  var title = h("span", { class: "listing-title", text: row.title || "Untitled listing" });
-  if (row.title) title.title = row.title;
-  card.appendChild(title);
-  var price = h("div", { class: "match-card-price" });
-  price.appendChild(h("span", { class: "price-strong", text: row.priceText }));
-  price.appendChild(priceDelta(row, scale, gemPrice));
-  card.appendChild(price);
-  card.appendChild(h("div", { class: "match-card-meta" }, confidenceView(row)));
-  card.appendChild(whyDetails(row.reason, row.checks));
-  return card;
 }
 
 function paintPossible() {
@@ -1369,9 +1367,7 @@ function paintPossible() {
   var empty = $("possible-empty");
   var wrap = $("possible-table-wrap");
   var body = $("possible-body");
-  var cards = $("possible-cards");
   clear(body);
-  clear(cards);
   setText(empty, ready ? "No possible matches. A listing with an unclear pack or an unknown price would appear here." : "Possible matches appear when the run finishes.");
   empty.hidden = rows.length > 0;
   wrap.hidden = rows.length === 0;
@@ -1382,45 +1378,20 @@ function paintPossible() {
   var scale = R.scaleFor(scaleRows);
   setText($("possible-scale-gem"), gemPrice != null ? "GeM " + R.money(gemPrice) : "GeM price unknown");
   var fragment = document.createDocumentFragment();
-  rows.forEach(function (row) {
-    fragment.appendChild(possibleRow(row, scale, gemPrice));
-    cards.appendChild(possibleCard(row, scale, gemPrice));
-  });
+  rows.forEach(function (row) { fragment.appendChild(possibleRow(row, scale, gemPrice)); });
   body.appendChild(fragment);
 }
 
 function possibleRow(row, scale, gemPrice) {
-  var tr = h("tr");
-  tr.appendChild(shopCell(row, false));
-  var price = h("td", { class: "cell-price" });
-  price.appendChild(h("span", { class: "price-strong", text: row.priceText }));
-  price.appendChild(priceDelta(row, scale, gemPrice));
-  tr.appendChild(price);
-  tr.appendChild(h("td", { class: "cell-confidence" }, confidenceView(row)));
-  var why = h("td", { class: "possible-why", text: row.why });
-  why.title = row.why;
-  tr.appendChild(why);
-  return tr;
-}
-
-function possibleCard(row, scale, gemPrice) {
-  var card = h("article", { class: "match-card" });
-  var head = h("div", { class: "match-card-head" });
-  head.appendChild(siteIcon(row.shop));
-  head.appendChild(linkOrText(row.url, row.shop || "shop", { class: "shop-link" }));
-  if (row.bulk) head.appendChild(h("span", { class: "note-tag", text: "B2B" }));
-  if (!row.inStock) head.appendChild(h("span", { class: "note-tag is-bad", text: "out of stock" }));
-  card.appendChild(head);
-  var title = h("span", { class: "listing-title", text: row.title || "Untitled listing" });
-  if (row.title) title.title = row.title;
-  card.appendChild(title);
-  var price = h("div", { class: "match-card-price" });
-  price.appendChild(h("span", { class: "price-strong", text: row.priceText }));
-  price.appendChild(priceDelta(row, scale, gemPrice));
-  card.appendChild(price);
-  card.appendChild(h("div", { class: "match-card-meta" }, confidenceView(row)));
-  card.appendChild(h("p", { class: "why", text: row.why }));
-  return card;
+  var el = h("div", { class: "m-row possible" });
+  el.appendChild(shopCell(row, false));
+  el.appendChild(priceCell(row, scale, gemPrice));
+  el.appendChild(confidenceCell(row));
+  el.appendChild(h("span"));
+  var why = h("div", { class: "why" });
+  why.appendChild(h("p", { text: row.why }));
+  el.appendChild(why);
+  return el;
 }
 
 function paintSimilar() {
@@ -1430,10 +1401,14 @@ function paintSimilar() {
   clear(list);
   if (!show) return;
   R.similarRows(state.result).forEach(function (row) {
-    list.appendChild(h("article", { class: "match-card" },
-      h("div", { class: "match-card-head" }, h("span", { class: "shop-link", text: row.shop || "shop" }), h("span", { class: "price-strong", text: row.priceText })),
-      h("span", { class: "listing-title", text: row.title || "Untitled listing" }),
-      h("span", { class: "hint", text: "Similar, not the same product." })));
+    var head = h("div", { class: "similar-head" },
+      siteIcon(row.shop),
+      linkOrText(row.url, row.shop || "shop", { class: "name" }),
+      h("span", { class: "price", text: row.priceText }));
+    list.appendChild(h("article", { class: "similar-item" },
+      head,
+      h("span", { class: "title", text: row.title || "Untitled listing" }),
+      h("p", { class: "note", text: "Similar, not the same product." })));
   });
 }
 
@@ -1488,7 +1463,7 @@ function paintShopsDetails() {
     if (entry.matches) parts.push(entry.matches + " match" + (entry.matches === 1 ? "" : "es"));
     if (entry.seconds != null) parts.push(Number(entry.seconds).toFixed(1) + " s");
     if (entry.retried) parts.push("retried");
-    row.appendChild(h("span", { class: "shop-fact-line", text: parts.join(" · ") }));
+    row.appendChild(h("span", { class: "shop-fact-line", text: parts.join(" \u00b7 ") }));
     if (entry.reason) row.appendChild(h("span", { class: "shop-fact-note", text: entry.reason }));
     list.appendChild(row);
   });
@@ -1526,26 +1501,30 @@ function renderProviders() {
     seen[endpoint] = true;
     var record = state.providerEls[endpoint];
     if (!record) {
-      var tr = h("tr", { dataset: { endpoint: endpoint } });
-      var providerCell = h("td", { class: "provider-cell" }, providerIcon(row.provider || endpoint));
-      providerCell.appendChild(h("span", { class: "provider-name", text: endpoint }));
-      tr.appendChild(providerCell);
-      tr.title = [row.provider ? "Provider: " + row.provider : "", row.model ? "Model: " + row.model : ""].filter(Boolean).join(" \u00b7 ");
-      var stateCell = h("td", { class: "provider-state" });
-      tr.appendChild(stateCell);
-      var calls = h("td", { class: "num" });
-      var errors = h("td", { class: "num" });
-      var thisRun = h("td", { class: "num" });
-      var note = h("td", { class: "note-cell" });
-      tr.appendChild(calls); tr.appendChild(errors); tr.appendChild(thisRun); tr.appendChild(note);
-      body.appendChild(tr);
-      record = { tr: tr, stateCell: stateCell, calls: calls, errors: errors, thisRun: thisRun, note: note };
+      var el = h("div", { class: "p-row", dataset: { endpoint: endpoint } });
+      var modelCell = h("div", { class: "p-model" },
+        modelIconEl({ provider: row.provider, model: row.model || endpoint, endpoint: endpoint }),
+        h("div", null,
+          h("b", { text: row.model || endpoint }),
+          h("small", { text: row.provider || R.providerLabel(endpoint) })));
+      el.appendChild(modelCell);
+      var stateCell = h("span", { class: "state muted" });
+      el.appendChild(stateCell);
+      var calls = h("span", { class: "num p-calls" });
+      var errors = h("span", { class: "num p-errors" });
+      var thisRun = h("span", { class: "num p-run muted" });
+      var note = h("span", { class: "p-note" });
+      el.appendChild(calls); el.appendChild(errors); el.appendChild(thisRun); el.appendChild(note);
+      body.appendChild(el);
+      record = { el: el, stateCell: stateCell, calls: calls, errors: errors, thisRun: thisRun, note: note };
       state.providerEls[endpoint] = record;
     }
+    record.el.title = [row.provider ? "Provider: " + row.provider : "", row.model ? "Model: " + row.model : ""].filter(Boolean).join(" \u00b7 ");
     var view = R.providerState(row.state);
     clear(record.stateCell);
-    record.stateCell.appendChild(h("span", { class: "status-dot is-" + view.kind }));
-    record.stateCell.appendChild(h("span", { class: "state-word is-" + view.kind, text: view.word }));
+    record.stateCell.className = "state " + view.kind;
+    record.stateCell.appendChild(h("span", { class: "dot", "aria-hidden": "true" }));
+    record.stateCell.appendChild(h("span", { text: view.word }));
     record.calls.textContent = String(row.calls == null ? 0 : row.calls);
     record.errors.textContent = String(row.errors == null ? 0 : row.errors);
     record.note.textContent = row.reason || row.last_error || "";
@@ -1554,7 +1533,7 @@ function renderProviders() {
   Object.keys(state.providerEls).forEach(function (endpoint) {
     if (seen[endpoint]) return;
     var record = state.providerEls[endpoint];
-    if (record.tr.parentNode) record.tr.parentNode.removeChild(record.tr);
+    if (record.el.parentNode) record.el.parentNode.removeChild(record.el);
     delete state.providerEls[endpoint];
   });
   paintThisRun();
@@ -1788,12 +1767,6 @@ function bindEvents() {
     state.pipelineUserToggled = true;
     setPipelineCollapsed(!state.pipelineCollapsed);
   });
-  $("map-lanes").addEventListener("click", function (event) {
-    if (event.target && event.target.id === "shop-more") {
-      state.shopsExpanded = !state.shopsExpanded;
-      paintShopRows(state.stats);
-    }
-  });
   $("gem-specs-toggle").addEventListener("click", function () {
     state.specsExpanded = !state.specsExpanded;
     paintSpecs(gemModel());
@@ -1827,6 +1800,7 @@ function init() {
   updateTitle();
   paintRecent();
   setPipelineCollapsed(false);
+  loadShopIcons();
   var params = new URLSearchParams(window.location.search);
   var runId = params.get("run");
   if (runId) openSavedRun(runId);
