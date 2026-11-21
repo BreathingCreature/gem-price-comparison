@@ -19,10 +19,12 @@ caller passing junk all end at the deterministic fallback.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
 import threading
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -317,6 +319,56 @@ def _cache_put(payload: dict, facts: list) -> None:
         path.write_text(json.dumps(blob, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:  # a cache write must never cost the answer
         logger.debug("Could not write the highlights cache (%s: %s)", type(exc).__name__, exc)
+
+
+# --- low-priority live client ----------------------------------------------------------
+
+def _low_priority_model() -> str:
+    """The fastest configured model, chosen by name, never a new config default.
+
+    Live runs use this client only for the card facts. It bypasses the router
+    on purpose: the card is optional, so it must not wait behind the model
+    pool that is checking listings, and it must not spend a provider cooldown."""
+    models = list(config.NVIDIA_MODELS) or [config.NVIDIA_MODEL]
+    for name in models:
+        lowered = name.lower()
+        if "lightning" in lowered or "nano" in lowered:
+            return name
+    without_slow_models = [name for name in models if "gpt-oss" not in name.lower()]
+    return without_slow_models[-1] if without_slow_models else models[0]
+
+
+class _PinnedCompletions:
+    """Force one cheap model even though llm.client._complete loops the list."""
+
+    def __init__(self, inner, model: str):
+        self._inner = inner
+        self._model = model
+
+    def create(self, **kwargs):
+        kwargs["model"] = self._model
+        return self._inner.chat.completions.create(**kwargs)
+
+
+def low_priority_highlights_fn():
+    """compute_highlights pinned to the fast configured model, or the plain
+    function when no NVIDIA key is set. Router logic and config stay untouched."""
+    try:
+        from openai import OpenAI
+
+        inner = OpenAI(
+            base_url=config.NVIDIA_BASE_URL,
+            api_key=config.require_nvidia_key(),
+            timeout=config.NVIDIA_TIMEOUT_SECONDS,
+            max_retries=0,
+        )
+    except Exception as exc:
+        logger.debug("Low-priority highlights client unavailable (%s: %s)", type(exc).__name__, exc)
+        return compute_highlights
+    pinned = SimpleNamespace(
+        chat=SimpleNamespace(completions=_PinnedCompletions(inner, _low_priority_model()))
+    )
+    return functools.partial(compute_highlights, client=pinned)
 
 
 # --- the full path --------------------------------------------------------------------

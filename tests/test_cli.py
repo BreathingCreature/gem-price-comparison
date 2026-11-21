@@ -331,7 +331,7 @@ def test_the_refresh_flag_reaches_the_pipeline(monkeypatch):
 
 def test_the_cli_asks_for_the_real_highlights_path(monkeypatch):
     """The CLI is a live entry point, so it passes the module's own
-    compute_highlights (cache, LLM, gate, fallback), not nothing."""
+    compute_highlights (cache, LLM, gate, fallback), bound to the fast model."""
     from llm import highlights as llm_highlights
 
     seen = {}
@@ -341,7 +341,8 @@ def test_the_cli_asks_for_the_real_highlights_path(monkeypatch):
         return _v2_result()
 
     _run_main([GEM_URL], monkeypatch, runner)
-    assert seen.get("highlights_fn") is llm_highlights.compute_highlights
+    fn = seen.get("highlights_fn")
+    assert getattr(fn, "func", fn) is llm_highlights.compute_highlights
 
 
 if __name__ == "__main__":

@@ -120,7 +120,7 @@ def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) 
         gem_url,
         refresh=refresh,
         on_event=on_event,
-        highlights_fn=llm_highlights.compute_highlights,
+        highlights_fn=llm_highlights.low_priority_highlights_fn(),
     )
 
 

@@ -353,7 +353,7 @@ def main(argv=None) -> int:
             args.gem_url,
             refresh=args.refresh,
             on_event=printer.on_event,
-            highlights_fn=llm_highlights.compute_highlights,
+            highlights_fn=llm_highlights.low_priority_highlights_fn(),
         )
     except Exception as e:
         print(f"Pipeline failed: {type(e).__name__}: {e}", file=sys.stderr)

@@ -83,8 +83,8 @@ def test_every_response_carries_the_security_headers(client):
 
 
 def test_the_real_runner_passes_the_highlights_path(monkeypatch):
-    """Live runs ask for the module's own compute_highlights; injected
-    runners (the ones the other tests use) never see it."""
+    """Live runs ask for the module's own compute_highlights, bound to the
+    fast model; injected runners (the ones the other tests use) never see it."""
     from api import server as server_module
     from llm import highlights as llm_highlights
 
@@ -96,7 +96,8 @@ def test_the_real_runner_passes_the_highlights_path(monkeypatch):
 
     monkeypatch.setattr(pipeline, "run_pipeline", fake_run)
     server_module._real_runner(GEM_URL, False, lambda event: None)
-    assert seen.get("highlights_fn") is llm_highlights.compute_highlights
+    fn = seen.get("highlights_fn")
+    assert getattr(fn, "func", fn) is llm_highlights.compute_highlights
 
 
 def test_cors_is_off_until_origins_are_configured(monkeypatch):

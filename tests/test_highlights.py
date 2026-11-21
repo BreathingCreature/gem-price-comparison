@@ -511,6 +511,68 @@ def test_an_old_result_without_highlights_still_builds():
     assert built["gem"]["highlights"] == [{"label": "Brand", "value": "Old"}]
 
 
+# --- the low-priority live entry point ----------------------------------------------------
+
+def test_low_priority_model_prefers_a_fast_configured_model(monkeypatch):
+    models = [
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "openai/gpt-oss-20b",
+    ]
+    monkeypatch.setattr(highlights.config, "NVIDIA_MODELS", models)
+    assert highlights._low_priority_model() == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    monkeypatch.setattr(highlights.config, "NVIDIA_MODELS", models[:1] + models[2:])
+    assert highlights._low_priority_model() == "nvidia/nemotron-3-ultra-550b-a55b"
+    monkeypatch.setattr(highlights.config, "NVIDIA_MODELS", [])
+    monkeypatch.setattr(highlights.config, "NVIDIA_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
+    assert highlights._low_priority_model() == "nvidia/nemotron-3-ultra-550b-a55b"
+
+
+def test_low_priority_fn_pins_the_model_without_touching_the_router(monkeypatch):
+    import openai
+
+    from llm import router as router_module
+
+    monkeypatch.setattr(highlights.config, "require_nvidia_key", lambda: "test-key")
+    inner = _FakeClient(_GOOD_ANSWER)
+    created = {}
+
+    def fake_openai(**kwargs):
+        created.update(kwargs)
+        return inner
+
+    monkeypatch.setattr(openai, "OpenAI", fake_openai)
+    monkeypatch.setattr(highlights.config, "NVIDIA_MODELS", [
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+    ])
+
+    def forbidden_router():
+        raise AssertionError("the low-priority client must not use the router")
+
+    monkeypatch.setattr(router_module, "get_router", forbidden_router)
+    fn = highlights.low_priority_highlights_fn()
+    assert getattr(fn, "func", None) is highlights.compute_highlights
+    assert created["max_retries"] == 0
+    assert created["api_key"] == "test-key"
+
+    highlights._cache_path(_GEM).unlink(missing_ok=True)
+    result = fn(dict(_GEM))
+    assert result["source"] == "llm"
+    assert result["facts"] == _GOOD_FACTS
+    assert inner.chat.completions.calls
+    assert all(call["model"] == "nvidia/nemotron-3.5-lightning-30b-a3b"
+               for call in inner.chat.completions.calls)
+
+
+def test_low_priority_fn_falls_back_when_no_key_is_configured(monkeypatch):
+    def no_key():
+        raise RuntimeError("NVIDIA_API_KEY is not set")
+
+    monkeypatch.setattr(highlights.config, "require_nvidia_key", no_key)
+    assert highlights.low_priority_highlights_fn() is highlights.compute_highlights
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed, failed = 0, 0
