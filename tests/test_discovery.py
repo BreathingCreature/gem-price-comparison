@@ -19,6 +19,7 @@ import pytest
 
 import discovery  # noqa: E402
 from discovery import discover_candidates, discover_for_queries  # noqa: E402
+from discovery.discover import _looks_like_listing_url  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -396,6 +397,16 @@ def test_only_four_searxng_instances_are_used():
     # F: up to 11 public instances was too many random third parties per
     # query - and every one of them gets rate-limited anyway.
     assert len(discovery.discover._SEARXNG_INSTANCES) == 4
+
+
+def test_document_links_are_never_product_pages():
+    for url in (
+        "https://cdri.res.in/pdf/tender/Tender_Gem_Cartridge_80.pdf",
+        "https://brahmaputraboard.gov.in/storage/policy/sor_edition2.pdf?x=1",
+        "https://www.seci.co.in/uploads/tenders/Technical_tender_document_60_MW_Gaya.PDF#page=2",
+    ):
+        assert _looks_like_listing_url(url) is True, url
+    assert _looks_like_listing_url("https://www.moglix.com/cwc-pb5020n/printer") is False
 
 
 if __name__ == "__main__":

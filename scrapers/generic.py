@@ -200,7 +200,8 @@ def _page_title(soup, linked: dict):
     h1_tag = soup.find("h1")
     h1_text = h1_tag.get_text(" ", strip=True) if h1_tag else ""
     meta_title = _meta_content(soup, "og:title") or (soup.title.get_text(strip=True) if soup.title else "")
-    return h1_text, linked.get("title") or meta_title or h1_text
+    value = linked.get("title") or meta_title or h1_text
+    return h1_text[:200], value[:200]
 
 
 def _page_price(soup, linked: dict):
@@ -267,11 +268,17 @@ def scrape(url: str, *, session: Optional[requests.Session] = None) -> Candidate
     if error is not None:
         return _failed(domain, url, error)
 
+    content_type = (getattr(resp, "headers", {}) or {}).get("Content-Type", "").lower()
+    if "pdf" in content_type or "officedocument" in content_type or "msword" in content_type:
+        return _failed(domain, url, "refused: document, not a product page")
+
     # Limit raw text before parsing to avoid blowing memory on huge pages.
     # resp.text is read-only on a real requests.Response, so the shortened
     # copy lives in our own variable. Assigning to resp.text raised
     # AttributeError on every live page (SCRP-01).
     html = resp.text[:RAW_TEXT_CHAR_CAP]
+    if html.lstrip().startswith("%PDF"):
+        return _failed(domain, url, "refused: document, not a product page")
     soup = BeautifulSoup(html, "lxml")
 
     linked = _jsonld_fields(soup)

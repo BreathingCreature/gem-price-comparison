@@ -165,10 +165,15 @@ def _domain_matches_set(domain: str, domain_set) -> bool:
 # one wastes a generic-scrape slot on a wall of links.
 _LISTING_PATH_RE = re.compile(r"(?:^|/)(?:search|tags?|topics?)(?:/|$)", re.IGNORECASE)
 _SEARCH_QUERY_KEYS = {"q", "s", "search", "query", "keyword", "keywords"}
+_DOCUMENT_PATH_RE = re.compile(
+    r"\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|csv)(?:$|[?#])", re.IGNORECASE
+)
 
 
 def _looks_like_listing_url(url: str) -> bool:
     parts = urlparse(url)
+    if _DOCUMENT_PATH_RE.search(parts.path):
+        return True  # a tender or policy PDF is never a product page
     if _LISTING_PATH_RE.search(parts.path):
         return True
     keys = {k.lower() for k in parse_qs(parts.query)}

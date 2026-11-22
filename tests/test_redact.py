@@ -33,6 +33,24 @@ def test_ordinary_text_is_untouched():
     assert redact(text) == text
 
 
+def test_a_hashed_gem_image_url_is_kept_intact():
+    url = "https://assets-mkpbg.gem.gov.in/catalogue/3d4df6158b999x200x200.jpg"
+    assert redact(url) == url
+
+
+def test_a_key_in_a_url_query_is_still_hidden():
+    url = "https://provider.in/api?api_key=SUPERSECRETVALUE123"
+    assert "SUPERSECRETVALUE123" not in redact(url)
+    assert "[hidden]" in redact(url)
+
+
+def test_a_hashed_gem_image_url_survives_an_object_walk():
+    url = "https://assets-mkpbg.gem.gov.in/catalogue/3d4df6158b999x200x200.jpg"
+    cleaned = redact_obj({"gem": {"image": url}, "warning": "bad nvapi-abc123DEF456"})
+    assert cleaned["gem"]["image"] == url
+    assert "nvapi-" not in cleaned["warning"]
+
+
 def test_redact_obj_walks_nested_records():
     cleaned = redact_obj({"errors": ["bad nvapi-abc123DEF456"], "ok": 1, "nested": {"k": "gsk_abcdefghij"}})
     dumped = json.dumps(cleaned)

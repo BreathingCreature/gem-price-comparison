@@ -21,18 +21,37 @@ _PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"),
     re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*[^\s,;\"']+"),
+)
+# Long hex and base64 runs are useful key signals in prose, but they also
+# match the hashed filenames on GeM's image CDN. Keep them only for text
+# outside URLs and data URIs.
+_GENERAL_PATTERNS = (
     re.compile(r"\b[0-9A-Fa-f]{32,}\b"),
     re.compile(r"\b[A-Za-z0-9+/]{32,}={0,2}\b"),
 )
+_URL_RE = re.compile(r'((?:https?|data):[^\s<>"\'()]+)')
 
 
 def redact(text) -> str:
-    """Return text with anything key-shaped replaced by [hidden]."""
+    """Return text with anything key-shaped replaced by [hidden].
+
+    URLs and data URIs are handled separately so a hashed image filename is
+    never mangled, while an api_key query parameter is still hidden.
+    """
     if not isinstance(text, str):
         text = str(text)
-    for pattern in _PATTERNS:
-        text = pattern.sub(HIDDEN, text)
-    return text
+    parts = _URL_RE.split(text)
+    for index, part in enumerate(parts):
+        if part.startswith(("http://", "https://")):
+            for pattern in _PATTERNS:
+                part = pattern.sub(HIDDEN, part)
+        elif part.startswith("data:"):
+            pass
+        else:
+            for pattern in _PATTERNS + _GENERAL_PATTERNS:
+                part = pattern.sub(HIDDEN, part)
+        parts[index] = part
+    return "".join(parts)
 
 
 def redact_obj(value):
