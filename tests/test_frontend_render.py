@@ -319,3 +319,20 @@ def test_model_icon_marks_the_black_glyphs_as_mono_and_unknown_as_empty():
     assert empty == {"key": "", "mono": False, "family": False}
     assert _js("r.modelIcon(null)")["key"] == ""
 
+
+def test_every_default_model_and_real_provider_has_an_icon():
+    from core.config import _DEFAULT_MODELS
+
+    example = json.loads(
+        (FRONTEND.parent / "llm_providers.example.json").read_text(encoding="utf-8")
+    )
+    providers = [
+        row["name"] for row in example.get("providers", [])
+        if not row.get("name", "").startswith(("CHANGE-ME", "second-provider"))
+    ]
+    cases = [{"provider": "nvidia", "model": name} for name in _DEFAULT_MODELS]
+    cases.extend({"provider": name, "model": name} for name in providers)
+    out = _js("(" + json.dumps(cases) + ").map(function (e) { return r.modelIcon(e); })")
+    for case, icon in zip(cases, out):
+        assert icon["key"], f"no icon for {case}"
+
