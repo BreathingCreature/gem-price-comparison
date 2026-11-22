@@ -504,13 +504,20 @@ def test_clean_names_files_it_cannot_remove(monkeypatch, tmp_path):
 
     folder = tmp_path / "traces"
     folder.mkdir(exist_ok=True)
-    (folder / "old.json").mkdir()
+    (folder / "old.json").write_text("{}")
     monkeypatch.setattr(pipeline, "TRACES_DIR", folder)
     monkeypatch.setattr(runs, "runs_dir", lambda: tmp_path / "no-runs")
     monkeypatch.setattr(doctor, "DEBUG_HTML_DIR", tmp_path / "no-debug")
 
-    rows = doctor.clean_old_files(0)
+    original_unlink = Path.unlink
 
+    def refuse(self, *args, **kwargs):
+        if self.name == "old.json":
+            raise OSError("locked by another process")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    rows = doctor.clean_old_files(0)
     assert rows[0][0] == doctor.FAIL and "could not remove 1 trace" in rows[0][1]
 
 
