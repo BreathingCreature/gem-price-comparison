@@ -169,7 +169,7 @@ def test_the_summary_line_counts_seconds_matches_calls_and_failures(monkeypatch)
     monkeypatch.setattr(pipeline.time, "monotonic", lambda: ctx.started_monotonic + 12.34)
 
     assert pipeline._summary_line(ctx) == (
-        "Run summary: 12.3 s, 2 match(es), 2 LLM call(s), 1 LLM failure(s)."
+        "Run summary: 12.3 s, 2 match(es), 2 LLM call(s), 1 LLM failure(s), highlights: none."
     )
 
 

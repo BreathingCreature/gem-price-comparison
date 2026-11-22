@@ -1079,6 +1079,7 @@ class RunContext:
     result: dict = field(default_factory=dict)
     highlights_job: object = None
     highlights: list = field(default_factory=list)
+    highlights_source: str = "none"
 
 
 def _cached_result(gem_url: str, refresh: bool, use_cache: bool) -> Optional[dict]:
@@ -1622,9 +1623,10 @@ def _summary_line(ctx: RunContext) -> str:
     calls = [event for event in ctx.trace.get("events") or [] if event.get("type") == "llm_call"]
     failures = sum(1 for event in calls if not event.get("ok"))
     seconds = time.monotonic() - ctx.started_monotonic
+    highlights = getattr(ctx, "highlights_source", "none")
     return (
         f"Run summary: {seconds:.1f} s, {len(ctx.confirmed)} match(es), "
-        f"{len(calls)} LLM call(s), {failures} LLM failure(s)."
+        f"{len(calls)} LLM call(s), {failures} LLM failure(s), highlights: {highlights}."
     )
 
 
@@ -1649,6 +1651,7 @@ def _resolve_highlights(ctx: RunContext) -> None:
     facts = [row for row in raw_facts if isinstance(row, dict)] if isinstance(raw_facts, list) else []
     source = "llm" if outcome.get("source") == "llm" else "fallback"
     ctx.highlights = facts
+    ctx.highlights_source = source
     events.emit("gem_highlights", facts=list(facts), source=source)
 
 

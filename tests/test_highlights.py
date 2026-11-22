@@ -9,6 +9,8 @@ start_highlights / run_pipeline with fakes.
 import json
 import sys
 import threading
+import time
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -433,6 +435,58 @@ def test_run_without_highlights_fn_emits_nothing_and_keeps_the_card_empty():
     assert "gem_highlights" not in _types(seen)
 
 
+def test_run_summary_names_the_highlights_source(caplog):
+    caplog.set_level("INFO", logger="gem_compare")
+    _run(
+        url=GEM_URL + "?summary-highlights",
+        highlights_fn=lambda _gem: [{"label": "Brand", "value": "Demo"}],
+    )
+    summaries = [
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("Run summary:")
+    ]
+    assert summaries and "highlights: llm" in summaries[-1]
+
+
+def test_a_slow_highlights_job_adds_at_most_the_wait_cap():
+    release = threading.Event()
+
+    def slow(_gem):
+        release.wait(5.0)
+        return [{"label": "Brand", "value": "Demo"}]
+
+    original = highlights.HIGHLIGHT_WAIT_SECONDS
+    highlights.HIGHLIGHT_WAIT_SECONDS = 0.2
+    try:
+        started = time.monotonic()
+        _run(url=GEM_URL + "?no-overhead")
+        plain = time.monotonic() - started
+        started = time.monotonic()
+        _run(url=GEM_URL + "?with-overhead", highlights_fn=slow)
+        with_highlights = time.monotonic() - started
+    finally:
+        highlights.HIGHLIGHT_WAIT_SECONDS = original
+        release.set()
+    assert with_highlights - plain <= 0.7, (plain, with_highlights)
+
+
+def test_highlights_does_not_change_the_result_or_other_events():
+    plain, plain_events = _run(url=GEM_URL + "?equiv-plain")
+    with_facts, facts_events = _run(
+        url=GEM_URL + "?equiv-highlights",
+        highlights_fn=lambda _gem: [{"label": "Brand", "value": "Demo"}],
+    )
+    fields = ("matches", "possible_matches", "shops", "cheapest", "similar", "warnings", "state")
+    for field in fields:
+        assert plain.get(field) == with_facts.get(field), field
+    assert plain["gem"]["highlights"] == []
+    assert with_facts["gem"]["highlights"] == [{"label": "Brand", "value": "Demo"}]
+    plain_types = Counter(event["type"] for event in plain_events)
+    fact_types = Counter(event["type"] for event in facts_events)
+    fact_types.pop("gem_highlights", None)
+    assert fact_types == plain_types
+
+
 _INJECTED_FACTS = [
     {"label": "Brand", "value": "Demo"},
     {"label": "Type", "value": "Wireless"},
@@ -563,6 +617,22 @@ def test_low_priority_fn_pins_the_model_without_touching_the_router(monkeypatch)
     assert inner.chat.completions.calls
     assert all(call["model"] == "nvidia/nemotron-3.5-lightning-30b-a3b"
                for call in inner.chat.completions.calls)
+
+
+def test_low_priority_fn_caps_the_timeout(monkeypatch):
+    import openai
+
+    monkeypatch.setattr(highlights.config, "require_nvidia_key", lambda: "test-key")
+    created = {}
+
+    def fake_openai(**kwargs):
+        created.update(kwargs)
+        return _FakeClient(_GOOD_ANSWER)
+
+    monkeypatch.setattr(openai, "OpenAI", fake_openai)
+    highlights.low_priority_highlights_fn()
+    assert created["timeout"] <= highlights.LOW_PRIORITY_TIMEOUT_SECONDS
+    assert created["timeout"] <= 20.0
 
 
 def test_low_priority_fn_falls_back_when_no_key_is_configured(monkeypatch):

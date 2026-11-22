@@ -40,6 +40,9 @@ MIN_FACTS = 4
 FALLBACK_FACTS = 8
 SPEC_VALUE_CHARS = 200
 HIGHLIGHT_WAIT_SECONDS = 3.0
+# The card is optional: a hung call must not hold a key or connection longer
+# than the wait cap by much. This is a module constant, not a config default.
+LOW_PRIORITY_TIMEOUT_SECONDS = 20.0
 # A title plus at most MAX_FACTS short rows is well under this; the cap
 # only stops a chatty model from eating the default token budget.
 MAX_TOKENS = 1200
@@ -359,14 +362,16 @@ def low_priority_highlights_fn():
         inner = OpenAI(
             base_url=config.NVIDIA_BASE_URL,
             api_key=config.require_nvidia_key(),
-            timeout=config.NVIDIA_TIMEOUT_SECONDS,
+            timeout=min(config.NVIDIA_TIMEOUT_SECONDS, LOW_PRIORITY_TIMEOUT_SECONDS),
             max_retries=0,
         )
     except Exception as exc:
         logger.debug("Low-priority highlights client unavailable (%s: %s)", type(exc).__name__, exc)
         return compute_highlights
+    model = _low_priority_model()
+    logger.debug("Low-priority highlights model: %s", model)
     pinned = SimpleNamespace(
-        chat=SimpleNamespace(completions=_PinnedCompletions(inner, _low_priority_model()))
+        chat=SimpleNamespace(completions=_PinnedCompletions(inner, model))
     )
     return functools.partial(compute_highlights, client=pinned)
 
