@@ -306,6 +306,27 @@ def _demo_match(normalized, candidates, **_kwargs) -> matcher.MatchBatchResult:
     )
 
 
+def _highlights(product: dict) -> dict:
+    """Curated demo facts so the card looks like a live LLM answer.
+
+    Demo mode never calls a real LLM. The values mirror the demo specs, so the
+    card shows the approved look without faking a network call.
+    """
+    return {
+        "source": "llm",
+        "facts": [
+            {"label": "Brand", "value": "Logitech"},
+            {"label": "Model", "value": "M650 Signature"},
+            {"label": "Connectivity", "value": "Bluetooth 5.1 and Logi Bolt"},
+            {"label": "Battery life", "value": "Up to 24 months"},
+            {"label": "Sensor", "value": "Darkfield high precision"},
+            {"label": "Buttons", "value": "5 programmable buttons"},
+            {"label": "Grip", "value": "Medium to large"},
+            {"label": "Warranty", "value": "1 year limited hardware warranty"},
+        ],
+    }
+
+
 def demo_runner(gem_url: str, refresh: bool, on_event) -> dict:
     """One fake comparison through the real pipeline (same events, same
     result shape, same retry rules). The demo never caches."""
@@ -321,5 +342,6 @@ def demo_runner(gem_url: str, refresh: bool, on_event) -> dict:
         generic_scrape_fn=_generic_scrape,
         match_fn=_demo_match,
         expand_search_fn=_expand_search,
+        highlights_fn=_highlights,
         use_cache=False,
     )

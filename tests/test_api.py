@@ -294,7 +294,12 @@ def test_demo_mode_runs_a_fake_pipeline_and_accepts_any_link(monkeypatch):
     seen, _ = read_stream(client, run_id)
     types = {e["type"] for e in seen}
     assert {"gem_product", "search_finished", "candidate_verdict", "run_finished", "shop_started",
-            "shop_finished", "retry_started", "shop_updated", "run_updated", "done"} <= types
+            "shop_finished", "retry_started", "shop_updated", "run_updated", "done",
+            "gem_highlights"} <= types
+    highlight_event = next(e for e in seen if e["type"] == "gem_highlights")
+    assert highlight_event["source"] == "llm"
+    assert len(highlight_event["facts"]) == 8
+    assert len(result["gem"]["highlights"]) == 8
     assert [e["type"] for e in seen][-1] == "done"
 
 

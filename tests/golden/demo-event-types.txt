@@ -83,6 +83,7 @@ stage
 candidate_checking
 llm_call
 candidate_verdict
+gem_highlights
 shop_updated
 shop_updated
 run_updated
