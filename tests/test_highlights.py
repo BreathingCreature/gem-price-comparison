@@ -209,6 +209,8 @@ def test_the_prompt_carries_the_identity_and_the_specs():
     user = call["messages"][1]["content"]
     assert '{"title": "short card heading"' in system  # the JSON shape is asked for
     assert "at most 14 entries" in system
+    assert "duty cycle" in system
+    assert "Skip procurement and certification boilerplate" in system
     assert 'title: "Logitech M650 Wireless Mouse"' in user
     assert 'brand: "Logitech"' in user
     assert 'model: "M650"' in user

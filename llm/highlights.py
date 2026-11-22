@@ -33,7 +33,7 @@ from core.config import logger
 from llm.client import MAX_SPEC_KEY_CHARS, MAX_SPECS_IN_PROMPT, _call_llm
 
 # Bumped whenever the prompt or the input shape changes; part of the cache key.
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 MAX_FACTS = 14
 MAX_VALUE_CHARS = 40
 MIN_FACTS = 4
@@ -58,6 +58,9 @@ Rules:
 - Every "value" is under 40 characters and copied from the given title, brand, model or specs: never invent numbers, units or claims.
 - No seller names, no catalogue or GeM product ids, no tender or procurement boilerplate, no delivery or payment text.
 - Merge duplicate or near-duplicate facts into one row.
+- Choose labels a buyer of this exact product type actually compares. For a printer: print technology, print speed, paper sizes, connectivity, duty cycle, toner or page yield, duplex printing, warranty. For a laptop: processor, RAM, storage, display, battery, operating system, weight. For a phone: storage, RAM, camera, battery, screen, network.
+- Skip procurement and certification boilerplate such as BIS or IS codes, tender ids, country of origin, operating temperature and power supply unless it is the only useful distinguishing fact on the page.
+- Prefer a concrete number with its unit from the page over a vague adjective. Never write a generic "Type" row when a specific attribute is available.
 - "title" is the card heading and must contain the brand or the model from the page.
 - JSON only: no markdown fences, no commentary, no other keys."""
 
