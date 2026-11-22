@@ -142,3 +142,12 @@ def test_an_unpriced_result_does_not_invent_a_cheapest_line(tmp_path):
     proc = subprocess.run([_node(), "-e", script, str(RENDER_JS_PATH)], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "Cheapest: none found"
+
+
+def test_system_poll_backs_off_after_failures():
+    assert "PROVIDER_RETRY_MS = 10000" in APP_JS
+    assert "PROVIDER_MAX_FAILURES = 3" in APP_JS
+    assert "state.providerFailures += 1" in APP_JS
+    assert "state.providerFailures >= PROVIDER_MAX_FAILURES" in APP_JS
+    assert "stopProviderPoll();" in APP_JS
+    assert "document.hidden" in APP_JS

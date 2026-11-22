@@ -8,6 +8,8 @@ var gel = $; // dynamic ids are built at run time, not in the page
 var MAX_FEED_LINES = 600;
 var THEME_KEY = "gem-price-theme";
 var POLL_MS = 2000;
+var PROVIDER_RETRY_MS = 10000;
+var PROVIDER_MAX_FAILURES = 3;
 var FACTS_SHOWN = 8;
 var GLOBE_PATH = "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18";
 var GEM_PATH = "M4 9l1.5-5h13L20 9M4 9v10h16V9M4 9c0 2 3 2 4 0 1 2 3 2 4 0 1 2 3 2 4 0 1 2 4 2 4 0M10 19v-5h4v5";
@@ -23,6 +25,7 @@ var state = {
   pipelineUserToggled: false, pipelineCollapsed: false,
   highlights: [], shopRowOrder: [], shopRowEls: {},
   specsExpanded: false, providerPoll: null, providerEls: {},
+  providerFailures: 0, providerRetryTimer: null,
   iconProbes: {}, shopManifest: null, shopManifestPromise: null,
   toastTimer: null
 };
@@ -249,6 +252,7 @@ function loadHealth() {
 function loadProviders() {
   fetch(API + "/api/llm/status").then(function (response) { return response.json(); })
     .then(function (data) {
+      state.providerFailures = 0;
       state.providers = data;
       renderProviders();
       if (data && data.endpoints) {
@@ -258,7 +262,20 @@ function loadProviders() {
       paintSystem();
     }).catch(function () {
       state.providers = null;
-      setText($("llm-strategy"), "LLM endpoint status is unavailable.");
+      state.providerFailures += 1;
+      if (state.providerFailures >= PROVIDER_MAX_FAILURES) {
+        stopProviderPoll();
+        setText($("llm-strategy"), "LLM endpoint status is unavailable. Open the System tab again to retry.");
+        return;
+      }
+      setText($("llm-strategy"), "LLM endpoint status is unavailable. Retrying in 10 seconds.");
+      if (state.providerRetryTimer) clearTimeout(state.providerRetryTimer);
+      state.providerRetryTimer = setTimeout(function () {
+        state.providerRetryTimer = null;
+        if (state.activeTab === "system" && !document.hidden && state.view === "run" && !state.finished) {
+          startProviderPoll();
+        }
+      }, PROVIDER_RETRY_MS);
     });
 }
 
@@ -1546,6 +1563,8 @@ function startProviderPoll() {
 function stopProviderPoll() {
   if (state.providerPoll) clearInterval(state.providerPoll);
   state.providerPoll = null;
+  if (state.providerRetryTimer) clearTimeout(state.providerRetryTimer);
+  state.providerRetryTimer = null;
 }
 function syncProviderPoll() {
   if (state.demo) { stopProviderPoll(); return; }
@@ -1555,6 +1574,7 @@ function syncProviderPoll() {
       loadProviders();
       return;
     }
+    state.providerFailures = 0;
     startProviderPoll();
     loadProviders();
   } else {
