@@ -6,6 +6,8 @@ scenarios pin the sequential path and record the same two things.
 import json
 from pathlib import Path
 
+from event_compare import canonical
+
 from api import demo
 from core import pipeline
 from llm.match import MatchBatchResult
@@ -155,6 +157,27 @@ def test_demo_events_and_result_match_the_baseline(monkeypatch):
 
     expected_types = (GOLDEN / "demo-event-types.txt").read_text(encoding="utf-8").splitlines()
     assert [event["type"] for event in seen] == expected_types
+    assert _clean(result) == _clean(json.loads((GOLDEN / "demo-result.json").read_text(encoding="utf-8")))
+
+
+def test_demo_events_keep_the_barriers_in_parallel_mode(monkeypatch):
+    # The shipped default is parallel search. It emits a few extra per-lane
+    # events, so it cannot be compared type for type with the sequential
+    # golden. Check the invariants that must hold in any thread order instead.
+    monkeypatch.setattr(demo, "_pause", lambda *_args, **_kwargs: None)
+    assert pipeline.PARALLEL_SEARCH is True
+    seen = []
+    result = demo.demo_runner(DEMO_URL, False, seen.append)
+    info = canonical(seen)
+    assert info["first"] == "run_started"
+    assert info["last"] == "done"
+    counts = dict(info["counts"])
+    for name in ("shop_started", "shop_finished", "candidate_verdict",
+                 "llm_call", "run_finished", "run_updated", "done"):
+        assert counts.get(name, 0) > 0, name
+    assert info["lanes"]
+    barriers = info["barriers"]
+    assert barriers.index("run_finished") < barriers.index("run_updated") < barriers.index("done")
     assert _clean(result) == _clean(json.loads((GOLDEN / "demo-result.json").read_text(encoding="utf-8")))
 
 
