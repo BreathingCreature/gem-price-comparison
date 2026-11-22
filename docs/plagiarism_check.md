@@ -36,7 +36,7 @@ That is well under the usual 15 % (some journals 10 %) acceptance bar.
 - the authors' earlier draft (`Related Docs/Review 2/Paper Draft.docx`,
   `Paper Draft - Copy.docx`);
 - `Project_Report_GeM_Price_Comparison.docx`;
-- every `docs/*.md`, `README.md` and `AGENTS.md` in this repository.
+- every `docs/*.md` and `README.md` in this repository.
 
 ## 3. Method (and its limits)
 
