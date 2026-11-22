@@ -314,6 +314,7 @@ def _highlights(product: dict) -> dict:
     """
     return {
         "source": "llm",
+        "summary": "Logitech M650 Signature wireless mouse",
         "facts": [
             {"label": "Brand", "value": "Logitech"},
             {"label": "Model", "value": "M650 Signature"},

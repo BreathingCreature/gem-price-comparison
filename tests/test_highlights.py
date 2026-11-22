@@ -209,8 +209,10 @@ def test_the_prompt_carries_the_identity_and_the_specs():
     user = call["messages"][1]["content"]
     assert '{"title": "short card heading"' in system  # the JSON shape is asked for
     assert "at most 14 entries" in system
-    assert "duty cycle" in system
-    assert "Skip procurement and certification boilerplate" in system
+    assert "Never include:" in system
+    assert "Worked example, printer" in system
+    assert "Worked example, steel almirah" in system
+    assert '"summary"' in system
     assert 'title: "Logitech M650 Wireless Mouse"' in user
     assert 'brand: "Logitech"' in user
     assert 'model: "M650"' in user
@@ -232,7 +234,6 @@ def test_fallback_orders_brand_then_model_then_specs():
         {"label": "Brand", "value": "Acme"},
         {"label": "Model", "value": "Z100"},
         {"label": "Colour", "value": "black"},
-        {"label": "Weight", "value": "1 kg"},
     ]
 
 
@@ -254,7 +255,6 @@ def test_fallback_drops_procurement_noise_and_empty_values():
     }
     assert highlights.fallback_highlights(gem) == [
         {"label": "Brand", "value": "Acme"},
-        {"label": "Weight", "value": "1 kg"},
     ]
 
 
@@ -278,17 +278,16 @@ def test_fallback_title_cases_the_raw_spec_labels():
     facts = highlights.fallback_highlights(gem)
     assert facts == [
         {"label": "Compatible With", "value": "USB"},
-        {"label": "Operating System", "value": "Windows 11"},
     ]
 
 
-def test_country_of_origin_is_only_used_when_the_list_is_short():
+def test_country_of_origin_is_always_blocked():
     specs = {f"spec {i}": f"value {i}" for i in range(6)}
     specs["country of origin"] = "India"
     gem = {"title": "T", "brand": "Acme", "model": "Z100", "specs": specs}
     facts = highlights.fallback_highlights(gem)
     assert len(facts) == 8
-    assert "Country Of Origin" not in [f["label"] for f in facts]  # six better rows filled it
+    assert "Country Of Origin" not in [f["label"] for f in facts]
 
     short = {
         "title": "T",
@@ -297,7 +296,7 @@ def test_country_of_origin_is_only_used_when_the_list_is_short():
         "specs": {"colour": "black", "country of origin": "India"},
     }
     facts = highlights.fallback_highlights(short)
-    assert [f["label"] for f in facts] == ["Brand", "Colour", "Country Of Origin"]
+    assert [f["label"] for f in facts] == ["Brand", "Colour"]
 
 
 def test_fallback_never_raises_on_junk_input():

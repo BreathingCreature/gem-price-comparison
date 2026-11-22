@@ -8,7 +8,7 @@ the evaluator all read the same shape.
 
 Shape (docs/api.md, spec/08_INTERFACES.md §2):
     result_version, run_id, trace_id, checked_at, from_cache, state,
-    gem {url,title,canonical_name,brand,model,price{low,high,kind},highlights[],described_by},
+    gem {url,title,canonical_name,brand,model,price{low,high,kind},highlights[],highlights_summary,described_by},
     shops {domain: {status,reason,seen,dropped,checked,matches,retried,retryable,seconds}},
     matches[]  (cheapest first, out-of-stock last),
     possible_matches[] (each with `why`),
@@ -187,6 +187,7 @@ def _gem_view(
     described_by: str | None,
     gem_price,
     highlights: list | None = None,
+    highlights_summary: str | None = None,
 ) -> dict:
     return {
         "url": gem_url or gem_product.get("url"),
@@ -201,6 +202,7 @@ def _gem_view(
         # Key facts for the card; [] when the run did not ask for any, so
         # readers can rely on the key existing on every fresh result.
         "highlights": list(highlights or []),
+        "highlights_summary": str(highlights_summary or ""),
         "described_by": described_by or normalized.get("described_by") or "llm",
     }
 
@@ -226,6 +228,7 @@ def build_result(
     checked_at: str | None = None,
     described_by: str | None = None,
     highlights: list | None = None,
+    highlights_summary: str | None = None,
 ) -> dict:
     gem_product = dict(gem_product or {})
     normalized = normalized or {}
@@ -246,7 +249,7 @@ def build_result(
         for name, entry in shops.items()
         if entry.get("status") in (SHOP_FOUND, SHOP_POSSIBLE, SHOP_NOT_FOUND)
     )
-    gem_view = _gem_view(gem_url, gem_product, normalized, described_by, gem_price, highlights=highlights)
+    gem_view = _gem_view(gem_url, gem_product, normalized, described_by, gem_price, highlights=highlights, highlights_summary=highlights_summary)
 
     return {
         # --- v2 ---

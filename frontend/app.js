@@ -23,7 +23,7 @@ var state = {
   submitting: false, active: false, queued: false, finished: false, failed: false,
   renderedResult: null, lastClock: "", lastUrl: "",
   pipelineUserToggled: false, pipelineCollapsed: false,
-  highlights: [], shopRowOrder: [], shopRowEls: {},
+  highlights: [], highlightsSummary: "", shopRowOrder: [], shopRowEls: {},
   specsExpanded: false, providerPoll: null, providerEls: {},
   providerFailures: 0, providerRetryTimer: null,
   iconProbes: {}, shopManifest: null, shopManifestPromise: null,
@@ -444,6 +444,7 @@ function openSavedRun(runId) {
     state.result = run.result;
     state.lastUrl = (run.result.gem && run.result.gem.url) || run.gem_url || state.lastUrl;
     state.highlights = (run.result.gem && run.result.gem.highlights) || [];
+    state.highlightsSummary = (run.result.gem && run.result.gem.highlights_summary) || "";
     $("run-again").hidden = !state.lastUrl;
     state.finished = true;
     state.failed = run.status === "failed";
@@ -564,7 +565,11 @@ function handle(event) {
     case "normalized": paintGemCard(); break;
     case "gem_highlights":
       state.highlights = event.facts || [];
-      if (state.result && state.result.gem) state.result.gem.highlights = state.highlights;
+      state.highlightsSummary = event.summary || "";
+      if (state.result && state.result.gem) {
+        state.result.gem.highlights = state.highlights;
+        state.result.gem.highlights_summary = state.highlightsSummary;
+      }
       state.renderedResult = null;
       paintGemCard();
       break;
@@ -647,6 +652,7 @@ function resetRunView() {
   state.shopRowOrder = [];
   state.shopRowEls = {};
   state.highlights = [];
+  state.highlightsSummary = "";
   state.specsExpanded = false;
   stopClock();
   setText($("run-clock"), "00:00");
@@ -755,6 +761,7 @@ function finishRun(status) {
         if (run && run.result) {
           state.result = run.result;
           state.highlights = (run.result.gem && run.result.gem.highlights) || [];
+          state.highlightsSummary = (run.result.gem && run.result.gem.highlights_summary) || "";
           state.renderedResult = null;
         }
         paintAll(); loadRuns(); scrollToSummary();
@@ -848,7 +855,8 @@ function gemModel() {
     price: price,
     image: gem.image || stats.image || "",
     specs: gem.specs || stats.specs || {},
-    highlights: gem.highlights || []
+    highlights: gem.highlights || [],
+    summary: gem.highlights_summary || state.highlightsSummary || ""
   };
 }
 
@@ -859,6 +867,7 @@ function paintGemCard() {
   card.hidden = !hasProduct;
   if (!hasProduct) return;
   setText($("gem-title"), gem.title || gem.pageTitle || "Reading the GeM page");
+  setText($("gem-summary"), gem.summary || "");
   var href = R.safeHref(gem.url);
   var link = $("gem-url-link");
   if (href) {

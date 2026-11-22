@@ -1,0 +1,223 @@
+[
+  {
+    "name": "printer",
+    "gem_product": {
+      "title": "Ink tank colour printer all in one Wi-Fi A4",
+      "brand": "Canon",
+      "model": "G1730",
+      "category_slug": "computer-printer-v2",
+      "breadcrumb": "Computers > Printers > Ink Tank Printers",
+      "specs": {
+        "Print technology": "Ink tank",
+        "Function": "Print only",
+        "Colour": "Colour",
+        "Print speed": "11 ppm mono, 6 ppm colour",
+        "Monthly duty cycle": "3000 pages per month",
+        "Connectivity": "Wi-Fi and USB",
+        "Paper size": "A4",
+        "RAM": "128 MB",
+        "Operating system": "Windows 10 or Linux",
+        "Weight": "4 kg",
+        "Country of origin": "India",
+        "BIS": "IS 13252 Part 1"
+      }
+    },
+    "must_include": ["Print Technology", "Function", "Colour", "Print Speed", "Monthly Duty Cycle", "Connectivity"],
+    "must_not_include": ["Ram", "Operating System", "Weight", "Country Of Origin", "Bis"],
+    "answer": "{\"title\":\"Canon G1730 printer\",\"summary\":\"Ink tank colour printer, print only, A4\",\"facts\":[{\"label\":\"Print technology\",\"value\":\"Ink tank\"},{\"label\":\"Function\",\"value\":\"Print only\"},{\"label\":\"Colour\",\"value\":\"Colour\"},{\"label\":\"Print speed\",\"value\":\"11 ppm mono, 6 ppm colour\"},{\"label\":\"Monthly duty cycle\",\"value\":\"3000 pages per month\"},{\"label\":\"Connectivity\",\"value\":\"Wi-Fi and USB\"},{\"label\":\"Operating system\",\"value\":\"Windows 10 or Linux\"},{\"label\":\"Paper size\",\"value\":\"A4\"}]}"
+  },
+  {
+    "name": "laptop",
+    "gem_product": {
+      "title": "Acer Aspire Lite AMD Ryzen 3 laptop 8 GB 512 GB SSD",
+      "brand": "Acer",
+      "model": "AL15-41",
+      "category_slug": "entry-mid-level-laptop-notebook",
+      "breadcrumb": "Computers > Laptops",
+      "specs": {
+        "Processor": "AMD Ryzen 3 5425U",
+        "RAM": "8 GB",
+        "Storage": "512 GB SSD",
+        "Display": "15.6 inch Full HD",
+        "Battery": "50 Wh",
+        "Operating system": "Windows 11 Home",
+        "Weight": "1.7 kg",
+        "Catalogue id": "CAT-9911"
+      }
+    },
+    "must_include": ["Processor", "Ram", "Storage", "Display", "Battery"],
+    "must_not_include": ["Operating System", "Weight", "Catalogue Id"],
+    "answer": "{\"title\":\"Acer AL15-41 laptop\",\"summary\":\"AMD Ryzen 3 laptop 8 GB 512 GB SSD\",\"facts\":[{\"label\":\"Processor\",\"value\":\"AMD Ryzen 3 5425U\"},{\"label\":\"RAM\",\"value\":\"8 GB\"},{\"label\":\"Storage\",\"value\":\"512 GB SSD\"},{\"label\":\"Display\",\"value\":\"15.6 inch Full HD\"},{\"label\":\"Battery\",\"value\":\"50 Wh\"},{\"label\":\"Operating system\",\"value\":\"Windows 11 Home\"}]}"
+  },
+  {
+    "name": "monitor",
+    "gem_product": {
+      "title": "24 inch Full HD LED monitor HDMI",
+      "brand": "Dell",
+      "model": "SE2422H",
+      "category_slug": "monitor",
+      "breadcrumb": "Computers > Monitors",
+      "specs": {
+        "Display size": "24 inch",
+        "Resolution": "1920 x 1080",
+        "Panel": "IPS",
+        "Refresh rate": "75 Hz",
+        "HDMI": "Yes",
+        "Country of origin": "China",
+        "Tender id": "T-771"
+      }
+    },
+    "must_include": ["Display Size", "Resolution", "Panel", "Refresh Rate", "Hdmi"],
+    "must_not_include": ["Country Of Origin", "Tender Id"],
+    "answer": "{\"title\":\"Dell SE2422H monitor\",\"summary\":\"24 inch Full HD IPS monitor\",\"facts\":[{\"label\":\"Display size\",\"value\":\"24 inch\"},{\"label\":\"Resolution\",\"value\":\"1920 x 1080\"},{\"label\":\"Panel\",\"value\":\"IPS\"},{\"label\":\"Refresh rate\",\"value\":\"75 Hz\"},{\"label\":\"HDMI\",\"value\":\"Yes\"},{\"label\":\"Country of origin\",\"value\":\"China\"}]}"
+  },
+  {
+    "name": "chair",
+    "gem_product": {
+      "title": "Office chair with armrest and lumbar support",
+      "brand": "Durian",
+      "model": "C-21",
+      "category_slug": "chairs-and-furniture",
+      "breadcrumb": "Furniture > Chairs",
+      "specs": {
+        "Material": "Mesh",
+        "Seat": "Fabric cushion",
+        "Backrest": "Mesh with lumbar support",
+        "Armrest": "Adjustable",
+        "Load capacity": "120 kg",
+        "Weight": "14 kg",
+        "Warranty": "1 year"
+      }
+    },
+    "must_include": ["Material", "Seat", "Backrest", "Armrest", "Load Capacity", "Warranty"],
+    "must_not_include": [],
+    "answer": "{\"title\":\"Durian C-21 chair\",\"summary\":\"Mesh office chair with adjustable armrest\",\"facts\":[{\"label\":\"Material\",\"value\":\"Mesh\"},{\"label\":\"Seat\",\"value\":\"Fabric cushion\"},{\"label\":\"Backrest\",\"value\":\"Mesh with lumbar support\"},{\"label\":\"Armrest\",\"value\":\"Adjustable\"},{\"label\":\"Load capacity\",\"value\":\"120 kg\"},{\"label\":\"Weight\",\"value\":\"14 kg\"},{\"label\":\"Warranty\",\"value\":\"1 year\"}]}"
+  },
+  {
+    "name": "almirah",
+    "gem_product": {
+      "title": "Steel almirah 4 door with locker 18 gauge",
+      "brand": "Metalwell",
+      "model": "AL-4D",
+      "category_slug": "steel-almirah",
+      "breadcrumb": "Furniture > Storage > Almirah",
+      "specs": {
+        "Material": "Mild steel",
+        "Gauge": "18",
+        "Doors": "4",
+        "Locker": "Yes",
+        "Finish": "Powder coated",
+        "Dimensions": "900 x 450 x 1850 mm",
+        "Certificate": "ISO 9001"
+      }
+    },
+    "must_include": ["Material", "Gauge", "Doors", "Locker", "Finish"],
+    "must_not_include": ["Certificate"],
+    "answer": "{\"title\":\"Metalwell AL-4D almirah\",\"summary\":\"Mild steel 4 door almirah with locker\",\"facts\":[{\"label\":\"Material\",\"value\":\"Mild steel\"},{\"label\":\"Gauge\",\"value\":\"18\"},{\"label\":\"Doors\",\"value\":\"4\"},{\"label\":\"Locker\",\"value\":\"Yes\"},{\"label\":\"Finish\",\"value\":\"Powder coated\"},{\"label\":\"Dimensions\",\"value\":\"900 x 450 x 1850 mm\"},{\"label\":\"Certificate\",\"value\":\"ISO 9001\"}]}"
+  },
+  {
+    "name": "paper",
+    "gem_product": {
+      "title": "A4 copier paper 75 GSM 500 sheets",
+      "brand": "JK",
+      "model": "Copier 75",
+      "category_slug": "stationery-paper",
+      "breadcrumb": "Stationery > Paper",
+      "specs": {
+        "Size": "A4",
+        "Pages": "500 sheets",
+        "Grammage": "75 GSM",
+        "Colour": "White",
+        "Pack": "5 reams",
+        "Country of origin": "India"
+      }
+    },
+    "must_include": ["Size", "Pages", "Grammage", "Colour", "Pack"],
+    "must_not_include": ["Country Of Origin"],
+    "answer": "{\"title\":\"JK Copier 75 paper\",\"summary\":\"A4 75 GSM copier paper, 5 reams\",\"facts\":[{\"label\":\"Size\",\"value\":\"A4\"},{\"label\":\"Pages\",\"value\":\"500 sheets\"},{\"label\":\"Grammage\",\"value\":\"75 GSM\"},{\"label\":\"Colour\",\"value\":\"White\"},{\"label\":\"Pack\",\"value\":\"5 reams\"},{\"label\":\"Country of origin\",\"value\":\"India\"}]}"
+  },
+  {
+    "name": "toner",
+    "gem_product": {
+      "title": "Black toner cartridge for laser printer 6000 pages",
+      "brand": "Canon",
+      "model": "Cartridge 057",
+      "category_slug": "printer-consumables",
+      "breadcrumb": "Printers > Consumables > Toner",
+      "specs": {
+        "Compatibility": "Canon imageCLASS MF264dw",
+        "Page yield": "6000 pages",
+        "Colour": "Black",
+        "Cartridge type": "Toner",
+        "Country of origin": "Japan"
+      }
+    },
+    "must_include": ["Compatibility", "Page Yield", "Colour", "Cartridge Type"],
+    "must_not_include": ["Country Of Origin"],
+    "answer": "{\"title\":\"Canon Cartridge 057\",\"summary\":\"Black toner cartridge 6000 pages\",\"facts\":[{\"label\":\"Compatibility\",\"value\":\"Canon imageCLASS MF264dw\"},{\"label\":\"Page yield\",\"value\":\"6000 pages\"},{\"label\":\"Colour\",\"value\":\"Black\"},{\"label\":\"Cartridge type\",\"value\":\"Toner\"},{\"label\":\"Country of origin\",\"value\":\"Japan\"}]}"
+  },
+  {
+    "name": "ups",
+    "gem_product": {
+      "title": "Online UPS 3 kVA with 30 minute backup",
+      "brand": "APC",
+      "model": "SRT3K",
+      "category_slug": "ups",
+      "breadcrumb": "Electronics > Power > UPS",
+      "specs": {
+        "Capacity": "3 kVA",
+        "Backup time": "30 minutes",
+        "Battery type": "Lead acid",
+        "Input voltage": "230 V AC",
+        "Warranty": "2 years",
+        "Certificate": "BIS"
+      }
+    },
+    "must_include": ["Capacity", "Backup Time", "Battery Type", "Input Voltage", "Warranty"],
+    "must_not_include": ["Certificate"],
+    "answer": "{\"title\":\"APC SRT3K UPS\",\"summary\":\"3 kVA online UPS with 30 minute backup\",\"facts\":[{\"label\":\"Capacity\",\"value\":\"3 kVA\"},{\"label\":\"Backup time\",\"value\":\"30 minutes\"},{\"label\":\"Battery type\",\"value\":\"Lead acid\"},{\"label\":\"Input voltage\",\"value\":\"230 V AC\"},{\"label\":\"Warranty\",\"value\":\"2 years\"},{\"label\":\"Certificate\",\"value\":\"BIS\"}]}"
+  },
+  {
+    "name": "router",
+    "gem_product": {
+      "title": "Wi-Fi 6 router 1800 Mbps with 4 ports",
+      "brand": "TP-Link",
+      "model": "AX1800",
+      "category_slug": "router",
+      "breadcrumb": "Networking > Routers",
+      "specs": {
+        "Wi-Fi standard": "Wi-Fi 6",
+        "Speed": "1800 Mbps",
+        "Ports": "4 LAN ports",
+        "Antenna": "4 external antennas",
+        "BIS": "IS 13252",
+        "Catalogue id": "CAT-445"
+      }
+    },
+    "must_include": ["Wi-Fi Standard", "Speed", "Ports", "Antenna"],
+    "must_not_include": ["Bis", "Catalogue Id"],
+    "answer": "{\"title\":\"TP-Link AX1800 router\",\"summary\":\"Wi-Fi 6 router with 1800 Mbps speed\",\"facts\":[{\"label\":\"Wi-Fi standard\",\"value\":\"Wi-Fi 6\"},{\"label\":\"Speed\",\"value\":\"1800 Mbps\"},{\"label\":\"Ports\",\"value\":\"4 LAN ports\"},{\"label\":\"Antenna\",\"value\":\"4 external antennas\"},{\"label\":\"BIS\",\"value\":\"IS 13252\"},{\"label\":\"Catalogue id\",\"value\":\"CAT-445\"}]}"
+  },
+  {
+    "name": "projector",
+    "gem_product": {
+      "title": "Full HD projector 4000 lumens with HDMI",
+      "brand": "Epson",
+      "model": "EB-X06",
+      "category_slug": "projector",
+      "breadcrumb": "AV > Projectors",
+      "specs": {
+        "Resolution": "1920 x 1080",
+        "Brightness": "4000 lumens",
+        "Contrast": "16000 to 1",
+        "Lamp life": "6000 hours",
+        "Connectivity": "HDMI and USB",
+        "Weight": "2.6 kg",
+        "Operating system": "Android TV"
+      }
+    },
+    "must_include": ["Resolution", "Brightness", "Contrast", "Lamp Life", "Connectivity"],
+    "must_not_include": ["Operating System"],
+    "answer": "{\"title\":\"Epson EB-X06 projector\",\"summary\":\"Full HD 4000 lumen projector\",\"facts\":[{\"label\":\"Resolution\",\"value\":\"1920 x 1080\"},{\"label\":\"Brightness\",\"value\":\"4000 lumens\"},{\"label\":\"Contrast\",\"value\":\"16000 to 1\"},{\"label\":\"Lamp life\",\"value\":\"6000 hours\"},{\"label\":\"Connectivity\",\"value\":\"HDMI and USB\"},{\"label\":\"Weight\",\"value\":\"2.6 kg\"},{\"label\":\"Operating system\",\"value\":\"Android TV\"}]}"
+  }
+]

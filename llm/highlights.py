@@ -33,8 +33,11 @@ from core.config import logger
 from llm.client import MAX_SPEC_KEY_CHARS, MAX_SPECS_IN_PROMPT, _call_llm
 
 # Bumped whenever the prompt or the input shape changes; part of the cache key.
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 MAX_FACTS = 14
+SUMMARY_FACTS = 8
+MIN_FACTS = 4
+MAX_SUMMARY_CHARS = 90
 MAX_VALUE_CHARS = 40
 MIN_FACTS = 4
 FALLBACK_FACTS = 8
@@ -49,18 +52,27 @@ MAX_TOKENS = 1200
 
 _HIGHLIGHTS_SYSTEM = """You write the "highlights" (key facts) list for the product card of an Indian government e-marketplace (GeM) listing, so a buyer can see at a glance what matters about this product.
 
-You are given the listing's title, brand, model, category slug and spec fields. Respond with ONLY a single JSON object of exactly this shape:
-{"title": "short card heading", "facts": [{"label": "short label", "value": "short value"}]}
+You are given the listing's title, brand, model, category slug, breadcrumb and spec fields. Respond with ONLY a single JSON object of exactly this shape:
+{"title": "short card heading", "summary": "one shopper sentence", "facts": [{"label": "short label", "value": "short value"}]}
+
+Think like a shopper comparing this exact product with other products in the same category. Work from the category slug and breadcrumb to decide what matters.
+
+Worked example, printer:
+Input title "Ink tank colour printer all in one Wi-Fi A4", specs include print technology ink tank, print speed 11 ppm mono and 6 ppm colour, monthly duty cycle 3000, wireless yes, duplex yes, paper size A4, page yield 6000.
+Good: "Type: Ink tank", "Function: Print, scan, copy", "Colour: Colour", "Print speed: 11 ppm mono, 6 ppm colour", "Duty cycle: 3000 pages per month", "Connectivity: Wi-Fi", "Paper size: A4", "Duplex: Yes".
+Bad: "Operating system: Windows 10", "RAM size: 128 MB", "Weight: 4 kg", "Connectivity: USB Port" when Wi-Fi is also on the page.
+
+Worked example, steel almirah:
+Input title "Steel almirah 4 door with locker, 18 gauge", specs include material mild steel, gauge 18, doors 4, locker yes, finish powder coated, dimensions 900 x 450 x 1850 mm.
+Good: "Material: Mild steel", "Gauge: 18", "Doors: 4", "Locker: Yes", "Finish: Powder coated".
+Bad: "Country of origin: India", "Catalogue id: 12345", "Delivery: Free".
 
 Rules:
-- "facts" holds at most 14 entries, ordered by how much a buyer of this kind of product cares about them: the specs that distinguish this product come first, never filler.
-- Every "label" fits the product type and is a few words at most (for example "Capacity", "Type", "Compatible With").
-- Every "value" is under 40 characters and copied from the given title, brand, model or specs: never invent numbers, units or claims.
-- No seller names, no catalogue or GeM product ids, no tender or procurement boilerplate, no delivery or payment text.
-- Merge duplicate or near-duplicate facts into one row.
-- Choose labels a buyer of this exact product type actually compares. For a printer: print technology, print speed, paper sizes, connectivity, duty cycle, toner or page yield, duplex printing, warranty. For a laptop: processor, RAM, storage, display, battery, operating system, weight. For a phone: storage, RAM, camera, battery, screen, network.
-- Skip procurement and certification boilerplate such as BIS or IS codes, tender ids, country of origin, operating temperature and power supply unless it is the only useful distinguishing fact on the page.
-- Prefer a concrete number with its unit from the page over a vague adjective. Never write a generic "Type" row when a specific attribute is available.
+- Return 6 to 8 facts, and at most 14 entries in any case, ordered by how much they separate this product from others in its category.
+- "summary" is at most 90 characters and says what the product is in shopper words, for example "Ink tank colour printer, print only, A4". It must be grounded in the page data like the facts.
+- Never include: an operating system or driver compatibility list, a certificate or code, a tender or catalogue id, country of origin, packaging, a generic "USB" or "cable included" when another connection exists, dimensions and weight unless the category is furniture, luggage, appliances or fans, or anything the title already says word for word.
+- Merge related rows into one fact, for example mono and colour speed into "Print speed: 11 ppm mono, 6 ppm colour".
+- Every "label" and "value" is short; every "value" is under 40 characters and copied from the given title, brand, model or specs. Never invent numbers, units or claims.
 - "title" is the card heading and must contain the brand or the model from the page.
 - JSON only: no markdown fences, no commentary, no other keys."""
 
@@ -68,6 +80,32 @@ Rules:
 # against the label with punctuation and spaces removed, so "GeM Product Id"
 # and "gem id" both land on a key here.
 _NOISE_LABELS = ("seller", "delivery", "payment", "gemid", "productid", "catalogueid", "catalogid")
+
+# Labels the card must never show, even when a model returns them and they
+# are technically grounded in the page. Matching is on a punctuation-free
+# lowercase form of the label.
+_BLOCKED_EXACT = {"bis", "os", "is"}
+_SIZE_ALLOWED = ("furniture", "luggage", "appliance", "fan", "chair", "almirah", "refrigerator", "washingmachine")
+_BLOCKED_SUBSTR = (
+    "operatingsystem", "oscompatibility", "drivercompatib", "countryoforigin",
+    "catalogue", "catalogid", "tender", "certificate", "biscompliance",
+    "bisstandard", "packaging", "delivery", "payment", "seller",
+)
+_CATEGORY_PRIORITY = {
+    "printer": ("printtechnology", "inktank", "cartridge", "function", "colour",
+                "printspeed", "dutycycle", "yield", "connectivity", "wireless",
+                "papersize", "duplex", "warranty"),
+    "laptop": ("processor", "cpu", "ram", "memory", "storage", "ssd", "display",
+               "screen", "battery", "graphics", "warranty"),
+    "desktop": ("processor", "cpu", "ram", "memory", "storage", "ssd", "display", "warranty"),
+    "monitor": ("panelsize", "displaysize", "resolution", "panel", "refresh",
+                "connectivity", "hdmi", "warranty"),
+    "mobile": ("storage", "ram", "camera", "battery", "screen", "display", "network", "5g"),
+    "tablet": ("storage", "ram", "camera", "battery", "screen", "display", "network"),
+    "chair": ("material", "seat", "backrest", "armrest", "load", "warranty", "colour"),
+    "furniture": ("material", "doors", "shelf", "gauge", "locker", "finish", "warranty"),
+    "stationery": ("size", "pages", "grammage", "colour", "pack", "type"),
+}
 
 # Honest but boring: kept only when the better rows do not fill the list.
 _DEFERRED_LABELS = ("countryoforigin",)
@@ -103,11 +141,13 @@ def _user_content(gem_product: dict) -> str:
     brand = str(gem_product.get("brand") or "")
     model = str(gem_product.get("model") or "")
     category = str(gem_product.get("category_slug") or "")
+    breadcrumb = str(gem_product.get("breadcrumb") or "")
     return (
         f'title: "{title}"\n'
         f'brand: "{brand}"\n'
         f'model: "{model}"\n'
         f'category_slug: "{category}"\n'
+        f'breadcrumb: "{breadcrumb}"\n'
         f"specs:\n{_specs_for_prompt(specs)}"
     )
 
@@ -159,7 +199,7 @@ def _coerce_facts(rows) -> list:
     seen = set()
     for row in rows:
         fact = _clean_fact(row)
-        if fact is None:
+        if fact is None or _is_blocked(fact["label"]):
             continue
         key = (fact["label"].lower(), fact["value"].lower())
         if key in seen:
@@ -185,9 +225,51 @@ def _title_ok(raw_title, gem_product: dict) -> bool:
     return any(anchor in heading for anchor in anchors)
 
 
-def _gate(data, gem_product: dict) -> list | None:
-    """The LLM's answer turned into trustworthy facts, or None when any
-    part of it fails (bad shape, wrong heading, hallucinated or over-long
+def _is_blocked(label) -> bool:
+    norm = _label_norm(label)
+    if norm in _BLOCKED_EXACT:
+        return True
+    return any(marker in norm for marker in _BLOCKED_SUBSTR)
+
+
+def _size_noise(label, payload: dict) -> bool:
+    """Weight and dimensions only help when size decides the purchase."""
+    if _label_norm(label) not in ("weight", "dimensions", "dimension"):
+        return False
+    text = " ".join(str(payload.get(key) or "") for key in ("category_slug", "breadcrumb", "title")).lower()
+    return not any(word in text for word in _SIZE_ALLOWED)
+
+
+def _category_terms(gem_product: dict) -> tuple:
+    haystack = " ".join(str(gem_product.get(key) or "") for key in ("category_slug", "breadcrumb", "title")).lower()
+    best: tuple = ()
+    best_at = len(haystack)
+    for name, terms in _CATEGORY_PRIORITY.items():
+        at = haystack.find(name)
+        if at >= 0 and at < best_at:
+            best, best_at = terms, at
+    return best
+
+
+def _fallback_summary(gem_product: dict) -> str:
+    title = str(gem_product.get("title") or "").strip()
+    category = str(gem_product.get("category_slug") or "").replace("-", " ")
+    base = title or category or "Product"
+    return base[:MAX_SUMMARY_CHARS]
+
+
+def _clean_summary(value, gem_product: dict) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if not text or len(text) > MAX_SUMMARY_CHARS or not _grounded(text, _haystack(gem_product)):
+        return ""
+    return text
+
+
+def _gate(data, gem_product: dict) -> dict | None:
+    """The LLM's answer turned into trustworthy facts and a summary, or None
+    when any part fails (bad shape, wrong heading, hallucinated or over-long
     values, fewer than MIN_FACTS left standing)."""
     if not isinstance(data, dict):
         return None
@@ -201,7 +283,7 @@ def _gate(data, gem_product: dict) -> list | None:
     seen = set()
     for row in facts:
         fact = _clean_fact(row)
-        if fact is None or not _grounded(fact["value"], haystack):
+        if fact is None or _is_blocked(fact["label"]) or _size_noise(fact["label"], gem_product) or not _grounded(fact["value"], haystack):
             continue
         key = (fact["label"].lower(), fact["value"].lower())
         if key in seen:
@@ -212,7 +294,7 @@ def _gate(data, gem_product: dict) -> list | None:
             break
     if len(kept) < MIN_FACTS:
         return None
-    return kept
+    return {"facts": kept, "summary": _clean_summary(data.get("summary"), gem_product)}
 
 
 # --- deterministic fallback ---------------------------------------------------------
@@ -241,20 +323,25 @@ def fallback_highlights(gem_product: dict) -> list:
         specs = specs if isinstance(specs, dict) else {}
         primary = []
         deferred = []
-        for key, value in specs.items():
+        for index, (key, value) in enumerate(specs.items()):
             label = str(key).strip()
             text = "" if value is None else str(value).strip()
             if not label or not text:
                 continue
             norm = _label_norm(label)
-            if any(noise in norm for noise in _NOISE_LABELS):
+            if _is_blocked(label) or _size_noise(label, payload) or any(noise in norm for noise in _NOISE_LABELS):
                 continue
             row = {"label": label.title(), "value": text[:MAX_VALUE_CHARS]}
             if any(name in norm for name in _DEFERRED_LABELS):
                 deferred.append(row)
             else:
-                primary.append(row)
-        rows.extend(primary[: max(0, FALLBACK_FACTS - len(rows))])
+                primary.append((index, row))
+        terms = _category_terms(payload)
+        primary.sort(key=lambda pair: (
+            next((n for n, term in enumerate(terms) if term in _label_norm(pair[1]["label"])), len(terms)),
+            pair[0],
+        ))
+        rows.extend([row for _, row in primary[: max(0, FALLBACK_FACTS - len(rows))]])
         if len(rows) < FALLBACK_FACTS:
             rows.extend(deferred[: FALLBACK_FACTS - len(rows)])
         return rows[:FALLBACK_FACTS]
@@ -306,7 +393,7 @@ def _cache_path(payload: dict) -> Path:
     return config.CACHE_DIR / "highlights" / f"{_digest(payload)}.json"
 
 
-def _cache_get(payload: dict) -> list | None:
+def _cache_get(payload: dict) -> dict | None:
     try:
         data = json.loads(_cache_path(payload).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -314,14 +401,21 @@ def _cache_get(payload: dict) -> list | None:
     if not isinstance(data, dict):
         return None
     facts = _coerce_facts(data.get("facts"))
-    return facts if len(facts) >= MIN_FACTS else None
+    if len(facts) < MIN_FACTS:
+        return None
+    summary = data.get("summary")
+    return {"facts": facts, "summary": summary if isinstance(summary, str) else ""}
 
 
-def _cache_put(payload: dict, facts: list) -> None:
+def _cache_put(payload: dict, outcome: dict) -> None:
     try:
         path = _cache_path(payload)
         path.parent.mkdir(parents=True, exist_ok=True)
-        blob = {"facts": facts, "saved_at": datetime.now(timezone.utc).isoformat()}
+        blob = {
+            "facts": outcome["facts"],
+            "summary": outcome.get("summary", ""),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
         path.write_text(json.dumps(blob, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:  # a cache write must never cost the answer
         logger.debug("Could not write the highlights cache (%s: %s)", type(exc).__name__, exc)
@@ -384,18 +478,18 @@ def low_priority_highlights_fn():
 def compute_highlights(gem_product: dict, *, client=None) -> dict:
     """Cache, LLM call, grounding gate, fallback - in that order.
 
-    Returns {"facts": [...], "source": "llm" | "fallback"} and never
-    raises. client=None lets the router pick the endpoint. The pipeline
-    runs this on a daemon thread that always finishes, so an answer that
-    arrives after the caller stopped waiting is still cached."""
+    Returns {"facts": [...], "summary": "...", "source": "llm" | "fallback"}
+    and never raises. client=None lets the router pick the endpoint. The
+    pipeline runs this on a daemon thread that always finishes, so an answer
+    that arrives after the caller stopped waiting is still cached."""
     payload = {}
     try:
         payload = _snapshot(gem_product)
         cached = _cache_get(payload)
         if cached is not None:
             # Facts from an earlier grounded answer: no LLM call needed.
-            return {"facts": cached, "source": "llm"}
-        facts = None
+            return {"facts": cached["facts"], "summary": cached["summary"], "source": "llm"}
+        outcome = None
         try:
             data = _call_llm(
                 _HIGHLIGHTS_SYSTEM,
@@ -404,16 +498,24 @@ def compute_highlights(gem_product: dict, *, client=None) -> dict:
                 purpose="highlights",
                 client=client,
             )
-            facts = _gate(data, payload)
+            outcome = _gate(data, payload)
         except Exception as exc:
             logger.debug("Highlights call failed (%s: %s) - using the fallback.", type(exc).__name__, exc)
-        if facts is None:
-            return {"facts": fallback_highlights(payload), "source": "fallback"}
-        _cache_put(payload, facts)
-        return {"facts": facts, "source": "llm"}
+        if outcome is None:
+            return {
+                "facts": fallback_highlights(payload),
+                "summary": _fallback_summary(payload),
+                "source": "fallback",
+            }
+        _cache_put(payload, outcome)
+        return {"facts": outcome["facts"], "summary": outcome["summary"], "source": "llm"}
     except Exception as exc:
         logger.debug("Highlights failed (%s: %s) - using the fallback.", type(exc).__name__, exc)
-        return {"facts": fallback_highlights(payload), "source": "fallback"}
+        return {
+            "facts": fallback_highlights(payload),
+            "summary": _fallback_summary(payload),
+            "source": "fallback",
+        }
 
 
 # --- background job ---------------------------------------------------------------------
@@ -421,17 +523,23 @@ def compute_highlights(gem_product: dict, *, client=None) -> dict:
 def _outcome_from_injected(result, payload: dict) -> dict:
     """Turn whatever an injected highlights_fn returned into the outcome
     shape. A plain fact list counts as the LLM path (source "llm"); the
-    {"facts", "source"} dict compute_highlights returns keeps its source.
-    Anything unusable falls back."""
+    {"facts", "summary", "source"} dict compute_highlights returns keeps its
+    source. Anything unusable falls back."""
     if isinstance(result, dict) and isinstance(result.get("facts"), list):
         facts = _coerce_facts(result.get("facts"))
         source = "llm" if result.get("source") in (None, "llm") else "fallback"
+        summary = _clean_summary(result.get("summary"), payload)
     else:
         facts = _coerce_facts(result)
         source = "llm"
+        summary = ""
     if not facts:
-        return {"facts": fallback_highlights(payload), "source": "fallback"}
-    return {"facts": facts, "source": source}
+        return {
+            "facts": fallback_highlights(payload),
+            "summary": _fallback_summary(payload),
+            "source": "fallback",
+        }
+    return {"facts": facts, "summary": summary, "source": source}
 
 
 class HighlightsJob:

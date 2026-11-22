@@ -71,7 +71,7 @@ run started), `type`, plus the fields below.
 | `shop_updated` | shop, status, price | the retry changed a shop's card |
 | `run_updated` | shops[], matches[], cheapest | the merged result after the retry |
 | `similar_ready` | similar[] | near-miss products found after the confirmed matches were settled |
-| `gem_highlights` | facts[], source | the key facts for the GeM card, settled before the final result; `source` is "llm" (grounded answer, cache included) or "fallback" (deterministic list). Emitted only when the run has a highlights job |
+| `gem_highlights` | facts[], summary, source | the key facts and shopper summary for the GeM card, settled before the final result; `source` is "llm" (grounded answer, cache included) or "fallback" (deterministic list). Emitted only when the run has a highlights job |
 | `done` | state | nothing more will arrive; the connection closes |
 | `run_failed` | error | the run crashed |
 
@@ -100,7 +100,8 @@ Rules the frontend can rely on:
   "trace_id": "abc123",
   "gem": {"title": "...", "canonical_name": "...", "price": {"low": 1299.0, "high": 1299.0, "kind": "fixed"},
           "image": "https://mkp.gem.gov.in/...", "specs": {"Colour": "Graphite"},
-          "highlights": [{"label": "Brand", "value": "Logitech"}]},
+          "highlights": [{"label": "Brand", "value": "Logitech"}],
+          "highlights_summary": "Logitech M650 wireless mouse"},
   "shops": {
     "flipkart.com": {"status": "found", "reason": "", "seen": 3, "dropped": 1, "checked": 2,
                      "matches": 1, "price": 1149.0, "retried": true, "retryable": false, "seconds": 6.2}

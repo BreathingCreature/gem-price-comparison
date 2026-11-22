@@ -719,6 +719,7 @@ def _aggregate(
     state: str,
     from_cache: bool = False,
     highlights: list | None = None,
+    highlights_summary: str | None = None,
 ) -> tuple[dict, list, list]:
     """Turn the pass's pieces into a v2 result (one place, called for the
     first result and again after the retry). Returns (result, matches, possible)."""
@@ -754,6 +755,7 @@ def _aggregate(
         from_cache=from_cache,
         trace_id=trace_id,
         highlights=highlights,
+        highlights_summary=highlights_summary,
     )
     return result, confirmed, possible
 
@@ -1079,6 +1081,7 @@ class RunContext:
     result: dict = field(default_factory=dict)
     highlights_job: object = None
     highlights: list = field(default_factory=list)
+    highlights_summary: str = ""
     highlights_source: str = "none"
 
 
@@ -1646,13 +1649,18 @@ def _resolve_highlights(ctx: RunContext) -> None:
     except Exception as exc:
         logger.debug("Highlights job unusable (%s: %s) - using the fallback.", type(exc).__name__, exc)
     if not isinstance(outcome, dict):
-        outcome = {"facts": llm_highlights.fallback_highlights(ctx.gem_product_dict), "source": "fallback"}
+        outcome = {
+            "facts": llm_highlights.fallback_highlights(ctx.gem_product_dict),
+            "summary": llm_highlights._fallback_summary(ctx.gem_product_dict),
+            "source": "fallback",
+        }
     raw_facts = outcome.get("facts")
     facts = [row for row in raw_facts if isinstance(row, dict)] if isinstance(raw_facts, list) else []
     source = "llm" if outcome.get("source") == "llm" else "fallback"
     ctx.highlights = facts
+    ctx.highlights_summary = str(outcome.get("summary") or "")
     ctx.highlights_source = source
-    events.emit("gem_highlights", facts=list(facts), source=source)
+    events.emit("gem_highlights", facts=list(facts), summary=ctx.highlights_summary, source=source)
 
 
 def finish(ctx: RunContext) -> None:
@@ -1691,6 +1699,7 @@ def finish(ctx: RunContext) -> None:
         trace_id=ctx.trace_id,
         state="done",
         highlights=ctx.highlights,
+        highlights_summary=ctx.highlights_summary,
     )
     ctx.result = result
     ctx.confirmed = confirmed
