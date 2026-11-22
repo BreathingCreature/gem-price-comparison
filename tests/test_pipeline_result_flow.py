@@ -341,14 +341,15 @@ def test_a_clean_empty_web_search_is_still_not_found():
 # --- the shown-then-updated run ----------------------------------------------
 
 def test_the_first_result_is_shown_then_the_retry_updates_it(monkeypatch):
-    monkeypatch.setattr(pipeline, "LANE_TIME_LIMIT_SECONDS", 0.001)
     calls = {"flipkart": 0, "amazon": 0}
 
     def flipkart_fn(query):
         calls["flipkart"] += 1
         if calls["flipkart"] == 1:
-            time.sleep(0.01)
-            return SearchScrapeResult(source_domain="flipkart.com", query=query, candidates=[])
+            return SearchScrapeResult(
+                source_domain="flipkart.com", query=query, candidates=[],
+                blocked=True, status="blocked",
+            )
         return SearchScrapeResult(
             source_domain="flipkart.com", query=query,
             candidates=[_cand("flipkart.com", "https://www.flipkart.com/a", 900.0)],
