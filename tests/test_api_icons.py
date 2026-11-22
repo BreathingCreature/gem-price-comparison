@@ -212,7 +212,7 @@ def test_a_site_without_a_favicon_ico_uses_the_icon_it_declares(tmp_path, monkey
     def fake_get(url, domain, **kwargs):
         if url.endswith("/favicon.ico"):
             return None
-        if url.endswith("/"):
+        if url.endswith("shop.example/"):
             return b'<link href="/x.png" rel="icon">', "text/html"
         if url.endswith("/x.png"):
             return b"png-bytes", "image/png"

@@ -100,6 +100,19 @@ def test_the_real_runner_passes_the_highlights_path(monkeypatch):
     assert getattr(fn, "func", fn) is llm_highlights.compute_highlights
 
 
+def test_warm_shop_icons_fetches_only_unknown_domains(monkeypatch):
+    from api import server as server_module
+
+    seen = []
+    monkeypatch.setattr(server_module, "_fetch_site_icon", lambda domain, cache_dir: seen.append(domain))
+    server_module._warm_shop_icons({
+        "shops": {"flipkart.com": {}, "moglix.com": {}, "shop.in": {}},
+        "matches": [{"shop": "another.in"}],
+        "possible_matches": [],
+    })
+    assert set(seen) == {"moglix.com", "shop.in", "another.in"}
+
+
 def test_cors_is_off_until_origins_are_configured(monkeypatch):
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
     plain = TestClient(create_app(runner=fake_runner, demo=False))

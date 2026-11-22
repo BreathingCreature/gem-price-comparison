@@ -116,12 +116,18 @@ def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) 
     # fallback). Demo runs and injected runners never reach here.
     from llm import highlights as llm_highlights
 
-    return pipeline.run_pipeline(
+    result = pipeline.run_pipeline(
         gem_url,
         refresh=refresh,
         on_event=on_event,
         highlights_fn=llm_highlights.low_priority_highlights_fn(),
     )
+    # Icons are optional: fetch them after the result is saved, on a daemon
+    # thread, so the run and its page updates never wait on a shop's favicon.
+    threading.Thread(
+        target=_warm_shop_icons, args=(result,), daemon=True, name="shop-icons"
+    ).start()
+    return result
 
 
 def _warm_up() -> None:
@@ -427,6 +433,8 @@ def _fetch_site_icon(domain: str, cache_dir: Path):
 
     result = _safe_icon_get(f"https://{domain}/favicon.ico", domain)
     if result is None:
+        result = _safe_icon_get(f"https://www.{domain}/favicon.ico", domain)
+    if result is None:
         home = _safe_icon_get(f"https://{domain}/", domain, allowed_prefix="text/html", max_bytes=200000)
         if home is not None:
             try:
@@ -448,6 +456,35 @@ def _fetch_site_icon(domain: str, cache_dir: Path):
     except OSError:
         pass
     return data, content_type
+
+
+_DIRECT_SCRAPER_DOMAINS = {"amazon.in", "flipkart.com"}
+
+def _warm_shop_icons(result: dict) -> None:
+    """Fetch and cache icons for shops seen in a run, once per domain.
+
+    Bundled shops and the two direct-scraper shops already have icons. Every
+    other domain is fetched through the same safety checks as the icon route,
+    then served from the disk cache on the next page load.
+    """
+    domains = set()
+    for shop, entry in (result.get("shops") or {}).items():
+        if isinstance(entry, dict) and shop:
+            domains.add(shop)
+    for row in (result.get("matches") or []) + (result.get("possible_matches") or []):
+        shop = row.get("shop") if isinstance(row, dict) else None
+        if shop:
+            domains.add(shop)
+    cache_dir = pipeline.CACHE_DIR / "icons"
+    for domain in sorted(domains):
+        if domain in _DIRECT_SCRAPER_DOMAINS:
+            continue
+        if (FRONTEND_DIR / "shops" / f"{domain}.png").exists():
+            continue
+        try:
+            _fetch_site_icon(domain, cache_dir)
+        except Exception as exc:
+            logger.debug("Could not cache the icon for %s (%s: %s)", domain, type(exc).__name__, exc)
 
 
 def create_app(
