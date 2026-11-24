@@ -5,6 +5,7 @@ browser; this file is the extra check that the page really works after the unit
 tests have read the pure models.
 """
 import copy
+import base64
 import socket
 import threading
 import time
@@ -21,6 +22,9 @@ from api.server import create_app  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 DEMO_URL = "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-999-1000-cat.html"
 SEARCH_URL = "https://mkp.gem.gov.in/search?q=mouse"
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def _free_port() -> int:
@@ -224,6 +228,38 @@ def test_a_search_link_shows_a_dialog_and_makes_no_request(browser, plain_server
         assert page.locator("#start-screen").is_visible()
         _assert_clean(console_errors, page_errors, requests, responses, plain_server)
     finally:
+        context.close()
+
+
+def test_a_late_shop_icon_replaces_the_globe_and_no_slot_stays_blank(browser, demo_server):
+    context, page, cdp, console_errors, page_errors, requests, responses = _new_page(browser, demo_server)
+    hits = {}
+
+    def icon_route(route):
+        host = route.request.url.rsplit("/", 1)[-1]
+        hits[host] = hits.get(host, 0) + 1
+        if hits[host] >= 2:
+            route.fulfill(status=200, content_type="image/png", body=TINY_PNG)
+        else:
+            route.fulfill(status=204, headers={"Cache-Control": "no-store"})
+
+    page.route("**/api/icon/**", icon_route)
+    try:
+        page.fill("#gem-url", DEMO_URL)
+        page.click("#run-btn")
+        page.locator("#run-state-label", has_text="Done").wait_for(timeout=45_000)
+        page.locator('#shop-rows img[src*="/api/icon/example-shop.in"]').wait_for(state="attached", timeout=15_000)
+        assert hits.get("example-shop.in", 0) >= 2
+        blank = _js(
+            cdp,
+            """(() => Array.from(document.querySelectorAll('.site-icon')).filter(
+                 (el) => !el.hidden && !el.querySelector('img') && !el.querySelector('svg')
+               ).length)()""",
+        )
+        assert blank == 0
+        assert page_errors == []
+    finally:
+        page.unroute("**/api/icon/**", icon_route)
         context.close()
 
 

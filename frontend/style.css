@@ -287,7 +287,7 @@ a { color: inherit; text-decoration: none; }
 .shops-details summary { cursor: pointer; font-weight: 600; }
 .shops-list { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .shop-fact { display: grid; grid-template-columns: minmax(120px, 180px) auto; gap: 2px 12px; font-size: 13px; }
-.shop-fact-name { font-weight: 600; overflow-wrap: anywhere; }
+.shop-fact-name { font-weight: 600; overflow-wrap: anywhere; display: flex; align-items: center; gap: 6px; }
 .shop-fact-state { color: var(--muted); }
 .shop-fact-line, .shop-fact-note { grid-column: 1 / -1; color: var(--muted); overflow-wrap: anywhere; }
 

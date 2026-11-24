@@ -123,7 +123,7 @@ def test_the_route_serves_an_icon_for_a_domain_in_a_live_run(tmp_path, monkeypat
     assert response.status_code == 200
     assert response.content == b"png"
     assert response.headers["content-type"] == "image/png"
-    assert response.headers["cache-control"] == "max-age=86400"
+    assert response.headers["cache-control"] == "public, max-age=604800"
 
 
 def test_an_unknown_domain_gets_no_icon_and_no_fetch(monkeypatch):
@@ -269,3 +269,21 @@ def test_the_provider_icon_route_refuses_a_name_that_is_not_a_plain_svg():
     assert client.get("/icons/NVIDIA.svg").status_code == 404
     assert client.get("/icons/nvidia.png").status_code == 404
     assert client.get("/icons/%2e%2e%2fsecret.svg").status_code == 404
+
+
+def test_a_cached_shop_icon_is_served_with_a_public_cache_header(tmp_path, monkeypatch):
+    icons = tmp_path / "icons"
+    icons.mkdir()
+    (icons / "cached-shop.in.bin").write_bytes(b"png-bytes")
+    (icons / "cached-shop.in.ctype").write_text("image/png", encoding="utf-8")
+    monkeypatch.setattr(server.pipeline, "CACHE_DIR", tmp_path)
+    response = TestClient(create_app(runner=lambda *a: {})).get("/api/icon/cached-shop.in")
+    assert response.status_code == 200
+    assert response.content == b"png-bytes"
+    assert response.headers["cache-control"] == "public, max-age=604800"
+
+
+def test_a_shop_icon_miss_is_not_stored_by_the_browser():
+    response = TestClient(create_app(demo=True)).get("/api/icon/dead-shop.in")
+    assert response.status_code == 204
+    assert response.headers["cache-control"] == "no-store"

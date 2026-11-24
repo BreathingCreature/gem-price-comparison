@@ -16,6 +16,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import queue
 import re
 import socket
 import subprocess
@@ -116,10 +117,23 @@ def _real_runner(gem_url: str, refresh: bool, on_event: Callable[[dict], None]) 
     # fallback). Demo runs and injected runners never reach here.
     from llm import highlights as llm_highlights
 
+    def watch_icons(event: dict) -> None:
+        # Fetch a shop's icon when its domain first appears, in parallel with
+        # the run. The page can then show it as soon as the row is drawn.
+        if isinstance(event, dict) and event.get("type") in (
+            "discovery_finished",
+            "scrape_started",
+            "shop_started",
+            "shop_finished",
+        ):
+            for value in _domains_from_event(event):
+                request_shop_icon(value)
+        on_event(event)
+
     result = pipeline.run_pipeline(
         gem_url,
         refresh=refresh,
-        on_event=on_event,
+        on_event=watch_icons,
         highlights_fn=llm_highlights.low_priority_highlights_fn(),
     )
     # Icons are optional: fetch them after the result is saved, on a daemon
@@ -218,7 +232,15 @@ def _recent_runs(manager: JobManager, limit: int = 20) -> list[dict]:
 
 
 _ICON_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{2,99}$")
-_ICON_CACHE_MAX_AGE = 86400
+_ICON_CACHE_MAX_AGE = 30 * 86400
+_ICON_NEGATIVE_SECONDS = 3600
+_ICON_WAIT_SECONDS = 2.0
+_ICON_PUBLIC_MAX_AGE = 604800
+_ICON_QUEUE: queue.Queue = queue.Queue()
+_ICON_PENDING: set[str] = set()
+_ICON_NEGATIVE: dict[str, float] = {}
+_ICON_INFLIGHT: dict[str, threading.Event] = {}
+_ICON_WORKERS: list[threading.Thread] = []
 
 
 def _same_registrable_domain(host: str, domain: str) -> bool:
@@ -460,31 +482,91 @@ def _fetch_site_icon(domain: str, cache_dir: Path):
 
 _DIRECT_SCRAPER_DOMAINS = {"amazon.in", "flipkart.com"}
 
-def _warm_shop_icons(result: dict) -> None:
-    """Fetch and cache icons for shops seen in a run, once per domain.
+def _icon_cached(domain: str) -> bool:
+    folder = pipeline.CACHE_DIR / "icons"
+    data_path = folder / f"{domain}.bin"
+    type_path = folder / f"{domain}.ctype"
+    try:
+        if not (data_path.exists() and type_path.exists()):
+            return False
+        return time.time() - data_path.stat().st_mtime < _ICON_CACHE_MAX_AGE
+    except OSError:
+        return False
 
-    Bundled shops and the two direct-scraper shops already have icons. Every
-    other domain is fetched through the same safety checks as the icon route,
-    then served from the disk cache on the next page load.
-    """
-    domains = set()
-    for shop, entry in (result.get("shops") or {}).items():
-        if isinstance(entry, dict) and shop:
-            domains.add(shop)
-    for row in (result.get("matches") or []) + (result.get("possible_matches") or []):
-        shop = row.get("shop") if isinstance(row, dict) else None
-        if shop:
-            domains.add(shop)
-    cache_dir = pipeline.CACHE_DIR / "icons"
-    for domain in sorted(domains):
-        if domain in _DIRECT_SCRAPER_DOMAINS:
-            continue
-        if (FRONTEND_DIR / "shops" / f"{domain}.png").exists():
-            continue
+
+def _ensure_icon_workers() -> None:
+    while len(_ICON_WORKERS) < 4:
+        worker = threading.Thread(
+            target=_icon_worker, daemon=True, name=f"shop-icon-{len(_ICON_WORKERS)}"
+        )
+        worker.start()
+        _ICON_WORKERS.append(worker)
+
+
+def _icon_worker() -> None:
+    while True:
+        domain = _ICON_QUEUE.get()
+        wake = _ICON_INFLIGHT.get(domain)
         try:
-            _fetch_site_icon(domain, cache_dir)
-        except Exception as exc:
-            logger.debug("Could not cache the icon for %s (%s: %s)", domain, type(exc).__name__, exc)
+            if _icon_cached(domain) or _ICON_NEGATIVE.get(domain, 0.0) > time.monotonic():
+                continue
+            result = _fetch_site_icon(domain, pipeline.CACHE_DIR / "icons")
+            if result is None:
+                _ICON_NEGATIVE[domain] = time.monotonic() + _ICON_NEGATIVE_SECONDS
+        except Exception as exc:  # an icon is optional; never fail a run for one
+            logger.debug("Shop icon fetch failed for %s (%s: %s)", domain, type(exc).__name__, exc)
+        finally:
+            if wake is not None:
+                wake.set()
+            _ICON_QUEUE.task_done()
+
+
+def request_shop_icon(value: str) -> None:
+    """Queue one fetch for a host the first time it appears in a run."""
+    try:
+        domain = _host_from_value(value)
+    except Exception:
+        return
+    if not domain or "." not in domain or not _ICON_DOMAIN_RE.match(domain):
+        return
+    if domain in _DIRECT_SCRAPER_DOMAINS or (FRONTEND_DIR / "shops" / f"{domain}.png").exists():
+        return
+    if domain in _ICON_PENDING or _icon_cached(domain):
+        return
+    if _ICON_NEGATIVE.get(domain, 0.0) > time.monotonic():
+        return
+    _ICON_PENDING.add(domain)
+    _ICON_INFLIGHT[domain] = threading.Event()
+    _ensure_icon_workers()
+    _ICON_QUEUE.put(domain)
+
+
+def _domains_from_event(event: dict) -> list[str]:
+    found = set()
+    for url in event.get("urls") or []:
+        if isinstance(url, str):
+            found.add(url)
+    url = event.get("url")
+    if isinstance(url, str):
+        found.add(url)
+    # "shop" is a host for a named shop and the word "other" for the
+    # discovery lane, so only dotted values are worth a fetch.
+    shop = event.get("shop")
+    if isinstance(shop, str) and "." in shop:
+        found.add(shop)
+    return sorted(found)
+
+
+def _warm_shop_icons(result: dict) -> None:
+    """Queue icons for shops seen in a result, once per domain."""
+    domains = set()
+    for shop in (result.get("shops") or {}):
+        domains.add(shop)
+    for row in (result.get("matches") or []) + (result.get("possible_matches") or []):
+        if isinstance(row, dict) and row.get("shop"):
+            domains.add(row["shop"])
+    for domain in sorted(domains):
+        request_shop_icon(domain)
 
 
 def create_app(
@@ -669,20 +751,37 @@ def create_app(
             raise HTTPException(status_code=404, detail="Unknown domain.")
         if demo:
             # Demo mode promises no network calls; the page draws a globe.
-            return Response(status_code=204)
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        if _icon_cached(lookup):
+            return Response(
+                content=(pipeline.CACHE_DIR / "icons" / f"{lookup}.bin").read_bytes(),
+                media_type=(pipeline.CACHE_DIR / "icons" / f"{lookup}.ctype").read_text(encoding="utf-8").strip(),
+                headers={"Cache-Control": f"public, max-age={_ICON_PUBLIC_MAX_AGE}"},
+            )
+        event = _ICON_INFLIGHT.get(lookup)
+        if event is not None:
+            # Another thread is already fetching this host. Wait briefly, then
+            # answer from the cache or with a miss that the page may retry.
+            event.wait(_ICON_WAIT_SECONDS)
+            if _icon_cached(lookup):
+                return Response(
+                    content=(pipeline.CACHE_DIR / "icons" / f"{lookup}.bin").read_bytes(),
+                    media_type=(pipeline.CACHE_DIR / "icons" / f"{lookup}.ctype").read_text(encoding="utf-8").strip(),
+                    headers={"Cache-Control": f"public, max-age={_ICON_PUBLIC_MAX_AGE}"},
+                )
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
         if not _domain_in_saved_runs(lookup, manager):
-            # No fetch for a domain no run contains. 204 rather than 404: the
-            # page probes icons before a run's result exists, and a 404 would
-            # print a console error for every shop while the run is going.
-            return Response(status_code=204)
+            # A domain no run contains is not worth a network call. 204 rather
+            # than 404 keeps the browser console quiet during a run.
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
         result = _fetch_site_icon(lookup, pipeline.CACHE_DIR / "icons")
         if result is None:
-            return Response(status_code=204)
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
         data, content_type = result
         return Response(
             content=data,
             media_type=content_type,
-            headers={"Cache-Control": f"max-age={_ICON_CACHE_MAX_AGE}"},
+            headers={"Cache-Control": f"public, max-age={_ICON_PUBLIC_MAX_AGE}"},
         )
 
     @app.api_route("/icons/{name}", methods=["GET", "HEAD"])
@@ -701,7 +800,7 @@ def create_app(
         return FileResponse(
             path,
             media_type="image/svg+xml",
-            headers={"Cache-Control": f"max-age={_ICON_CACHE_MAX_AGE}"},
+            headers={"Cache-Control": "max-age=86400"},
         )
 
     @app.get("/api/traces/{trace_id}")

@@ -105,12 +105,64 @@ def test_warm_shop_icons_fetches_only_unknown_domains(monkeypatch):
 
     seen = []
     monkeypatch.setattr(server_module, "_fetch_site_icon", lambda domain, cache_dir: seen.append(domain))
-    server_module._warm_shop_icons({
-        "shops": {"flipkart.com": {}, "moglix.com": {}, "shop.in": {}},
-        "matches": [{"shop": "another.in"}],
-        "possible_matches": [],
-    })
-    assert set(seen) == {"moglix.com", "shop.in", "another.in"}
+    server_module._ICON_PENDING.clear()
+    server_module._ICON_NEGATIVE.clear()
+    server_module._ICON_INFLIGHT.clear()
+    server_module.request_shop_icon("unique-shop.test")
+    server_module.request_shop_icon("www.unique-shop.test")
+    server_module._ICON_QUEUE.join()
+    assert seen == ["unique-shop.test"]
+
+
+def test_a_failed_icon_is_not_fetched_again_for_an_hour(monkeypatch):
+    from api import server as server_module
+
+    seen = []
+    monkeypatch.setattr(server_module, "_fetch_site_icon", lambda domain, cache_dir: seen.append(domain) or None)
+    server_module._ICON_PENDING.clear()
+    server_module._ICON_NEGATIVE.clear()
+    server_module._ICON_INFLIGHT.clear()
+    server_module.request_shop_icon("dead-shop.test")
+    server_module._ICON_QUEUE.join()
+    server_module._ICON_PENDING.clear()
+    server_module.request_shop_icon("dead-shop.test")
+    server_module._ICON_QUEUE.join()
+    assert seen == ["dead-shop.test"]
+
+
+def test_domains_from_event_ignores_lane_labels_and_urls_become_hosts():
+    from api import server as server_module
+
+    found = server_module._domains_from_event(
+        {
+            "type": "discovery_finished",
+            "urls": ["https://www.example-shop.in/p/1", "https://second.example/p/2"],
+            "shop": "other",
+            "marketplace": "amazon",
+        }
+    )
+    assert found == ["https://second.example/p/2", "https://www.example-shop.in/p/1"]
+
+
+def test_the_real_runner_requests_an_icon_when_a_shop_appears(monkeypatch):
+    from api import server as server_module
+
+    asked = []
+
+    def fake_run(gem_url, refresh=False, on_event=None, **kwargs):
+        for body in (
+            {"type": "shop_started", "shop": "moglix.com"},
+            {"type": "shop_started", "shop": "other"},
+            {"type": "scrape_started", "url": "https://shop.example/p/1"},
+            {"type": "search_finished", "marketplace": "amazon"},
+        ):
+            on_event(body)
+        return {}
+
+    monkeypatch.setattr(pipeline, "run_pipeline", fake_run)
+    monkeypatch.setattr(server_module, "request_shop_icon", asked.append)
+    server_module._real_runner(GEM_URL, False, lambda event: None)
+    assert asked == ["moglix.com", "https://shop.example/p/1"]
 
 
 def test_cors_is_off_until_origins_are_configured(monkeypatch):

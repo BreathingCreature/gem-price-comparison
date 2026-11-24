@@ -11,6 +11,9 @@ var POLL_MS = 2000;
 var PROVIDER_RETRY_MS = 10000;
 var PROVIDER_MAX_FAILURES = 3;
 var FACTS_SHOWN = 8;
+var ICON_RETRIES = 4;
+var ICON_RETRY_MS = 1500;
+var FINAL_SHOP_STATUSES = ["found", "possible", "not_found", "not_searched", "incomplete", "timed_out"];
 var GLOBE_PATH = "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18";
 var GEM_PATH = "M4 9l1.5-5h13L20 9M4 9v10h16V9M4 9c0 2 3 2 4 0 1 2 3 2 4 0 1 2 3 2 4 0 1 2 4 2 4 0M10 19v-5h4v5";
 var state = {
@@ -26,7 +29,7 @@ var state = {
   highlights: [], highlightsSummary: "", shopRowOrder: [], shopRowEls: {},
   specsExpanded: false, providerPoll: null, providerEls: {},
   providerFailures: 0, providerRetryTimer: null,
-  iconProbes: {}, shopManifest: null, shopManifestPromise: null,
+  iconProbes: {}, iconTries: {}, iconGen: {}, iconFailed: {}, iconReprobes: {}, shopManifest: null, shopManifestPromise: null,
   toastTimer: null
 };
 
@@ -148,43 +151,90 @@ function manifestIcon(host) {
   return "";
 }
 
-function probeIcon(src, onReady) {
+function probeIcon(src, onReady, host) {
   var known = state.iconProbes[src];
   if (known === "no") return;
   if (known === "ok") { onReady(); return; }
   if (known) { known.push(onReady); return; }
   var waiting = [];
   state.iconProbes[src] = waiting;
-  fetch(src, { method: "HEAD" }).then(function (response) {
-    var ok = response.status === 200;
-    state.iconProbes[src] = ok ? "ok" : "no";
-    if (ok) waiting.forEach(function (callback) { callback(); });
-  }).catch(function () { state.iconProbes[src] = "no"; });
+  state.iconTries[src] = 0;
+  var gen = (state.iconGen[src] || 0) + 1;
+  state.iconGen[src] = gen;
+  function stale() { return state.iconGen[src] !== gen; }
+  function attempt() {
+    fetch(src, { method: "HEAD" }).then(function (response) {
+      if (stale()) return;
+      if (response.status === 200) {
+        state.iconProbes[src] = "ok";
+        if (host) delete state.iconFailed[host];
+        waiting.forEach(function (callback) { callback(); });
+        return;
+      }
+      retry();
+    }).catch(retry);
+  }
+  function retry() {
+    if (stale()) return;
+    state.iconTries[src] = (state.iconTries[src] || 0) + 1;
+    if (state.iconTries[src] > ICON_RETRIES) {
+      state.iconProbes[src] = "no";
+      if (host) state.iconFailed[host] = true;
+      return;
+    }
+    // The server queues a fetch for this host when the run first sees it and
+    // answers 204 until it lands; ask again so the icon appears without a
+    // page reload.
+    window.setTimeout(attempt, ICON_RETRY_MS * state.iconTries[src]);
+  }
+  attempt();
+}
+
+function showSiteGlobe(wrap) {
+  clear(wrap);
+  wrap.classList.add("is-glyph");
+  wrap.appendChild(svgEl(GLOBE_PATH));
+}
+
+function showSiteImage(wrap, src) {
+  clear(wrap);
+  wrap.classList.remove("is-glyph");
+  var img = h("img", { src: src, alt: "", width: "20", height: "20", loading: "lazy" });
+  img.addEventListener("error", function () { showSiteGlobe(wrap); });
+  wrap.appendChild(img);
+}
+
+function reprobeShopIcon(host) {
+  // A miss is re-checked once when the shop row finishes and once when the
+  // run is done, so an icon cached late still replaces the globe.
+  if (!host || !state.iconFailed[host]) return;
+  var tries = state.iconReprobes[host] || 0;
+  if (tries >= 2) return;
+  state.iconReprobes[host] = tries + 1;
+  var api = API + "/api/icon/" + encodeURIComponent(host);
+  delete state.iconProbes[api];
+  delete state.iconTries[api];
+  probeIcon(api, function () {
+    var wraps = document.querySelectorAll('.site-icon[data-host="' + host + '"]');
+    for (var i = 0; i < wraps.length; i += 1) {
+      if (wraps[i].isConnected) showSiteImage(wraps[i], api);
+    }
+  }, host);
 }
 
 function siteIcon(domain) {
   var host = bareHost(domain);
   var wrap = h("span", { class: "site-icon", title: host });
   if (!host) { wrap.hidden = true; return wrap; }
-  function showGlobe() {
-    clear(wrap);
-    wrap.classList.add("is-glyph");
-    wrap.appendChild(svgEl(GLOBE_PATH));
-  }
-  function showImage(src) {
-    clear(wrap);
-    wrap.classList.remove("is-glyph");
-    var img = h("img", { src: src, alt: "", width: "20", height: "20", loading: "lazy" });
-    img.addEventListener("error", showGlobe);
-    wrap.appendChild(img);
-  }
+  wrap.dataset.host = host;
   function choose() {
     var file = manifestIcon(host);
-    if (file) { showImage(API + "/shops/" + encodeURIComponent(file)); return; }
+    if (file) { showSiteImage(wrap, API + "/shops/" + encodeURIComponent(file)); return; }
     var api = API + "/api/icon/" + encodeURIComponent(host);
-    probeIcon(api, function () { if (wrap.isConnected) showImage(api); });
+    if (!wrap.firstChild) showSiteGlobe(wrap);
+    probeIcon(api, function () { if (wrap.isConnected) showSiteImage(wrap, api); }, host);
   }
-  if (state.shopManifest !== null) choose(); else showGlobe();
+  if (state.shopManifest !== null) choose(); else showSiteGlobe(wrap);
   loadShopIcons().then(function () { if (wrap.isConnected) choose(); });
   return wrap;
 }
@@ -832,6 +882,7 @@ function paintAll() {
   paintSystem();
   paintActivityState();
   paintRecent();
+  reprobeFailedIcons();
   updateTitle();
 }
 
@@ -1248,6 +1299,10 @@ function shopSafeId(domain) {
   return "shop-" + String(domain).toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
+function reprobeFailedIcons() {
+  Object.keys(state.iconFailed).forEach(reprobeShopIcon);
+}
+
 function paintShopRows(stats) {
   var rows = R.laneRows(stats);
   var container = gel("shop-rows");
@@ -1271,6 +1326,7 @@ function paintShopRows(stats) {
     var model = R.laneRowModel(row);
     var view = stateView(row);
     applyLaneView(record.el, gel(record.id + "-status"), gel(record.id + "-status-text"), view, pipelineRowTitle(row));
+    if (FINAL_SHOP_STATUSES.indexOf(row.status) >= 0) reprobeShopIcon(row.shop);
     setNodeValue(gel(record.id + "-search-value"), "-", "waiting");
     setNodeValue(gel(record.id + "-filter-value"), model.filter, row.kept || row.dropped ? "done" : view.name);
     setNodeValue(gel(record.id + "-verify-value"), model.verify, row.judged || row.rejected ? "done" : view.name);
@@ -1479,8 +1535,9 @@ function paintShopsDetails() {
   }
   keys.forEach(function (key) {
     var entry = shops[key] || {};
+    if (FINAL_SHOP_STATUSES.indexOf(entry.status) >= 0) reprobeShopIcon(key);
     var row = h("div", { class: "shop-fact" });
-    row.appendChild(h("span", { class: "shop-fact-name", text: key }));
+    row.appendChild(h("span", { class: "shop-fact-name" }, siteIcon(key), h("span", { text: key })));
     row.appendChild(h("span", { class: "shop-fact-state", text: R.shopStatusLabel(entry.status) }));
     var parts = [];
     if (entry.seen != null) parts.push(entry.seen + " seen");

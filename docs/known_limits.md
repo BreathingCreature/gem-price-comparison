@@ -13,6 +13,6 @@ This page records choices that are deliberate. They are not open bugs.
 - The low priority highlights client bypasses the router on purpose. The card is optional, so its call must not wait behind listing checks or spend a provider cooldown. It is one call per uncached run.
 - Highlights failures become a deterministic list. There is no retry beyond the single call, so the run stays within its time budget.
 - An old saved run has no highlights field. The card falls back to its specs.
-- A domain seen only in a trace and never in a saved run gets a 204 from the icon route, so the page draws a globe. Every normal run saves its result, so this does not affect normal use.
+- A domain seen only in an old trace and never in a saved run gets a 204 from the icon route, so the page draws a globe. Every normal run saves its result, so this does not affect normal use. The page retries a miss four times over about 15 s and then keeps the globe.
 - Provider and model icons are mapped by name in `frontend/render.js`. New families need a mapping entry; the render tests fail until one is added.
 - The GitHub Actions matrix pins Ubuntu 24.04. An extra non blocking Ubuntu latest job warns about runner image changes.

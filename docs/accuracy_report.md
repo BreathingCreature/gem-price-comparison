@@ -52,11 +52,12 @@ still worth adding; see unresolved items.
 
 Only 12 domains have bundled PNGs. Other shops used a globe because the icon
 route only returned a cached icon after a previous fetch. `api/server.py` now
-has `_warm_shop_icons()`, started on a daemon thread after each real run. It
-fetches and caches a favicon once per domain through the existing safe icon
-code, tries the bare and `www.` hosts, and skips bundled and direct scraper
-domains. The next page load reads it from the disk cache. Tests cover the
-domain selection and the `www.` fallback.
+queues a favicon fetch as soon as a run first sees a shop domain (a small
+daemon pool), through the existing safe icon code, tries the bare and `www.`
+hosts, and skips bundled and direct scraper domains. The icon route answers
+from the disk cache, briefly waits for an in-flight fetch, and the page retries
+a miss a few times, so the icon appears without a reload. Tests cover the
+domain selection, the `www.` fallback, the queue and the retry.
 
 ### LLM card facts
 
