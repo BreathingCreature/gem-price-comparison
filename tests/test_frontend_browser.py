@@ -285,6 +285,15 @@ def test_a_demo_run_hides_the_answer_until_done_then_collapses(browser, demo_ser
         assert "Saves" in page.locator("#answer-saving").inner_text()
         assert page.locator("#count-matches").inner_text() == "4"
         assert page.locator("#count-possible").inner_text() == "1"
+        assert page.locator("#price-bars .chart-row:not(.chart-foot)").count() == 4
+        assert page.locator("#price-bars [role='img']").get_attribute("aria-label").startswith("Price chart. GeM")
+        assert page.locator("#price-bars .sr-only li").count() == 4
+        chart_prices = _js(
+            cdp,
+            "Array.from(document.querySelectorAll('#price-bars .chart-row:not(.chart-foot)')).map(el => Number(el.dataset.price))",
+        )
+        assert chart_prices == sorted(chart_prices)
+        assert page.locator("#price-bars .chart-axis .gem-line").count() == 4
         assert page.locator("#gem-title").inner_text() == "Logitech M650 Signature Wireless Mouse"
         assert page.locator("#gem-image").is_visible()
         assert page.locator("#gem-specs .spec-row").count() > 0

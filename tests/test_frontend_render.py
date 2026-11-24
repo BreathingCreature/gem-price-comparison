@@ -66,6 +66,34 @@ def test_savings_and_percent_never_invent_a_cheaper_price():
     assert _js("r.percent(0.945)") == "95%"
 
 
+def test_price_scale_handles_equal_prices_one_listing_and_missing_gem():
+    equal = _js("r.priceScale([{price:100},{price:100}],100)")
+    assert equal["positions"] == [50, 50]
+    assert equal["gem"] == 50
+    lone = _js("r.priceScale([{price:100}],null)")
+    assert lone["positions"] == [50]
+    assert lone["gem"] is None
+    no_gem = _js("r.priceScale([{price:100},{price:300}],null)")
+    assert no_gem["positions"][0] < no_gem["positions"][1]
+    assert no_gem["low"] >= 0
+
+
+def test_price_scale_keeps_a_tiny_spread_small_and_a_far_listing_visible():
+    tiny = _js("r.priceScale([{price:8960},{price:8961}],8960)")
+    assert abs(tiny["positions"][0] - tiny["positions"][1]) < 1
+    assert 40 < tiny["gem"] < 60
+    far = _js("r.priceScale([{price:20000}],8000)")
+    assert far["positions"][0] > 90
+    assert far["gem"] < 10
+
+
+def test_price_scale_never_returns_a_negative_axis():
+    scale = _js("r.priceScale([{price:1},{price:2}],1)")
+    assert scale["low"] >= 0
+    assert scale["high"] > scale["low"]
+    assert all(0 <= value <= 100 for value in scale["positions"])
+
+
 def test_bars_scale_to_the_gem_price_and_crown_only_a_matching_cheapest():
     bars = _js("r.barRows(" + json.dumps(_result()) + ")")
     assert bars["max"] == 1299.0

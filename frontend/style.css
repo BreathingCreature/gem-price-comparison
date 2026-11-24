@@ -198,14 +198,27 @@ a { color: inherit; text-decoration: none; }
 .sum-left .actions .btn { padding: 0 12px; }
 .sum-right { padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; justify-content: center; min-width: 0; }
 .bars { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.bar-row { display: grid; grid-template-columns: 150px 1fr 150px; align-items: center; gap: 14px; font-size: 14px; min-width: 0; }
-.bar-row .name { display: flex; align-items: center; gap: 10px; font-weight: 550; min-width: 0; }
-.bar-row .name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-track { height: 10px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--line-soft); overflow: hidden; display: block; }
-.bar-track i { display: block; height: 100%; border-radius: 5px; background: var(--good); }
-.bar-track i.gem { background: var(--accent); }
-.bar-row .val { text-align: right; font-weight: 650; white-space: nowrap; }
-.bar-row .val small { font-weight: 500; color: var(--muted); margin-left: 6px; font-size: 13px; }
+.chart-figure { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.chart-gem { margin: 0 0 2px; font-size: 13px; color: var(--muted); }
+.chart-gem b { color: var(--accent); font-weight: 650; }
+.chart-row { display: grid; grid-template-columns: 150px 1fr 150px; align-items: center; gap: 14px; font-size: 14px; min-width: 0; }
+.chart-row .name { display: flex; align-items: center; gap: 10px; font-weight: 550; min-width: 0; }
+.chart-row .name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-axis { position: relative; display: block; height: 16px; min-width: 0; }
+.chart-axis::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; height: 1px; background: var(--line-soft); }
+.chart-axis .gem-line { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--accent); }
+.chart-axis .seg { position: absolute; top: 7px; height: 2px; background: var(--good); }
+.chart-axis .seg.dearer { background: var(--bad); }
+.chart-axis .dot { position: absolute; top: 3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; border: 2px solid var(--surface); background: var(--good); }
+.chart-axis .dot.dearer { background: var(--bad); }
+.chart-axis .dot.is-cheapest { outline: 2px solid var(--good); outline-offset: 2px; }
+.chart-axis .dot.dearer.is-cheapest { outline-color: var(--bad); }
+.chart-row .val { text-align: right; font-weight: 650; white-space: nowrap; }
+.chart-row .val.cheaper { color: var(--good); }
+.chart-row .val.dearer { color: var(--bad); }
+.chart-row .val small { display: block; font-weight: 500; color: var(--muted); font-size: 12px; }
+.chart-foot { margin-top: -2px; }
+.chart-ends { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--faint); }
 
 /* Tabs and panels */
 .details-card { margin-top: 4px; }
@@ -357,8 +370,11 @@ a { color: inherit; text-decoration: none; }
   .lane.sub { padding-left: 12px; border-left: 2px solid var(--line); border-top-color: var(--line-soft); }
   .lane.sub .who { padding-left: 0; }
   .lane.sub .who::before { display: none; }
-  .bar-row { grid-template-columns: 110px 1fr; }
-  .bar-row .val { grid-column: 1 / -1; text-align: left; }
+  .chart-row { grid-template-columns: 110px 1fr; }
+  .chart-row .val { grid-column: 1 / -1; text-align: left; }
+  .chart-row .val small { display: inline; margin-left: 6px; }
+  .chart-foot { grid-template-columns: 110px 1fr; }
+  .chart-foot > :last-child { display: none; }
 }
 @media (max-width: 560px) {
   .topbar { padding: 0 10px; gap: 8px; }

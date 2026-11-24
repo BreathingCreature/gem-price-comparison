@@ -1057,21 +1057,77 @@ function paintBars(result) {
   clear(container);
   if (!result) return;
   var model = R.barRows(result);
-  if (model.rows.length < 2) return;
-  var gemPrice = result && result.gem && result.gem.price ? result.gem.price.low : null;
-  model.rows.forEach(function (row) {
-    var fill = h("i", { class: row.isGem ? "gem" : "" });
-    fill.style.width = Math.max(0, Math.min(100, row.width)) + "%";
-    var note = "";
-    if (!row.isGem && gemPrice != null && row.price != null && Number(row.price) !== Number(gemPrice)) {
-      note = (row.price < gemPrice ? "-" : "+") + R.money(Math.abs(Number(row.price) - Number(gemPrice)));
+  var gemPrice = result.gem && result.gem.price ? result.gem.price.low : null;
+  var listings = model.rows.filter(function (row) { return !row.isGem; }).sort(function (a, b) { return a.price - b.price; });
+  if (!listings.length || gemPrice == null) return;
+
+  var counts = {};
+  listings.forEach(function (row) { counts[row.label] = (counts[row.label] || 0) + 1; });
+  var seen = {};
+  listings.forEach(function (row) {
+    if (counts[row.label] > 1) {
+      seen[row.label] = (seen[row.label] || 0) + 1;
+      row.displayLabel = row.label + " (" + seen[row.label] + ")";
+    } else {
+      row.displayLabel = row.label;
     }
-    var value = h("span", { class: "val" }, R.money(row.price), note ? h("small", { text: note }) : "");
-    container.appendChild(h("div", { class: "bar-row" },
-      h("span", { class: "name" }, row.isGem ? gemGlyph() : siteIcon(row.label), h("span", { text: row.label })),
-      h("span", { class: "bar-track" }, fill),
+  });
+
+  var scale = R.priceScale(listings, gemPrice);
+  var figure = h("div", {
+    class: "chart-figure",
+    role: "img",
+    "aria-label": "Price chart. GeM " + R.money(gemPrice) + ". " + listings.length +
+      " listing" + (listings.length === 1 ? "" : "s") + " sorted by price, from " +
+      R.money(listings[0].price) + " to " + R.money(listings[listings.length - 1].price) +
+      ". The axis starts at " + R.money(scale.low) + ", not zero."
+  });
+  if (scale.gem != null) {
+    figure.appendChild(h("p", { class: "chart-gem" }, "GeM price ", h("b", { text: R.money(gemPrice) })));
+  }
+  listings.forEach(function (row, index) {
+    var position = scale.positions[index];
+    var delta = Number(row.price) - Number(gemPrice);
+    var axis = h("span", { class: "chart-axis" });
+    if (scale.gem != null) {
+      var line = h("i", { class: "gem-line" });
+      line.style.left = scale.gem + "%";
+      axis.appendChild(line);
+    }
+    if (position != null) {
+      if (scale.gem != null && Math.abs(position - scale.gem) > 0.2) {
+        var segment = h("i", { class: "seg" + (delta < 0 ? " cheaper" : " dearer") });
+        segment.style.left = Math.min(position, scale.gem) + "%";
+        segment.style.width = Math.abs(position - scale.gem) + "%";
+        axis.appendChild(segment);
+      }
+      var dot = h("i", { class: "dot" + (delta < 0 ? " cheaper" : delta > 0 ? " dearer" : "") + (row.cheapest ? " is-cheapest" : "") });
+      dot.style.left = position + "%";
+      axis.appendChild(dot);
+    }
+    var note = delta === 0 ? "same" : (delta < 0 ? "-" : "+") + R.money(Math.abs(delta));
+    var value = h("span", { class: "val" + (delta < 0 ? " cheaper" : delta > 0 ? " dearer" : "") },
+      R.money(row.price), h("small", { text: note }));
+    figure.appendChild(h("div", { class: "chart-row", dataset: { price: String(row.price) } },
+      h("span", { class: "name" }, siteIcon(row.label), h("span", { text: row.displayLabel })),
+      axis,
       value));
   });
+  figure.appendChild(h("div", { class: "chart-row chart-foot" },
+    h("span"),
+    h("span", { class: "chart-ends" },
+      h("span", { text: R.money(scale.low) }),
+      h("span", { text: R.money(scale.high) })),
+    h("span")));
+  container.appendChild(figure);
+
+  var hidden = h("ul", { class: "sr-only" });
+  listings.forEach(function (row, index) {
+    var delta = Number(row.price) - Number(gemPrice);
+    var side = delta === 0 ? "the same as GeM" : R.money(Math.abs(delta)) + (delta < 0 ? " less than GeM" : " more than GeM");
+    hidden.appendChild(h("li", { text: row.displayLabel + ": " + R.money(row.price) + ", " + side }));
+  });
+  container.appendChild(hidden);
 }
 
 /* The pipeline is built once and only its values change, so a row never moves. */
