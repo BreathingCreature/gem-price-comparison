@@ -1,9 +1,7 @@
 """shop cards, the shown-then-updated result, retry gating, result v2."""
 import time
 
-import pytest
-
-from core import pipeline, result, retry
+from core import events, pipeline, result, retry
 from core.result import build_result, shop_entry
 from llm.match import MatchBatchResult
 from scrapers._base import CandidateResult, SearchScrapeResult
@@ -258,6 +256,63 @@ def test_a_lane_over_its_limit_is_timed_out(monkeypatch):
     entry = shops["flipkart.com"]
     assert entry["status"] == result.SHOP_TIMED_OUT
     assert "42" in entry["reason"] and entry["retryable"] is True
+
+
+def test_each_other_shop_gets_its_own_time_not_the_lane_clock():
+    candidates = [
+        _cand("croma.com", "https://www.croma.com/a", 1200.0),
+        _cand("cashify.in", "https://www.cashify.in/b", 1300.0),
+    ]
+    with events.capture() as sink:
+        sink.events = [
+            {"type": "shop_started", "shop": "other", "t": 0.0},
+            {"type": "shop_started", "shop": "croma.com", "t": 0.1},
+            {"type": "shop_started", "shop": "cashify.in", "t": 0.2},
+            {"type": "scrape_finished", "domain": "croma.com", "t": 1.1},
+            {"type": "scrape_finished", "domain": "cashify.in", "t": 4.2},
+        ]
+        shops = pipeline._shop_entries(
+            flipkart_results=[], amazon_results=[], discovery_results=[],
+            flipkart_candidates=[], amazon_candidates=[], generic_candidates=candidates,
+            match_result=MatchBatchResult(), prefilter_dropped=[], lane_errors=[],
+            lane_seconds={"other_shops": 34.5}, nothing_found=True,
+        )
+    assert shops["croma.com"]["seconds"] == 1.0
+    assert shops["cashify.in"]["seconds"] == 4.0
+    assert shops["croma.com"]["seconds"] != 34.5
+
+
+def test_an_other_shop_with_no_clock_shows_no_time_instead_of_the_lane_time():
+    shops = pipeline._shop_entries(
+        flipkart_results=[], amazon_results=[], discovery_results=[],
+        flipkart_candidates=[], amazon_candidates=[],
+        generic_candidates=[_cand("croma.com", "https://www.croma.com/a", 1200.0)],
+        match_result=MatchBatchResult(), prefilter_dropped=[], lane_errors=[],
+        lane_seconds={"other_shops": 34.5}, nothing_found=True,
+    )
+    assert shops["croma.com"]["seconds"] is None
+
+
+def test_a_slow_shop_that_produced_a_verdict_is_not_called_timed_out(monkeypatch):
+    monkeypatch.setattr(pipeline, "LANE_TIME_LIMIT_SECONDS", 10.0)
+    with events.capture() as sink:
+        sink.events = [
+            {"type": "shop_started", "shop": "croma.com", "t": 0.0},
+            {"type": "scrape_finished", "domain": "croma.com", "t": 42.0},
+        ]
+        shops = pipeline._shop_entries(
+            flipkart_results=[], amazon_results=[], discovery_results=[],
+            flipkart_candidates=[], amazon_candidates=[],
+            generic_candidates=[_cand("croma.com", "https://www.croma.com/a", 1200.0)],
+            match_result=MatchBatchResult(all_decisions=[{
+                "candidate_url": "https://www.croma.com/a", "source_domain": "croma.com",
+                "is_match": False,
+                "confidence": 0.9, "outcome": "no_match", "price_used": 1200.0,
+            }]),
+            prefilter_dropped=[], lane_errors=[], lane_seconds={}, nothing_found=True,
+        )
+    assert shops["croma.com"]["status"] == result.SHOP_NOT_FOUND
+    assert shops["croma.com"]["seconds"] == 42.0
 
 
 def test_discovery_off_marks_other_not_searched_and_unretryable():

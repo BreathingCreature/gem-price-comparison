@@ -441,9 +441,15 @@ def _shop_counts(domain, candidates, decisions, confirmed, possible, skipped, pr
     return seen, dropped, checked, matches, possibles, unchecked
 
 
-def _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds) -> _ShopFacts:
+def _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds, shop_seconds) -> _ShopFacts:
     seen, dropped, checked, matches, possibles, unchecked = counts
     lane = LANE_FOR_DOMAIN.get(domain, "other_shops")
+    seconds = (shop_seconds or {}).get(domain)
+    if seconds is None and domain in ("flipkart.com", "amazon.in"):
+        # These lanes hold exactly one shop, so the lane clock is also that
+        # shop's clock. The discovery lane holds many shops, and copying its
+        # clock onto each one is the bug this replaces.
+        seconds = (lane_seconds or {}).get(lane)
     return _ShopFacts(
         domain=domain,
         results=results,
@@ -455,7 +461,7 @@ def _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds) -
         possibles=possibles,
         unchecked=unchecked,
         lane_error=lane_error,
-        seconds=(lane_seconds or {}).get(lane),
+        seconds=seconds,
     )
 
 
@@ -473,17 +479,24 @@ def _shop_status(facts: _ShopFacts) -> tuple[str, str]:
         return result_module.SHOP_NOT_SEARCHED, str(_cand_dict(failed_pages[0]).get("fetch_error"))
     if facts.lane_error:
         return result_module.SHOP_INCOMPLETE, facts.lane_error
-    if facts.seconds is not None and facts.seconds > LANE_TIME_LIMIT_SECONDS:
-        return (
-            result_module.SHOP_TIMED_OUT,
-            f"lane took {facts.seconds:.0f} s (limit {LANE_TIME_LIMIT_SECONDS:.0f} s)",
-        )
     if facts.unchecked:
         return result_module.SHOP_INCOMPLETE, f"{facts.unchecked} listing(s) could not be checked"
     if facts.possibles:
         return result_module.SHOP_POSSIBLE, f"{facts.possibles} possible listing(s), none confirmed"
     if facts.seen == 0 and not facts.results:
         return result_module.SHOP_NOT_SEARCHED, "the search returned no listings"
+    if (
+        facts.seconds is not None
+        and facts.seconds > LANE_TIME_LIMIT_SECONDS
+        and not facts.checked
+        and not facts.dropped
+    ):
+        # Only a shop that never produced a verdict can be called timed out;
+        # a slow shop that did finish keeps its honest result.
+        return (
+            result_module.SHOP_TIMED_OUT,
+            f"took {facts.seconds:.0f} s (limit {LANE_TIME_LIMIT_SECONDS:.0f} s)",
+        )
     return result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
 
 
@@ -590,6 +603,50 @@ def _other_entry(*, entries, discovery_results, lane_errors, lane_seconds, retri
     )
 
 
+_EVENT_SHOP_ALIASES = {"flipkart": "flipkart.com", "amazon": "amazon.in"}
+
+
+def _event_shop_domain(event: dict) -> str:
+    for key in ("shop", "domain", "marketplace"):
+        value = _norm_domain(event.get(key))
+        if not value:
+            continue
+        value = _EVENT_SHOP_ALIASES.get(value, value)
+        if value in ("other", "other_shops"):
+            return ""
+        return value
+    url = event.get("url")
+    if isinstance(url, str) and "://" in url:
+        return _norm_domain(urlparse(url).netloc)
+    return ""
+
+
+def _shop_seconds_from_events() -> dict:
+    """Per-shop seconds from shop_started to that shop's last event.
+
+    A lane clock is not a shop clock: the discovery lane's total time used to
+    be copied onto every shop in it, so each row showed the same 34.5 s.
+    """
+    starts: dict = {}
+    last: dict = {}
+    for event in events.snapshot():
+        domain = _event_shop_domain(event)
+        t = event.get("t")
+        if not domain or t is None:
+            continue
+        if event.get("type") == "shop_started":
+            # A retry starts the shop again; the card speaks for the last try.
+            starts[domain] = t
+            last[domain] = t
+        else:
+            last[domain] = max(last.get(domain, t), t)
+    return {
+        domain: round(last[domain] - start, 1)
+        for domain, start in starts.items()
+        if last.get(domain, start) > start
+    }
+
+
 def _shop_entries(
     *,
     flipkart_results,
@@ -613,6 +670,7 @@ def _shop_entries(
     timed_out; at least one possible but no match -> possible; searched
     cleanly and nothing -> not_found."""
     retried = set(retried or ())
+    shop_seconds = _shop_seconds_from_events()
     decisions = list(getattr(match_result, "all_decisions", None) or [])
     confirmed = list(getattr(match_result, "confirmed_matches", None) or [])
     possible = list(getattr(match_result, "possible_matches", None) or [])
@@ -631,7 +689,7 @@ def _shop_entries(
         counts = _shop_counts(domain, candidates, decisions, confirmed, possible, skipped, prefilter_dropped)
         lane = LANE_FOR_DOMAIN.get(domain, "other_shops")
         lane_error = next((e for e in (lane_errors or []) if str(e).startswith(lane)), "")
-        facts = _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds)
+        facts = _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds, shop_seconds)
         status, reason = _shop_status(facts)
         retryable, retried_here = _shop_retryable(facts, status, nothing_found, retried)
         entries[domain] = _shop_card(facts, status, reason, retryable, retried_here)

@@ -468,8 +468,8 @@ function beginRun(runId, status, queuePosition, url) {
 
 function queuedLabel(position) {
   var ahead = Number(position);
-  if (!isFinite(ahead) || ahead <= 0) return "Waiting to start";
-  return "Waiting, " + ahead + " run" + (ahead === 1 ? "" : "s") + " ahead";
+  if (!isFinite(ahead) || ahead <= 0) return "Queued to start";
+  return "Queued, " + ahead + " run" + (ahead === 1 ? "" : "s") + " ahead";
 }
 
 function openSavedRun(runId) {
@@ -1134,15 +1134,15 @@ function paintBars(result) {
 var LANE_STEPS = [["search", "Search"], ["filter", "Filter"], ["verify", "Verify"], ["confirmed", "Confirmed"]];
 
 function laneCell(id, label, withSmall) {
-  return h("div", { class: "cell", id: id, dataset: { label: label } },
-    h("b", { id: id + "-value", text: "waiting" }),
+  return h("div", { class: "cell", id: id, dataset: { label: label, state: "not_started" } },
+    h("b", { id: id + "-value", text: "-" }),
     withSmall ? h("small", { id: id + "-small" }) : null);
 }
 
 function laneStateEl(id) {
   return h("span", { class: "state", id: id },
     h("span", { class: "dot", "aria-hidden": "true" }),
-    h("span", { id: id + "-text", text: "Waiting" }));
+    h("span", { id: id + "-text", text: "Not started" }));
 }
 
 function laneWho(icon, name) {
@@ -1156,7 +1156,7 @@ function buildPipeline() {
   state.shopRowOrder = [];
   R.LANES.forEach(function (lane) {
     if (lane.id === "other") {
-      lanes.appendChild(h("div", { class: "lane", id: "lane-other", dataset: { state: "waiting" } },
+      lanes.appendChild(h("div", { class: "lane", id: "lane-other", dataset: { state: "idle" } },
         laneWho(globeGlyph(), "Web search"),
         laneCell("lane-other-search", "Search", true),
         laneCell("lane-other-filter", "Filter"),
@@ -1165,7 +1165,7 @@ function buildPipeline() {
         laneStateEl("lane-other-status")));
       return;
     }
-    lanes.appendChild(h("div", { class: "lane", id: "lane-" + lane.id, dataset: { state: "waiting" } },
+    lanes.appendChild(h("div", { class: "lane", id: "lane-" + lane.id, dataset: { state: "idle" } },
       laneWho(siteIcon(lane.key), lane.label),
       laneCell("lane-" + lane.id + "-search", "Search", true),
       laneCell("lane-" + lane.id + "-filter", "Filter"),
@@ -1189,9 +1189,9 @@ function setPipelineCollapsed(collapsed) {
 function applyPipelineCollapsed() { setPipelineCollapsed(state.pipelineCollapsed); }
 
 var STATE_WORDS = { found: "found", possible: "possible", not_found: "not found", not_searched: "blocked", incomplete: "incomplete", timed_out: "timed out" };
-function stateWord(status) { return STATE_WORDS[status] || "waiting"; }
+function stateWord(status) { return STATE_WORDS[status] || "not started"; }
 
-function stateView(entry) {
+function stateView(entry, phase) {
   var status = (entry && entry.status) || "";
   if (status === "found") return { name: "done", label: stateWord(status) };
   if (status === "possible") return { name: "warning", label: stateWord(status) };
@@ -1200,7 +1200,8 @@ function stateView(entry) {
   if (status === "incomplete" || status === "timed_out") return { name: "warning", label: stateWord(status) };
   if (entry && entry.lastBlocked && entry.blocked) return { name: "blocked", label: "blocked" };
   if (entry && (entry.queries || entry.listings || entry.judged || entry.kept)) return { name: "active", label: "working" };
-  return { name: "waiting", label: "waiting" };
+  if (phase === "done") return { name: "none", label: "finished" };
+  return { name: "idle", label: "Not started" };
 }
 
 function applyLaneView(laneEl, stateEl, textEl, view, title) {
@@ -1210,28 +1211,50 @@ function applyLaneView(laneEl, stateEl, textEl, view, title) {
   laneEl.title = title || "";
 }
 
+function paintCell(id, node, phase) {
+  var el = gel(id);
+  var value = gel(id + "-value");
+  if (!el || !value || !node) return;
+  var cell = R.cellState(node, phase);
+  clear(value);
+  if (cell === "running") {
+    value.textContent = node.value || "-";
+  } else if (cell === "done") {
+    value.textContent = node.value || "-";
+  } else {
+    value.textContent = "-";
+  }
+  value.className = cell === "failed" ? "warn"
+    : cell === "running" ? "accent running"
+    : cell === "done" ? (value.textContent === "0" ? "muted" : "pos")
+    : "muted";
+  el.dataset.state = cell;
+  el.title = cell === "failed" ? (node.reason || "failed")
+    : cell === "skipped" ? "not needed"
+    : "";
+}
+
 function paintPipeline() {
   var stats = state.stats;
   var model = R.pipelineModel(stats);
+  var phase = state.finished ? "done" : "live";
   setStepLine("node-read", model.read);
   setStepLine("node-understand", model.understand);
   var laneModels = {};
-  model.lanes.forEach(function (lane) { laneModels[lane.id] = lane; });
-  ["flipkart", "amazon"].forEach(function (id) {
-    var laneEl = $("lane-" + id);
+  model.lanes.forEach(function (lane) {
+    laneModels[lane.id] = lane;
+    var laneEl = gel("lane-" + lane.id);
     if (!laneEl) return;
-    var entry = laneStats(id);
-    var row = R.laneRowModel(entry);
-    var view = stateView(entry);
-    applyLaneView(laneEl, $("lane-" + id + "-status"), gel("lane-" + id + "-status-text"), view, laneTitle(id, laneModels[id] && laneModels[id].help));
-    setNodeValue(gel("lane-" + id + "-search-value"), row.search, view.name);
-    setText(gel("lane-" + id + "-search-small"), listingText(entry.seen || entry.listings || 0));
-    setNodeValue(gel("lane-" + id + "-filter-value"), row.filter, entry.filtered ? "done" : view.name);
-    setNodeValue(gel("lane-" + id + "-verify-value"), row.verify, entry.judged || row.confirmed ? "done" : view.name);
-    setNodeValue(gel("lane-" + id + "-confirmed-value"), String(row.confirmed), row.confirmed ? "done" : view.name);
+    var entry = laneStats(lane.id);
+    var view = stateView(entry, phase);
+    applyLaneView(laneEl, gel("lane-" + lane.id + "-status"), gel("lane-" + lane.id + "-status-text"), view, laneTitle(lane.id, lane.help));
+    lane.nodes.forEach(function (node) {
+      paintCell("lane-" + lane.id + "-" + node.id, node, phase);
+    });
+    setText(gel("lane-" + lane.id + "-search-small"), listingText(entry.seen || entry.listings || 0));
   });
-  paintWebLane(stats);
-  paintShopRows(stats);
+  paintWebLane(stats, laneModels.other);
+  paintShopRows(stats, phase);
 }
 
 function listingText(count) {
@@ -1241,9 +1264,7 @@ function listingText(count) {
 }
 
 function setStepLine(id, node) {
-  var line = $(id);
-  if (line) setState(line, node.state);
-  setNodeValue($(id + "-value"), node.value, node.state);
+  paintCell(id, node, state.finished ? "done" : "live");
 }
 
 function laneStats(id) {
@@ -1261,7 +1282,7 @@ function setNodeValue(el, value, nodeState) {
     el.className = "muted";
     return;
   }
-  if (text === "waiting" || text === "-") {
+  if (text === "-") {
     el.textContent = text;
     el.className = "muted";
     return;
@@ -1279,7 +1300,7 @@ function setNodeValue(el, value, nodeState) {
     : nodeState === "active" ? "accent" : "muted";
 }
 
-function paintWebLane(stats) {
+function paintWebLane(stats, lane) {
   var rows = R.laneRows(stats);
   var total = { listings: 0 };
   rows.forEach(function (row) { total.listings += Number(row.listings) || 0; });
@@ -1287,14 +1308,15 @@ function paintWebLane(stats) {
   var view = webStateView(stats, rows);
   applyLaneView(gel("lane-other"), gel("lane-other-status"), gel("lane-other-status-text"), view,
     rows.map(function (row) { return row.shop + ": " + pipelineRowTitle(row); }).join("\n"));
-  setNodeValue(gel("lane-other-search-value"), pages ? pages + " page" + (pages === 1 ? "" : "s") : "waiting", view.name);
-  setText(gel("lane-other-search-small"), rows.length ? rows.length + " shop" + (rows.length === 1 ? "" : "s") : "");
-  ["filter", "verify", "confirmed"].forEach(function (step) {
-    var el = gel("lane-other-" + step + "-value");
-    if (!el) return;
-    el.textContent = "-";
-    el.className = "muted";
+  var phase = stats.finished ? "done" : "live";
+  (lane ? lane.nodes : []).forEach(function (node) {
+    paintCell("lane-other-" + node.id, node, phase);
   });
+  if (pages) {
+    var search = gel("lane-other-search-value");
+    if (search) search.textContent = pages + " page" + (pages === 1 ? "" : "s");
+  }
+  setText(gel("lane-other-search-small"), rows.length ? rows.length + " shop" + (rows.length === 1 ? "" : "s") : "");
 }
 
 function webStateView(stats, rows) {
@@ -1308,7 +1330,8 @@ function webStateView(stats, rows) {
   }
   if (rows.length) return { name: "active", label: "searching" };
   if (stats.shops.other && stats.shops.other.listings) return { name: "active", label: "reading" };
-  return { name: "waiting", label: "waiting" };
+  if (stats.finished) return { name: "none", label: "finished" };
+  return { name: "idle", label: "Not started" };
 }
 
 function webStatus(stats) {
@@ -1359,7 +1382,7 @@ function reprobeFailedIcons() {
   Object.keys(state.iconFailed).forEach(reprobeShopIcon);
 }
 
-function paintShopRows(stats) {
+function paintShopRows(stats, phase) {
   var rows = R.laneRows(stats);
   var container = gel("shop-rows");
   if (!container) return;
@@ -1367,7 +1390,7 @@ function paintShopRows(stats) {
     var record = state.shopRowEls[row.shop];
     if (!record) {
       var id = shopSafeId(row.shop);
-      var el = h("div", { class: "lane sub shop-row", id: id, dataset: { state: "waiting" } },
+      var el = h("div", { class: "lane sub shop-row", id: id, dataset: { state: "idle" } },
         laneWho(siteIcon(row.shop), row.shop),
         laneCell(id + "-search", "Search"),
         laneCell(id + "-filter", "Filter"),
@@ -1379,14 +1402,14 @@ function paintShopRows(stats) {
       state.shopRowEls[row.shop] = record;
       state.shopRowOrder.push(row.shop);
     }
-    var model = R.laneRowModel(row);
-    var view = stateView(row);
+    var view = stateView(row, phase);
     applyLaneView(record.el, gel(record.id + "-status"), gel(record.id + "-status-text"), view, pipelineRowTitle(row));
     if (FINAL_SHOP_STATUSES.indexOf(row.status) >= 0) reprobeShopIcon(row.shop);
-    setNodeValue(gel(record.id + "-search-value"), "-", "waiting");
-    setNodeValue(gel(record.id + "-filter-value"), model.filter, row.kept || row.dropped ? "done" : view.name);
-    setNodeValue(gel(record.id + "-verify-value"), model.verify, row.judged || row.rejected ? "done" : view.name);
-    setNodeValue(gel(record.id + "-confirmed-value"), String(model.confirmed), model.confirmed ? "done" : view.name);
+    var cells = R.cellsForShop(row);
+    cells.forEach(function (cell) {
+      cell.final = !!row.status;
+      paintCell(record.id + "-" + cell.id, cell, phase);
+    });
   });
 }
 
@@ -1567,7 +1590,7 @@ function paintSystem() {
   var llm = state.stats.llm || {};
   var cached = state.result && state.result.from_cache;
   setText($("llm-run-summary"), llm.calls
-    ? "This run: " + llm.calls + " LLM call" + (llm.calls === 1 ? "" : "s") + ", " + llm.failed + " failed, " + llm.cached + " reused, " + llm.seconds.toFixed(1) + " s waiting in total."
+    ? "This run: " + llm.calls + " LLM call" + (llm.calls === 1 ? "" : "s") + ", " + llm.failed + " failed, " + llm.cached + " reused, " + llm.seconds.toFixed(1) + " s spent on checks."
     : "This run has no LLM calls yet.");
   var stats = $("run-stats");
   clear(stats);
@@ -1778,7 +1801,7 @@ function updateTitle() {
     } else if (state.active && state.startedAt) {
       title = "(" + R.clock(state.elapsedSeconds) + ") Running, GeM Price Comparison";
     } else if (state.queued) {
-      title = "Waiting, GeM Price Comparison";
+      title = "GeM Price Comparison";
     }
   }
   if (document.title !== title) document.title = title;

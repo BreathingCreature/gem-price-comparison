@@ -179,7 +179,11 @@ a { color: inherit; text-decoration: none; }
 .lane[data-state="none"] .state { color: var(--muted); }
 .lane[data-state="blocked"] .state { color: var(--warn); }
 .lane[data-state="active"] .state { color: var(--accent); }
-.lane[data-state="waiting"] .state { color: var(--faint); }
+.lane[data-state="idle"] .state { color: var(--faint); }
+.cell b.running { color: var(--accent); }
+.cell b.running::after { content: ""; display: inline-block; width: 5px; height: 5px; margin-left: 6px; border-radius: 50%; background: currentColor; vertical-align: middle; animation: cell-pulse 1.1s ease-in-out infinite; }
+.cell b.warn { color: var(--warn); }
+@keyframes cell-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 .pipeline-end { display: none; }
 
 /* Summary */

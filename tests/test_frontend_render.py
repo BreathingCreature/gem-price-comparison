@@ -115,7 +115,36 @@ def test_status_words_and_classes_cover_every_shop_state():
     assert out[3] == ["Could not search", "status-warning", True]
     assert out[4] == ["Incomplete", "status-warning", True]
     assert out[5] == ["Timed out", "status-warning", True]
-    assert out[6] == ["Waiting", "status-waiting", True]
+    assert out[6] == ["Not started", "status-idle", True]
+
+
+def test_a_final_blocked_shop_has_no_running_or_not_started_cells():
+    states = _js(
+        "r.cellsForShop({status:'not_searched',lastBlocked:true,blocked:2})"
+        ".map(c => r.cellState(Object.assign({final:true}, c), 'done'))"
+    )
+    assert states == ["failed", "skipped", "skipped", "skipped", "skipped"]
+
+
+def test_cell_state_finalizes_every_cell_when_the_run_is_done():
+    out = _js(
+        "(() => { const states = ['not_started','running','done','skipped','failed'];"
+        "const cells = {};"
+        "states.forEach(s => { cells[s] = {"
+        "live: r.cellState({state:s, value:(s==='done'||s==='running')?'7':''}, 'live'),"
+        "done: r.cellState({state:s, value:(s==='done'||s==='running')?'7':''}, 'done')}; });"
+        "return {cells, noValue: r.cellState({state:'running',value:''},'done'),"
+        "rowFinal: r.cellState({state:'running',value:'3',final:true},'live'),"
+        "neverRan: r.cellState({state:'not_started',value:''},'done')}; })()"
+    )
+    assert out["cells"]["not_started"] == {"live": "not_started", "done": "skipped"}
+    assert out["cells"]["running"] == {"live": "running", "done": "done"}
+    assert out["cells"]["done"] == {"live": "done", "done": "done"}
+    assert out["cells"]["skipped"] == {"live": "skipped", "done": "skipped"}
+    assert out["cells"]["failed"] == {"live": "failed", "done": "failed"}
+    assert out["noValue"] == "skipped"
+    assert out["rowFinal"] == "done"
+    assert out["neverRan"] == "skipped"
 
 
 def test_the_lane_model_counts_one_shops_story_and_ignores_the_global_filter():
@@ -139,9 +168,14 @@ def test_the_lane_model_counts_one_shops_story_and_ignores_the_global_filter():
     lane = _js("r.pipelineModel(" + json.dumps(stats) + ").lanes[0]")
     assert lane["id"] == "flipkart"
     assert lane["nodes"][0]["value"] == "2/1 searches"
+    assert lane["nodes"][0]["state"] == "done"
     assert lane["nodes"][1]["value"] == "3 kept, 2 dropped"
+    assert lane["nodes"][1]["state"] == "done"
     assert lane["nodes"][2]["value"] == "1 match, 1 possible, 1 rejected"
-    assert lane["nodes"][3]["value"] == "1 rejected"
+    assert lane["nodes"][2]["state"] == "done"
+    assert lane["nodes"][3]["state"] == "failed"
+    assert "1 rejected" in lane["nodes"][3]["reason"]
+    assert lane["nodes"][4]["value"] == "1"
     assert lane["matches"] == 1 and lane["possible"] == 1
 
 

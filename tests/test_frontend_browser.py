@@ -425,7 +425,7 @@ def test_twelve_other_shops_fit_every_width(browser):
         page.locator("#run-state-label", has_text="Done").wait_for(timeout=30_000)
         page.click("#pipeline-toggle")
         assert page.locator("#shop-rows .shop-row").count() == len(other_shops)
-        assert page.locator("#shop-extra-1-example-filter-value").inner_text() == "+2 -1"
+        assert page.locator("#shop-extra-1-example-filter-value").inner_text() == "2 kept, 1 dropped"
         # The design has no cap and no Show more: every shop is on the map.
         assert page.locator("#shop-more").count() == 0
         for width in (360, 1024, 1280, 1920):
@@ -436,6 +436,118 @@ def test_twelve_other_shops_fit_every_width(browser):
                 "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
             ), f"twelve shops scroll sideways at {width} px"
             assert _overlaps(cdp) == [], f"twelve shops overlap a control at {width} px"
+        _assert_clean(console_errors, page_errors, requests, responses, url)
+    finally:
+        context.close()
+        _stop(server, thread)
+
+
+def test_a_finished_printer_run_has_no_waiting_cells(browser):
+    """Replay the printer shape: a 403 shop, a 404 shop, 7 matches."""
+    match = {
+        "shop": "indiamart.com", "title": "HP LaserJet Pro printer", "price": 6000.0,
+        "confidence": 0.9, "url": "https://www.indiamart.com/x", "reason": "same model",
+        "in_stock": True, "bulk": True,
+    }
+    result = {
+        "gem": {"title": "HP LaserJet Pro printer",
+                "price": {"low": 8999.0, "high": 8999.0, "kind": "fixed"}},
+        "matches": [match], "possible_matches": [], "similar": [], "cheapest": match,
+        "shops": {
+            "flipkart.com": {"status": "not_found", "seen": 6, "dropped": 2, "checked": 4,
+                             "matches": 0, "seconds": 3.2},
+            "amazon.in": {"status": "not_found", "seen": 5, "dropped": 1, "checked": 4,
+                          "matches": 0, "seconds": 2.1},
+            "croma.com": {"status": "not_searched", "reason": "HTTP 403", "seen": 0,
+                          "dropped": 0, "checked": 0, "matches": 0, "seconds": 0.4},
+            "cashify.in": {"status": "not_searched", "reason": "HTTP 404", "seen": 0,
+                           "dropped": 0, "checked": 0, "matches": 0, "seconds": 0.5},
+            "indiamart.com": {"status": "found", "seen": 3, "dropped": 1, "checked": 2,
+                              "matches": 1, "seconds": 2.5},
+            "other": {"status": "found", "seen": 3, "dropped": 1, "checked": 2,
+                      "matches": 1, "seconds": 2.4},
+        },
+    }
+
+    def runner(gem_url, refresh, on_event):
+        sequence = 0
+
+        def emit(event):
+            nonlocal sequence
+            sequence += 1
+            event["seq"] = sequence
+            event.setdefault("t", sequence * 0.1)
+            on_event(event)
+
+        emit({"type": "run_started"})
+        emit({"type": "gem_product", "title": "HP LaserJet Pro printer", "price": 8999.0,
+              "price_type": "fixed", "brand": "HP", "model": "LaserJet Pro"})
+        emit({"type": "normalized", "canonical_name": "HP LaserJet Pro printer", "brand": "HP",
+              "model": "LaserJet Pro", "queries": ["hp laserjet pro"], "key_identifiers": ["LaserJet Pro"]})
+        emit({"type": "shop_started", "shop": "flipkart.com"})
+        emit({"type": "search_started", "marketplace": "flipkart", "query": "hp laserjet pro"})
+        emit({"type": "search_finished", "marketplace": "flipkart", "count": 6})
+        emit({"type": "filter_finished", "shop": "flipkart.com", "seen": 6, "sent": 4, "dropped": 2})
+        emit({"type": "shop_finished", "shop": "flipkart.com", "status": "not_found", "seconds": 3.2})
+        emit({"type": "shop_started", "shop": "amazon.in"})
+        emit({"type": "search_started", "marketplace": "amazon", "query": "hp laserjet pro"})
+        emit({"type": "search_finished", "marketplace": "amazon", "count": 5})
+        emit({"type": "filter_finished", "shop": "amazon.in", "seen": 5, "sent": 4, "dropped": 1})
+        emit({"type": "shop_finished", "shop": "amazon.in", "status": "not_found", "seconds": 2.1})
+        emit({"type": "shop_started", "shop": "other"})
+        emit({"type": "discovery_finished", "urls": ["https://croma.com/a", "https://cashify.in/b",
+                                                     "https://www.indiamart.com/x"]})
+        for shop in ("croma.com", "cashify.in", "indiamart.com"):
+            emit({"type": "shop_started", "shop": shop})
+        emit({"type": "scrape_finished", "domain": "croma.com", "url": "https://croma.com/a",
+              "error": "HTTP 403"})
+        emit({"type": "scrape_finished", "domain": "cashify.in", "url": "https://cashify.in/b",
+              "error": "HTTP 404"})
+        emit({"type": "scrape_finished", "domain": "indiamart.com", "url": "https://www.indiamart.com/x"})
+        emit({"type": "filter_finished", "shop": "other_shops", "seen": 3, "sent": 2, "dropped": 1,
+              "by_shop": {"indiamart.com": {"seen": 3, "sent": 2, "dropped": 1}}})
+        emit({"type": "candidate_checking", "url": "https://www.indiamart.com/x",
+              "domain": "indiamart.com", "index": 1, "total": 2})
+        emit({"type": "candidate_verdict", "url": "https://www.indiamart.com/x",
+              "domain": "indiamart.com", "is_match": True, "price": 6000.0})
+        emit({"type": "shop_finished", "shop": "croma.com", "status": "not_searched",
+              "reason": "HTTP 403", "seconds": 0.4})
+        emit({"type": "shop_finished", "shop": "cashify.in", "status": "not_searched",
+              "reason": "HTTP 404", "seconds": 0.5})
+        emit({"type": "shop_finished", "shop": "indiamart.com", "status": "found",
+              "seconds": 2.5, "matches": 1})
+        emit({"type": "shop_finished", "shop": "other", "status": "found", "seconds": 2.4})
+        emit({"type": "run_finished", "result": result})
+        return result
+
+    server, thread, url = _serve(create_app(runner=runner, demo=False))
+    context, page, cdp, console_errors, page_errors, requests, responses = _new_page(browser, url)
+    page.route("**/api/icon/**", lambda route: route.fulfill(status=204, headers={"Cache-Control": "no-store"}))
+    try:
+        page.fill("#gem-url", DEMO_URL)
+        page.click("#run-btn")
+        page.locator("#run-state-label", has_text="Done").wait_for(timeout=30_000)
+        page.click("#pipeline-toggle")
+        state = _js(
+            cdp,
+            """(() => {
+                 const body = document.querySelector('#pipeline-body');
+                 const text = (body.innerText || '').toLowerCase();
+                 const cells = Array.from(body.querySelectorAll('.cell'));
+                 return {
+                   waiting: text.indexOf('waiting') >= 0,
+                   unfinished: cells.filter((el) => ['running', 'not_started'].indexOf(el.dataset.state) >= 0).length,
+                   blocked: ['croma-com', 'cashify-in'].map((id) =>
+                     ['filter', 'verify', 'confirmed'].map((step) =>
+                       document.getElementById('shop-' + id + '-' + step + '-value').innerText)),
+                 };
+               })()""",
+        )
+        assert state["waiting"] is False
+        assert state["unfinished"] == 0
+        assert state["blocked"] == [["-", "-", "-"], ["-", "-", "-"]]
+        assert page.locator("#shop-indiamart-com-confirmed-value").inner_text() == "1"
+        assert "2.5" in page.locator("#shop-indiamart-com").get_attribute("title")
         _assert_clean(console_errors, page_errors, requests, responses, url)
     finally:
         context.close()
