@@ -244,9 +244,8 @@
   ],
   "result_version": 2,
   "search_issues": [
-    "flipkart.com: blocked/CAPTCHA - scrape failed (not counted as 'not found')",
-    "croma.com: fetch failed (demo: the shop blocked the page)",
-    "croma.com: fetch failed on retry (demo: the shop blocked the page)"
+    "flipkart.com: search error: demo: the request timed out",
+    "croma.com: fetch failed (demo: the shop blocked the page)"
   ],
   "shops": {
     "amazon.in": {
@@ -264,7 +263,7 @@
       "dropped": 0,
       "matches": 0,
       "reason": "demo: the shop blocked the page",
-      "retried": true,
+      "retried": false,
       "retryable": false,
       "seen": 1,
       "status": "not_searched"

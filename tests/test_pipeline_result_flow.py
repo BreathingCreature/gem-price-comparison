@@ -211,6 +211,47 @@ def test_a_retried_shop_is_not_picked_again():
     assert retry.retryable_shops(shops, nothing_found=True) == []
 
 
+def test_permanent_failures_are_never_retried():
+    reasons = (
+        "HTTPError: 403 Client Error: Forbidden",
+        "HTTPError: 404 Client Error: Not Found",
+        "HTTPError: 410 Gone",
+        "blocked/CAPTCHA",
+        "the shop showed a bot wall",
+        "robots.txt disallow",
+        "NameResolutionError: could not resolve host",
+        "DNS failure",
+        "refused: document, not a product page",
+    )
+    for reason in reasons:
+        shops = {"flipkart.com": _entry(status=result.SHOP_INCOMPLETE, retryable=True, reason=reason)}
+        assert retry.retryable_shops(shops, nothing_found=True) == [], reason
+
+
+def test_transient_failures_can_be_retried():
+    reasons = (
+        "ReadTimeout: the request timed out",
+        "ConnectionError: connection reset by peer",
+        "HTTPError: 503 Server Error",
+        "took 42 s (limit 150 s)",
+    )
+    for reason in reasons:
+        shops = {"flipkart.com": _entry(status=result.SHOP_INCOMPLETE, retryable=True, reason=reason)}
+        assert retry.retryable_shops(shops, nothing_found=True) == ["flipkart.com"], reason
+
+
+def test_with_a_match_only_the_direct_shops_can_retry():
+    shops = {
+        "flipkart.com": _entry(status=result.SHOP_INCOMPLETE, retryable=True, reason="ReadTimeout: the request timed out"),
+        "amazon.in": _entry(status=result.SHOP_TIMED_OUT, retryable=True, reason="took 42 s (limit 150 s)"),
+        "croma.com": _entry(status=result.SHOP_INCOMPLETE, retryable=True, reason="HTTPError: 503 Server Error"),
+        "other": _entry(status=result.SHOP_INCOMPLETE, retryable=True, reason="some other shops could not be searched"),
+    }
+    assert retry.retryable_shops(shops, nothing_found=False, confirmed=True) == [
+        "flipkart.com", "amazon.in",
+    ]
+
+
 def test_fresh_queries_drops_repeats_and_blanks():
     expansion = {"new_queries": [" demo mouse 5g ", "demo mouse 5g", "demo wireless mouse", "", "m650"]}
     assert retry.fresh_queries(expansion, ["demo wireless mouse"]) == ["demo mouse 5g", "m650"]
@@ -219,7 +260,7 @@ def test_fresh_queries_drops_repeats_and_blanks():
 
 # --- shop cards --------------------------------------------------------------
 
-def test_a_blocked_shop_is_not_searched_and_retryable():
+def test_a_blocked_shop_is_not_searched_and_not_retryable():
     shops = pipeline._shop_entries(
         flipkart_results=[{"blocked": True, "error": None}], amazon_results=[], discovery_results=[],
         flipkart_candidates=[], amazon_candidates=[], generic_candidates=[],
@@ -228,7 +269,7 @@ def test_a_blocked_shop_is_not_searched_and_retryable():
     )
     assert shops["flipkart.com"]["status"] == result.SHOP_NOT_SEARCHED
     assert shops["flipkart.com"]["reason"] == "blocked/CAPTCHA"
-    assert shops["flipkart.com"]["retryable"] is True
+    assert shops["flipkart.com"]["retryable"] is False
 
 
 def test_unchecked_listings_make_a_shop_incomplete_not_not_found():
@@ -403,7 +444,7 @@ def test_the_first_result_is_shown_then_the_retry_updates_it(monkeypatch):
         if calls["flipkart"] == 1:
             return SearchScrapeResult(
                 source_domain="flipkart.com", query=query, candidates=[],
-                blocked=True, status="blocked",
+                error="ReadTimeout: the request timed out", status="error",
             )
         return SearchScrapeResult(
             source_domain="flipkart.com", query=query,
@@ -484,13 +525,16 @@ def test_similar_ready_is_announced_when_nothing_matched(monkeypatch):
     assert result_dict["cheapest"] is None
 
 
-def test_a_blocked_lane_is_retried_and_the_cheapest_changes():
+def test_a_timed_out_lane_is_retried_and_the_cheapest_changes():
     calls = {"flipkart": 0}
 
     def flipkart_fn(query):
         calls["flipkart"] += 1
         if calls["flipkart"] == 1:
-            return SearchScrapeResult(source_domain="flipkart.com", query=query, candidates=[], blocked=True)
+            return SearchScrapeResult(
+                source_domain="flipkart.com", query=query, candidates=[],
+                error="ReadTimeout: the request timed out", status="error",
+            )
         return SearchScrapeResult(
             source_domain="flipkart.com", query=query,
             candidates=[_cand("flipkart.com", "https://www.flipkart.com/a", 900.0)],
@@ -595,3 +639,56 @@ def test_lane_time_limit_refuses_a_zero(tmp_path, monkeypatch):
 
     monkeypatch.delenv("GEM_LANE_TIME_LIMIT", raising=False)
     importlib.reload(config_mod)
+
+
+def test_the_printer_case_does_not_retry_a_403_and_a_404():
+    urls = ["https://www.croma.com/hp-printer", "https://cashify.in/hp-printer"]
+
+    def discover_fn(queries, domains):
+        return [{"query": queries[0], "raw_urls": list(urls), "filtered_urls": list(urls),
+                 "blocked": False, "error": None}]
+
+    def generic_scrape_fn(url):
+        domain = url.split("/")[2].removeprefix("www.")
+        code = "403" if "croma" in domain else "404"
+        return CandidateResult(
+            source_domain=domain, url=url, scraper_used="generic",
+            structured_fields=None, raw_page_text=None,
+            fetch_error=f"HTTPError: {code} Client Error",
+        )
+
+    decisions = [
+        {"candidate_url": f"https://indiamart.com/p/{i}", "source_domain": "indiamart.com",
+         "is_match": True, "confidence": 0.9, "reason": "same printer",
+         "price_used": 6000.0 + i, "extraction_source": "scraper"}
+        for i in range(7)
+    ]
+    expansion_calls = []
+
+    def expand_search_fn(*_args):
+        expansion_calls.append(1)
+        return {"new_queries": ["hp laserjet pro cheap"], "suggested_domains": [], "notes": ""}
+
+    match_calls = []
+
+    def match_fn(_n, _c):
+        if match_calls:
+            return MatchBatchResult()
+        match_calls.append(1)
+        return MatchBatchResult(all_decisions=decisions, confirmed_matches=list(decisions))
+
+    result_dict, seen = _run(
+        url=GEM_URL + "?printer",
+        discover_fn=discover_fn,
+        generic_scrape_fn=generic_scrape_fn,
+        match_fn=match_fn,
+        expand_search_fn=expand_search_fn,
+    )
+
+    assert len(result_dict["matches"]) == 7
+    assert expansion_calls == []
+    assert "retry_started" not in _types(seen)
+    assert result_dict["shops"]["croma.com"]["status"] == result.SHOP_NOT_SEARCHED
+    assert result_dict["shops"]["croma.com"]["retryable"] is False
+    assert result_dict["shops"]["cashify.in"]["status"] == result.SHOP_NOT_SEARCHED
+    assert result_dict["shops"]["cashify.in"]["retryable"] is False

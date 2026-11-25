@@ -3,8 +3,8 @@
     GEM_DEMO=1 python -m uvicorn api.server:app --host 127.0.0.1 --port 8000
 
 Every event comes from core/pipeline.py, so the page is exercised exactly as
-it is in a live run: a shop cards fills in when its search ends, one shop is
-blocked and then found on the retry, one shop is honestly "not found". The
+it is in a live run: a shop card fills in when its search ends, one shop times
+out and then answers on the retry, one shop is honestly "not found". The
 demo also has one possible match (a different pack) and one B2B row so those
 states can be reviewed. Short pauses make the cards fill one by one.
 
@@ -127,21 +127,21 @@ def _candidate(domain: str, url: str, title: str, price: float, *, error: str = 
     )
 
 
-def _blocked(domain: str, query: str) -> SearchScrapeResult:
+def _timeout(domain: str, query: str) -> SearchScrapeResult:
     _pause()
     return SearchScrapeResult(
         source_domain=domain,
         query=query,
         candidates=[],
-        blocked=True,
-        status="blocked",
-        reason="demo: the site showed a CAPTCHA",
+        error="demo: the request timed out",
+        status="error",
+        reason="demo: the request timed out",
     )
 
 
 def _flipkart_search(query: str) -> SearchScrapeResult:
     if query != RETRY_QUERY:
-        return _blocked("flipkart.com", query)
+        return _timeout("flipkart.com", query)
     _pause()
     return SearchScrapeResult(
         source_domain="flipkart.com",

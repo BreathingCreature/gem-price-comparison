@@ -44,8 +44,11 @@ it: `core/candidates.py` (candidate rows and de-duplication),
    limit, `GEM_LANE_TIME_LIMIT`), shops are summarised, `run_finished`
    (`state: "shown"`) is emitted and the run record is saved.
 6. **One retry.** `core/retry.py` picks the shops that said
-   `retryable: true` (blocked, incomplete, timed out, or nothing found) and
-   asks the LLM for fresh search words. `retry_started`, then `shop_updated`
+   `retryable: true` only when the failure can change: a timeout, connection
+   reset, server error, unfinished lane, or a clean empty search with no
+   match. A 403, 404, 410, CAPTCHA, bot wall, robots disallow, DNS failure or
+   document-page rejection is final. Once a match exists only an incomplete
+   or timed out Flipkart/Amazon lane can retry, never a web shop. `retry_started`, then `shop_updated`
    for the shops whose card really changed, then `run_updated`.
 7. **Similar products.** Only when there is no confirmed match does
    `core/similar.py` look for near misses, so the page has something useful to
@@ -57,8 +60,9 @@ it: `core/candidates.py` (candidate rows and de-duplication),
 
 Every shop card has one of: `found`, `possible`, `not_found`, `not_searched`
 (blocked or skipped before it could search), `incomplete` (ran but lost
-listings), `timed_out`. Only the unfinished ones are retried, and only once.
-A lane that *crashed* is not retryable, so a broken shop is not asked again.
+listings), `timed_out`. Only a changeable unfinished state is retried, and
+only once. A lane that *crashed* is not retryable, so a broken shop is not
+asked again.
 
 ## Result v2
 

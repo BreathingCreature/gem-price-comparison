@@ -78,9 +78,12 @@ Choices that still shape the project: what we chose, why, and what we gave up.
 - A shop card must say what happened. Found needs a confirmed match; a crash
   is incomplete; a slow lane with no verdict is timed out; possible-only is
   possible. A listing that was never checked is never reported as not found.
-- Retry is per shop, at most once, and only for retryable cards. A blocked
-  shop is retried because new words may avoid the block. A crashed lane is not
-  retried because the same call would crash again.
+- Retry is per shop, at most once, and only for a changeable failure. A
+  timeout, connection reset, server error or unfinished lane can be retried;
+  a 403, 404, 410, CAPTCHA, bot wall, robots disallow, DNS failure and a
+  document-page rejection cannot. Once a match exists, only an incomplete or
+  timed out Flipkart/Amazon lane can retry. A crashed lane is not retried
+  because the same call would crash again.
 - A retry merges with the first pass. One unfinished shop must not erase a
   match another shop already confirmed.
 - The result is built in one place, `core/result.py::build_result`, and carries

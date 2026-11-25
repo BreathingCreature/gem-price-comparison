@@ -474,9 +474,15 @@ def _shop_status(facts: _ShopFacts) -> tuple[str, str]:
     if blocked:
         return result_module.SHOP_NOT_SEARCHED, "blocked/CAPTCHA"
     if errored:
-        return result_module.SHOP_NOT_SEARCHED, str(_cand_dict(errored[0]).get("error"))
+        reason = str(_cand_dict(errored[0]).get("error"))
+        if retry_module.transient_reason(reason):
+            return result_module.SHOP_INCOMPLETE, reason
+        return result_module.SHOP_NOT_SEARCHED, reason
     if failed_pages:
-        return result_module.SHOP_NOT_SEARCHED, str(_cand_dict(failed_pages[0]).get("fetch_error"))
+        reason = str(_cand_dict(failed_pages[0]).get("fetch_error"))
+        if retry_module.transient_reason(reason):
+            return result_module.SHOP_INCOMPLETE, reason
+        return result_module.SHOP_NOT_SEARCHED, reason
     if facts.lane_error:
         return result_module.SHOP_INCOMPLETE, facts.lane_error
     if facts.unchecked:
@@ -500,21 +506,21 @@ def _shop_status(facts: _ShopFacts) -> tuple[str, str]:
     return result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
 
 
-def _shop_retryable(facts: _ShopFacts, status: str, nothing_found: bool, retried: set) -> tuple[bool, bool]:
-    # A lane that CRASHED is not retried: the same call would crash again.
-    # A blocked/errored search IS retryable - new words may
-    # reach a shop the first query could not.
-    hard_failure = bool(facts.lane_error)
-    retryable = (
-        status in result_module.UNFINISHED_STATUSES
-        or (status == result_module.SHOP_NOT_FOUND and nothing_found)
-    ) and not hard_failure and status != result_module.SHOP_FOUND
-    # The discovery lane's retry covers every other shop at once.
+def _shop_retryable(
+    facts: _ShopFacts, status: str, reason: str, nothing_found: bool, confirmed: bool, retried: set
+) -> tuple[bool, bool]:
+    # The discovery lane's retry covers every other shop at once. A lane that
+    # crashed is not retried either: the same call would crash again.
     retried_here = facts.domain in retried or ("other" in retried and facts.domain not in LANE_FOR_DOMAIN)
-    if retried_here:
-        # One retry per shop per run: the flag tells the caller there is
-        # nothing left to spend on this shop.
-        retryable = False
+    entry = {
+        "status": status,
+        "reason": reason,
+        "retryable": not bool(facts.lane_error),
+        "retried": retried_here,
+    }
+    retryable = retry_module.is_retryable(
+        facts.domain, entry, nothing_found=nothing_found, confirmed=confirmed
+    )
     return retryable, retried_here
 
 
@@ -570,7 +576,9 @@ def _other_status(*, discovered, other_lane_error, discovery_blocked, discovery_
     return result_module.SHOP_NOT_FOUND, "searched, nothing confirmed"
 
 
-def _other_entry(*, entries, discovery_results, lane_errors, lane_seconds, retried, nothing_found, discovered):
+def _other_entry(
+    *, entries, discovery_results, lane_errors, lane_seconds, retried, nothing_found, discovered, confirmed=False
+):
     generic_entries = [
         e
         for name, e in entries.items()
@@ -585,11 +593,17 @@ def _other_entry(*, entries, discovery_results, lane_errors, lane_seconds, retri
         discovery_failed=discovery_failed,
         generic_entries=generic_entries,
     )
-    other_retryable = (
-        other_status in result_module.UNFINISHED_STATUSES and discovered and not other_lane_error
-    ) or (other_status == result_module.SHOP_NOT_FOUND and nothing_found)
-    if "other" in retried:
-        other_retryable = False
+    other_retryable = retry_module.is_retryable(
+        "other",
+        {
+            "status": other_status,
+            "reason": other_reason,
+            "retryable": discovered and not other_lane_error,
+            "retried": "other" in retried,
+        },
+        nothing_found=nothing_found,
+        confirmed=confirmed,
+    )
     return result_module.shop_entry(
         status=other_status,
         reason=other_reason,
@@ -696,6 +710,7 @@ def _shop_entries(
     nothing_found: bool,
     retried: set | None = None,
     discovered: bool = True,
+    confirmed: bool = False,
 ) -> dict:
     """One card per shop. Pure data in, pure data out.
 
@@ -725,7 +740,9 @@ def _shop_entries(
         lane_error = next((e for e in (lane_errors or []) if str(e).startswith(lane)), "")
         facts = _shop_facts(domain, results, candidates, counts, lane_error, lane_seconds, shop_seconds)
         status, reason = _shop_status(facts)
-        retryable, retried_here = _shop_retryable(facts, status, nothing_found, retried)
+        retryable, retried_here = _shop_retryable(
+            facts, status, reason, nothing_found, confirmed, retried
+        )
         entries[domain] = _shop_card(facts, status, reason, retryable, retried_here)
 
     # The discovery lane itself, summarised: a crash there is not any one
@@ -738,6 +755,7 @@ def _shop_entries(
         retried=retried,
         nothing_found=nothing_found,
         discovered=discovered,
+        confirmed=confirmed,
     )
     return entries
 
@@ -1418,6 +1436,7 @@ def first_result(ctx: RunContext) -> None:
         lane_seconds=ctx.lane_seconds,
         nothing_found=not ctx.confirmed and not ctx.first_possible,
         discovered=bool(DISCOVERY_ENABLED),
+        confirmed=bool(ctx.confirmed),
     )
     ctx.first_shops = first_shops
     ctx.trace["stages"]["shops"] = first_shops
@@ -1665,7 +1684,11 @@ def _retry_plan(ctx: RunContext, retry_shops, expand_search_fn, amazon_search_fn
     ctx.retry_trace["state"] = "updating"
     ctx.retry_trace["shops"] = sorted(retry_shops)
     events.emit("retry_started", shops=sorted(retry_shops))
-    events.emit("stage", name="retry", label="Nothing matched yet, asking the LLM for better search words")
+    events.emit(
+        "stage",
+        name="retry",
+        label="Retrying the shops that did not answer: " + ", ".join(sorted(retry_shops)),
+    )
     expansion = _expand_retry(ctx, expand_search_fn)
     ctx.retry_trace["expansion"] = expansion
     events.emit("retry_plan", new_queries=_str_list(expansion.get("new_queries")), notes=expansion.get("notes", ""))
@@ -1697,7 +1720,9 @@ def retry_pass(ctx: RunContext, expand_search_fn, amazon_search_fn, discover_fn,
     ctx.retry_trace = {"triggered": False}
     ctx.retried_shops = set()
     retry_shops = retry_module.retryable_shops(
-        ctx.first_shops, nothing_found=not ctx.confirmed and not ctx.first_possible
+        ctx.first_shops,
+        nothing_found=not ctx.confirmed and not ctx.first_possible,
+        confirmed=bool(ctx.confirmed),
     )
     if ctx.first_shops and RETRY_ENABLED and retry_shops:
         _retry_plan(ctx, retry_shops, expand_search_fn, amazon_search_fn, discover_fn, generic_scrape_fn)
@@ -1771,6 +1796,7 @@ def finish(ctx: RunContext) -> None:
         nothing_found=not ctx.confirmed and not final_possible,
         retried=ctx.retried_shops if ctx.retry_trace["triggered"] else set(),
         discovered=bool(DISCOVERY_ENABLED),
+        confirmed=bool(ctx.confirmed and ctx.final_match_result and ctx.final_match_result.confirmed_matches),
     )
     ctx.trace["stages"]["shops"] = final_shops
     starts = _start_offsets_from_events()

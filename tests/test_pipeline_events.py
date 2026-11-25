@@ -132,6 +132,22 @@ def test_the_retry_is_announced():
     assert plan["new_queries"] == ["demo mouse wireless black"]
 
 
+def test_the_retry_stage_names_the_shops_actually_being_retried():
+    def timed_out(query):
+        return SearchScrapeResult(
+            source_domain="flipkart.com", query=query, candidates=[],
+            error="ReadTimeout: the request timed out", status="error",
+        )
+
+    def expansion(*_args):
+        return {"new_queries": ["demo mouse wireless black"], "suggested_domains": [], "notes": ""}
+
+    _, seen = _run(url=GEM_URL + "?retry-label", flipkart_search_fn=timed_out, expand_search_fn=expansion)
+    retry = next(e for e in seen if e["type"] == "stage" and e["name"] == "retry")
+    assert retry["label"] == "Retrying the shops that did not answer: flipkart.com"
+    assert "Nothing matched yet" not in retry["label"]
+
+
 def test_the_events_are_saved_inside_the_trace():
     result, _ = _run(url=GEM_URL + "?trace-test")
     trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))

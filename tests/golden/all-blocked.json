@@ -85,7 +85,7 @@
         "matches": 0,
         "reason": "blocked/CAPTCHA",
         "retried": false,
-        "retryable": true,
+        "retryable": false,
         "seen": 0,
         "status": "not_searched"
       },
@@ -95,7 +95,7 @@
         "matches": 0,
         "reason": "blocked/CAPTCHA",
         "retried": false,
-        "retryable": true,
+        "retryable": false,
         "seen": 0,
         "status": "not_searched"
       },

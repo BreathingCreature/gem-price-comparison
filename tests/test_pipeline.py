@@ -217,17 +217,20 @@ def test_retry_skipped_when_expand_search_has_no_new_queries():
     assert "amazon.in" in result["not_found_on"]
 
 
-def test_a_blocked_shop_is_retried_once_with_the_new_words():
-    # A blocked shop is `not_searched` with retryable=True, so it gets
-    # exactly one retry with the expanded query. The per-shop card decides,
-    # and the cap is one retry.
-    url = "https://mkp.gem.gov.in/test/blocked-not-retried/p-13-13-cat.html"
+def test_a_timed_out_shop_is_retried_once_with_the_new_words():
+    # A timeout is `incomplete` with retryable=True, so it gets exactly one
+    # retry with the expanded query. The per-shop card decides, and the cap
+    # is one retry. A CAPTCHA wall would never be retried.
+    url = "https://mkp.gem.gov.in/test/timeout-retried/p-13-13-cat.html"
     fk_calls, az_calls = [], []
     seen_events = []
 
     def fk(q):
         fk_calls.append(q)
-        return SearchScrapeResult(source_domain="flipkart.com", query=q, candidates=[], blocked=True)
+        return SearchScrapeResult(
+            source_domain="flipkart.com", query=q, candidates=[],
+            error="ReadTimeout: the request timed out", status="error",
+        )
 
     def az(q):
         az_calls.append(q)
