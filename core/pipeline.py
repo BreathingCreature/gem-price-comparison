@@ -647,6 +647,40 @@ def _shop_seconds_from_events() -> dict:
     }
 
 
+def _start_offsets_from_events() -> dict:
+    """When each lane and each shop started, in seconds since the run began.
+
+    The lane's clock starts at its shop_started event. A discovery shop's
+    page is fetched before its own shop_started event is emitted, so its
+    scrape_started marker is the honest start. First marker wins: the retry
+    must not move a lane or a shop back to zero.
+    """
+    lanes: dict = {}
+    shops: dict = {}
+    lane_alias = {
+        "flipkart": "flipkart", "flipkart.com": "flipkart",
+        "amazon": "amazon", "amazon.in": "amazon",
+        "other": "other_shops", "other_shops": "other_shops",
+    }
+    for event in events.snapshot():
+        t = event.get("t")
+        if t is None:
+            continue
+        kind = event.get("type")
+        if kind == "shop_started":
+            lane = lane_alias.get(_norm_domain(event.get("shop")))
+            if lane:
+                lanes.setdefault(lane, t)
+        if kind in ("shop_started", "scrape_started"):
+            domain = _event_shop_domain(event)
+            if domain:
+                shops.setdefault(domain, t)
+    return {
+        "lanes": {name: round(value, 3) for name, value in lanes.items()},
+        "shops": {name: round(value, 3) for name, value in shops.items()},
+    }
+
+
 def _shop_entries(
     *,
     flipkart_results,
@@ -1739,6 +1773,8 @@ def finish(ctx: RunContext) -> None:
         discovered=bool(DISCOVERY_ENABLED),
     )
     ctx.trace["stages"]["shops"] = final_shops
+    starts = _start_offsets_from_events()
+    ctx.trace["stages"]["starts"] = starts
 
     # --- key facts for the card: the LLM answer if it arrived in time ---
     _resolve_highlights(ctx)

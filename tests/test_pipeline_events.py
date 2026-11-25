@@ -2,7 +2,7 @@
 import json
 import logging
 
-from core import pipeline
+from core import events, pipeline
 from llm.match import MatchBatchResult
 from scrapers._base import CandidateResult, SearchScrapeResult
 
@@ -138,6 +138,29 @@ def test_the_events_are_saved_inside_the_trace():
     types = [e["type"] for e in trace["events"]]
     assert types[0] == "run_started" and types[-1] == "done"
     assert "run_finished" in types
+
+
+def test_the_trace_records_when_each_lane_started():
+    result, _ = _run(url=GEM_URL + "?starts")
+    trace = json.loads((pipeline.TRACES_DIR / f"{result['trace_id']}.json").read_text(encoding="utf-8"))
+    starts = trace["stages"]["starts"]
+    assert set(starts["lanes"]) == {"flipkart", "amazon", "other_shops"}
+    assert all(isinstance(value, (int, float)) and value >= 0 for value in starts["lanes"].values())
+    assert {"flipkart.com", "amazon.in"} <= set(starts["shops"])
+
+
+def test_the_first_start_marker_wins_and_a_scrape_marks_its_shop():
+    with events.capture() as sink:
+        sink.events = [
+            {"type": "shop_started", "shop": "flipkart.com", "t": 0.1},
+            {"type": "shop_started", "shop": "flipkart.com", "t": 9.0},
+            {"type": "scrape_started", "url": "https://croma.com/a", "t": 0.4},
+            {"type": "shop_started", "shop": "croma.com", "t": 1.2},
+            {"type": "shop_started", "shop": "other", "t": 0.05},
+        ]
+        starts = pipeline._start_offsets_from_events()
+    assert starts["lanes"] == {"flipkart": 0.1, "other_shops": 0.05}
+    assert starts["shops"] == {"flipkart.com": 0.1, "croma.com": 0.4}
 
 
 def test_running_without_a_listener_still_works():

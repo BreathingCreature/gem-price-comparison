@@ -94,6 +94,12 @@ def test_price_scale_never_returns_a_negative_axis():
     assert all(0 <= value <= 100 for value in scale["positions"])
 
 
+def test_lane_offsets_read_in_the_order_the_lanes_start():
+    text = _js("r.laneOffsetText({amazon:1.234,flipkart:0.012,other_shops:0.045})")
+    assert text == "Flipkart 0.01 s, Amazon 1.23 s, other shops 0.04 s"
+    assert _js("r.laneOffsetText({})") == ""
+
+
 def test_bars_scale_to_the_gem_price_and_crown_only_a_matching_cheapest():
     bars = _js("r.barRows(" + json.dumps(_result()) + ")")
     assert bars["max"] == 1299.0

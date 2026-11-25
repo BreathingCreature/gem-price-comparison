@@ -18,6 +18,7 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 
 from api import demo  # noqa: E402
 from api.server import create_app  # noqa: E402
+from core import pipeline  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO_URL = "https://mkp.gem.gov.in/computer-mouse/demo-mouse/p-999-1000-cat.html"
@@ -450,6 +451,7 @@ def test_a_finished_printer_run_has_no_waiting_cells(browser):
         "in_stock": True, "bulk": True,
     }
     result = {
+        "trace_id": "abc123def4567890",
         "gem": {"title": "HP LaserJet Pro printer",
                 "price": {"low": 8999.0, "high": 8999.0, "kind": "fixed"}},
         "matches": [match], "possible_matches": [], "similar": [], "cheapest": match,
@@ -517,6 +519,14 @@ def test_a_finished_printer_run_has_no_waiting_cells(browser):
         emit({"type": "shop_finished", "shop": "indiamart.com", "status": "found",
               "seconds": 2.5, "matches": 1})
         emit({"type": "shop_finished", "shop": "other", "status": "found", "seconds": 2.4})
+        pipeline._write_trace({
+            "trace_id": result["trace_id"], "gem_url": gem_url,
+            "stages": {"starts": {
+                "lanes": {"flipkart": 0.03, "amazon": 0.04, "other_shops": 0.05},
+                "shops": {"flipkart.com": 0.03, "amazon.in": 0.04, "indiamart.com": 0.7},
+            }},
+            "events": [],
+        })
         emit({"type": "run_finished", "result": result})
         return result
 
@@ -548,6 +558,9 @@ def test_a_finished_printer_run_has_no_waiting_cells(browser):
         assert state["blocked"] == [["-", "-", "-"], ["-", "-", "-"]]
         assert page.locator("#shop-indiamart-com-confirmed-value").inner_text() == "1"
         assert "2.5" in page.locator("#shop-indiamart-com").get_attribute("title")
+        page.click("#tab-system")
+        facts = _js(cdp, "Array.from(document.querySelectorAll('#run-stats dt')).map(function (dt) { return [dt.textContent, dt.nextElementSibling.textContent]; })")
+        assert ["Lane start offsets", "Flipkart 0.03 s, Amazon 0.04 s, other shops 0.05 s"] in facts
         _assert_clean(console_errors, page_errors, requests, responses, url)
     finally:
         context.close()

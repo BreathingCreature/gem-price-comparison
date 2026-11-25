@@ -24,7 +24,7 @@ var state = {
   result: null, retrying: [], runtimeWarnings: [], feed: [], feedHidden: 0,
   filter: "all", query: "", filterShopsKey: "", activeTab: "matches",
   submitting: false, active: false, queued: false, finished: false, failed: false,
-  renderedResult: null, lastClock: "", lastUrl: "",
+  renderedResult: null, lastClock: "", lastUrl: "", laneOffsets: null, offsetsTraceId: null,
   pipelineUserToggled: false, pipelineCollapsed: false,
   highlights: [], highlightsSummary: "", shopRowOrder: [], shopRowEls: {},
   specsExpanded: false, providerPoll: null, providerEls: {},
@@ -504,6 +504,7 @@ function openSavedRun(runId) {
     else setRunStatus(run.result.from_cache ? "Cached result" : "Saved result", "done");
     paintAll();
     replayTrace(run.result.trace_id);
+    loadLaneOffsets(run.result.trace_id);
     applyPipelineCollapsed();
     if (run.live && run.status !== "done" && run.status !== "failed") {
       state.finished = false;
@@ -541,6 +542,18 @@ function replayTrace(traceId) {
     setText($("activity-empty"), "The event trace for this saved run could not be read.");
     $("activity-empty").hidden = false;
   });
+}
+
+function loadLaneOffsets(traceId) {
+  if (!traceId || state.demo || state.offsetsTraceId === traceId) return;
+  state.offsetsTraceId = traceId;
+  fetch(API + "/api/traces/" + encodeURIComponent(traceId)).then(function (response) {
+    return response.ok ? response.json() : null;
+  }).then(function (trace) {
+    var starts = trace && trace.stages && trace.stages.starts;
+    state.laneOffsets = starts && starts.lanes ? starts : null;
+    paintSystem();
+  }).catch(function () { /* the System tab works without the offsets */ });
 }
 
 function closeSource() {
@@ -635,7 +648,10 @@ function handle(event) {
       announce("Retry started for " + (event.shops || []).join(", ") + ".");
       break;
     case "run_finished":
-      if (event.result) state.result = event.result;
+      if (event.result) {
+        state.result = event.result;
+        if (event.result.trace_id) loadLaneOffsets(event.result.trace_id);
+      }
       state.retrying = []; state.renderedResult = null;
       setRunStatus("First result ready", "running");
       announce(firstResultAnnouncement(state.result));
@@ -658,7 +674,7 @@ function handle(event) {
       showRunError(event.error || event.message || "The run failed.");
       finishRun("failed");
       break;
-    case "done": finishRun("done"); break;
+    case "done": loadLaneOffsets(event.trace_id); finishRun("done"); break;
     case "stream_done": finishRun(event.status === "failed" ? "failed" : "done"); break;
     default: break;
   }
@@ -679,6 +695,8 @@ function firstResultAnnouncement(result) {
 function resetRunView() {
   state.stats = R.newStats();
   state.result = null;
+  state.laneOffsets = null;
+  state.offsetsTraceId = null;
   state.retrying = [];
   state.runtimeWarnings = [];
   state.feed = [];
@@ -1594,7 +1612,11 @@ function paintSystem() {
     : "This run has no LLM calls yet.");
   var stats = $("run-stats");
   clear(stats);
-  [["Run time", R.clock(state.elapsedSeconds)], ["Events seen", String(state.stats.events)], ["Saved cache", cached ? "yes, served from cache" : state.result ? "no" : "not yet"]].forEach(function (pair) {
+  var facts = [["Run time", R.clock(state.elapsedSeconds)], ["Events seen", String(state.stats.events)], ["Saved cache", cached ? "yes, served from cache" : state.result ? "no" : "not yet"]];
+  if (state.laneOffsets && state.laneOffsets.lanes) {
+    facts.push(["Lane start offsets", R.laneOffsetText(state.laneOffsets.lanes)]);
+  }
+  facts.forEach(function (pair) {
     stats.appendChild(h("div", null, h("dt", { text: pair[0] }), h("dd", { text: pair[1] })));
   });
   paintShopsDetails();
